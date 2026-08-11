@@ -72,11 +72,11 @@ def filter_path(path: Path) -> str:
 def escape_drawtext(text: str) -> str:
     """Escapa texto para usar em filtro drawtext do FFmpeg.
 
-    Usa syntaxe: text="..." com escape de caracteres especiais.
+    Usa syntaxe: text='...' com escape de caracteres especiais.
     """
     # Escape order: backslash first, then outros
     text = text.replace("\\", "\\\\")  # \ -> \\
-    text = text.replace('"', '\\"')    # " -> \"
+    text = text.replace("'", "\\'")    # ' -> \'
     text = text.replace(":", "\\:")    # : -> \:
     text = text.replace("%", "\\%")    # % -> \%
     return text

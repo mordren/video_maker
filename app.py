@@ -632,7 +632,7 @@ class MainWindow(QMainWindow):
         if self.text_input.text().strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             text = format_title_for_video(self.text_input.text())
-            chain += f';[{current}]drawtext=fontfile="{font}":text="{text}":x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]'
+            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
         if self.caption_path and self.caption_path.exists():
             style = "FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV=60"
@@ -1151,7 +1151,7 @@ class MainWindow(QMainWindow):
         if titulo.strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             text = format_title_for_video(titulo)
-            chain += f';[{current}]drawtext=fontfile="{font}":text="{text}":x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]'
+            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
 
         chain += f";[{current}]format=yuv420p[outv]"
