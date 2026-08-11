@@ -739,6 +739,21 @@ class MainWindow(QMainWindow):
         format_select_form.addRow(self.csv_clip_image_label)
         right_panel.addWidget(format_select_box)
 
+        # Formato padrão para todos
+        default_format_box = QGroupBox("Aplicar a todos")
+        default_format_form = QFormLayout(default_format_box)
+        self.csv_default_format = QComboBox()
+        self.csv_default_format.addItem("Estender (9:16 preencher)", "estender")
+        self.csv_default_format.addItem("Transparente (9:16 fundo desfocado)", "transparente")
+        self.csv_default_format.addItem("Imagem fixa (9:16 imagem + corte)", "imagem")
+        self.csv_default_format.addItem("Original / longo (16:9)", "original")
+        self.csv_default_format.setCurrentIndex(0)
+        default_format_form.addRow("Formato", self.csv_default_format)
+        apply_all_btn = QPushButton("🎬 Aplicar a todos")
+        apply_all_btn.clicked.connect(self._csv_apply_format_to_all)
+        default_format_form.addRow(apply_all_btn)
+        right_panel.addWidget(default_format_box)
+
         # Resto das configurações
         panel = QVBoxLayout()
         panel.setSpacing(14)
@@ -993,6 +1008,16 @@ class MainWindow(QMainWindow):
                 self.csv_clip_image_label.setText("⚠️ Imagem: não encontrada")
         else:
             self.csv_clip_image_label.setText("")
+
+    def _csv_apply_format_to_all(self) -> None:
+        """Aplica o formato selecionado a todos os momentos."""
+        if not self._csv_moments:
+            return
+        selected_format = self.csv_default_format.currentData()
+        for m in self._csv_moments:
+            m["_format_override"] = selected_format
+        self._populate_csv_table(self._csv_moments)
+        self.csv_log.appendPlainText(f"✅ Formato '{self.csv_default_format.currentText()}' aplicado a todos os {len(self._csv_moments)} momentos.")
 
     def _csv_vlc_seek(self, ms: int) -> None:
         self.csv_vlc_player.set_time(ms)
