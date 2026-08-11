@@ -11,6 +11,7 @@ os.environ["QMEDIAPLAYER_USE_HW"] = "0"
 
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import vlc
@@ -28,8 +29,8 @@ from utils import (
     APP_NAME, DEFAULT_LOGO, DOWNLOAD_DIR, FONT_DIR, OUTPUT_DIR,
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
-    escape_drawtext, filter_path, parse_csv_moments, parse_time_string,
-    shorten_srt_captions, yt_dlp_path,
+    escape_drawtext, filter_path, format_title_for_video, parse_csv_moments, parse_time_string,
+    shorten_srt_captions, whisper_path, yt_dlp_path,
     TimestampInput,
 )
 
@@ -57,6 +58,25 @@ class MainWindow(QMainWindow):
         self._csv_selected_index = -1
         self._csv_duration = 0.0
 
+        # Estado da aba Live
+        self.live_vlc_player = self.vlc_instance.media_player_new()
+        self.live_vlc_media: vlc.Media | None = None
+        self._live_duration = 0.0
+        self._live_dir: Path | None = None
+        self._live_process: QProcess | None = None
+        self._live_audio_process: QProcess | None = None
+        self._live_recording = False
+        self._live_busy = False
+        self._live_fixed_image_path: Path | None = None
+        self._live_cut_process: QProcess | None = None
+        self._live_cut_count = 0
+        self._live_pending: dict = {}
+        self._live_needs_remux = False
+        self._live_remux_running = False
+        self._live_remux_goal: object = 0
+        self._live_remux_count = 0
+        self._live_remux_process: QProcess | None = None
+
         self.build_ui()
 
         # Timer para atualizar timeline e duração (VLC não tem sinais Qt)
@@ -64,7 +84,14 @@ class MainWindow(QMainWindow):
         self._poll_timer.setInterval(100)
         self._poll_timer.timeout.connect(self._poll_vlc)
         self._poll_timer.timeout.connect(self._csv_poll_vlc)
+        self._poll_timer.timeout.connect(self._live_poll_vlc)
         self._poll_timer.start()
+
+        # Atualiza o status da live (até onde vídeo e áudio foram baixados)
+        self._live_status_timer = QTimer(self)
+        self._live_status_timer.setInterval(10000)
+        self._live_status_timer.timeout.connect(self._live_update_status)
+        self._live_status_timer.start()
 
     def build_ui(self) -> None:
         root = QWidget()
@@ -303,6 +330,9 @@ class MainWindow(QMainWindow):
         # ── Aba 2: CSV Lotes ───────────────────────────────────────
         self._build_csv_tab()
 
+        # ── Aba 3: Live ────────────────────────────────────────────
+        self._build_live_tab()
+
         self.apply_style()
 
     def apply_style(self) -> None:
@@ -503,7 +533,8 @@ class MainWindow(QMainWindow):
 
     def generate_captions(self) -> None:
         if not self.validate_video(): return
-        if not command_exists("whisper"):
+        whisper = whisper_path()
+        if not whisper:
             QMessageBox.warning(self, APP_NAME, "Whisper não foi encontrado. Instale as dependências do README para usar legendas offline.")
             return
         start, length = self.cut_values()
@@ -513,7 +544,7 @@ class MainWindow(QMainWindow):
         except subprocess.CalledProcessError:
             QMessageBox.critical(self, APP_NAME, "Não foi possível extrair o áudio do trecho.")
             return
-        command = ["whisper", str(audio_path), "--model", "small", "--language", "Portuguese", "--task", "transcribe", "--output_format", "srt", "--output_dir", str(self.work_dir)]
+        command = [whisper, str(audio_path), "--model", "base", "--language", "Portuguese", "--task", "transcribe", "--output_format", "srt", "--output_dir", str(self.work_dir)]
         self.run_process(command, "Legendas geradas. Elas serão aplicadas na exportação.", caption=True)
 
     def download_video(self) -> None:
@@ -521,12 +552,24 @@ class MainWindow(QMainWindow):
         if not url:
             QMessageBox.warning(self, APP_NAME, "Cole a URL de um vídeo para baixar.")
             return
+        if "/live/" in url:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Essa URL é de uma transmissão ao vivo.\n\n"
+                "O download comum grava a live em tempo real e nunca termina "
+                "enquanto ela estiver no ar. Use a aba 🔴 Live para gravar e cortar lives.")
+            return
         downloader = yt_dlp_path()
         if not downloader:
             QMessageBox.critical(self, APP_NAME, "yt-dlp não foi encontrado. Consulte o README para instalá-lo.")
             return
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        command = [str(downloader), "--no-playlist", "-N", str(self.fragment_count.value()), "-f", "bv*+ba/b", "--merge-output-format", "mp4", "-P", str(DOWNLOAD_DIR), "-o", "%(title).200B.%(ext)s", url]
+        # --match-filter "!is_live": recusa lives que não usem /live/ na URL —
+        # nelas o download roda em tempo real (1x) e parece "travado".
+        command = [str(downloader), "--no-playlist", "--match-filter", "!is_live",
+                   "-N", str(self.fragment_count.value()), "-f", "bv*+ba/b",
+                   "--merge-output-format", "mp4", "-P", str(DOWNLOAD_DIR),
+                   "-o", "%(title).200B.%(ext)s", url]
         self.run_process(command, f"Download concluído em:\n{DOWNLOAD_DIR}\n\nAgora selecione o vídeo para editá-lo.")
 
     def cut_values(self) -> tuple[float, float]:
@@ -560,7 +603,7 @@ class MainWindow(QMainWindow):
         if mode == "vertical_crop":
             chain, label = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920", "base"
         elif mode == "vertical_blur":
-            chain = "[0:v]split=2[bg][fg];[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:10[blur];[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fit]"
+            chain = "[0:v]split=2[bg][fg];[bg]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,boxblur=10:2,scale=1080:1920[blur];[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fit]"
             if self.logo_path:
                 x, y = locations[self.logo_position.currentIndex()]
                 chain += f";[1:v]scale={self.logo_size.value()}:-1[logo];[fit][logo]overlay={x}:{y}[fit_with_logo];[blur][fit_with_logo]overlay=(W-w)/2:(H-h)/2"
@@ -588,8 +631,8 @@ class MainWindow(QMainWindow):
             current = "with_logo"
         if self.text_input.text().strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
-            text = escape_drawtext(self.text_input.text().strip())
-            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
+            text = format_title_for_video(self.text_input.text())
+            chain += f';[{current}]drawtext=fontfile="{font}":text="{text}":x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]'
             current = "text"
         if self.caption_path and self.caption_path.exists():
             style = "FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV=60"
@@ -861,7 +904,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_NAME, "FFmpeg não foi encontrado.")
             return
 
-        self._csv_use_whisper = self.csv_captions.isChecked() and command_exists("whisper")
+        self._whisper_bin = whisper_path()
+        self._csv_use_whisper = self.csv_captions.isChecked() and self._whisper_bin is not None
         if self.csv_captions.isChecked() and not self._csv_use_whisper:
             QMessageBox.warning(self, APP_NAME, "Whisper não foi encontrado. Os cortes serão gerados sem legendas geradas automaticamente.")
 
@@ -1018,8 +1062,8 @@ class MainWindow(QMainWindow):
                 self.csv_log.appendPlainText("   ⚠️ Sem áudio no trecho; corte sem legenda.")
                 self._csv_export_clip()
                 return
-            self.csv_log.appendPlainText("   🎙️ Transcrevendo com Whisper…")
-            command = ["whisper", str(audio_path), "--model", "small", "--language",
+            self.csv_log.appendPlainText("   🎙️ Transcrevendo com Whisper (modelo base)…")
+            command = [self._whisper_bin, str(audio_path), "--model", "base", "--language",
                        "Portuguese", "--task", "transcribe", "--output_format", "srt",
                        "--output_dir", str(self.work_dir)]
             self._csv_process = QProcess(self)
@@ -1055,7 +1099,9 @@ class MainWindow(QMainWindow):
         output = OUTPUT_DIR / f"{safe_label}.mp4"
 
         has_image = mode == "imagem"
-        chain = build_clip_filter(mode, has_image)
+        has_logo = bool(self.logo_path and self.logo_path.exists())
+        image_input = 2 if has_logo else 1
+        chain = build_clip_filter(mode, has_image, image_input=image_input)
         current = "base"
 
         # Aplicar logo se existir
@@ -1077,20 +1123,18 @@ class MainWindow(QMainWindow):
             current = "captioned"
 
         # Aplicar texto: usar título do corte
-        text = titulo.strip()
-        if text:
+        if titulo.strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
-            escaped_text = escape_drawtext(text)
-            chain += f";[{current}]drawtext=fontfile='{font}':text='{escaped_text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
+            text = format_title_for_video(titulo)
+            chain += f';[{current}]drawtext=fontfile="{font}":text="{text}":x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]'
             current = "text"
 
         chain += f";[{current}]format=yuv420p[outv]"
 
         command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start), "-i", str(self.video_path)]
-        if self.logo_path and self.logo_path.exists():
+        if has_logo:
             command += ["-loop", "1", "-i", str(self.logo_path)]
         if has_image:
-            img_idx = 2 if self.logo_path and self.logo_path.exists() else 1
             command += ["-loop", "1", "-i", str(m["image_path"])]
         command += [
             "-filter_complex", chain, "-map", "[outv]", "-map", "0:a?",
@@ -1139,6 +1183,640 @@ class MainWindow(QMainWindow):
         if errors:
             self.csv_log.appendPlainText(f"⚠️ {errors} falhas: {', '.join(self._csv_errors)}")
         QMessageBox.information(self, APP_NAME, f"Processamento concluído!\n\n✅ {ok} vídeos exportados\n❌ {errors} falhas\n\nPasta: {OUTPUT_DIR}")
+
+    # ──────────────────────────────────────────────────────────────
+    #  Aba Live — gravação + transcrição em tempo real + cortes
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_live_tab(self) -> None:
+        tab_live = QWidget()
+        layout = QHBoxLayout(tab_live)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(20)
+
+        # ── Coluna esquerda: gravação + preview ──
+        left_col = QVBoxLayout()
+        live_title = QLabel("Cortes de Live")
+        live_title.setObjectName("title")
+        live_sub = QLabel("Grava a live desde o início; marque o período, corte e a legenda é gerada na hora.")
+        live_sub.setObjectName("muted")
+        left_col.addWidget(live_title)
+        left_col.addWidget(live_sub)
+
+        url_row = QHBoxLayout()
+        self.live_url_input = QLineEdit()
+        self.live_url_input.setObjectName("urlInput")
+        self.live_url_input.setPlaceholderText("URL da live (YouTube)")
+        self.live_url_input.setClearButtonEnabled(True)
+        self.live_start_btn = QPushButton("⏺ Gravar live")
+        self.live_start_btn.setObjectName("downloadButton")
+        self.live_start_btn.clicked.connect(self._live_start_stop)
+        url_row.addWidget(self.live_url_input, 1)
+        url_row.addWidget(self.live_start_btn)
+        left_col.addLayout(url_row)
+
+        self.live_status = QLabel("Cole a URL e clique em Gravar.")
+        self.live_status.setObjectName("muted")
+        left_col.addWidget(self.live_status)
+
+        self.live_video_frame = QFrame()
+        self.live_video_frame.setMinimumSize(600, 340)
+        self.live_video_frame.setStyleSheet("background: #10131a; border-radius: 12px;")
+        self.live_video_frame.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+        self.live_video_frame.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
+        left_col.addWidget(self.live_video_frame, 1)
+        self.live_video_frame.windowHandle()
+
+        self.live_timeline = QSlider(Qt.Orientation.Horizontal)
+        self.live_timeline.setRange(0, 0)
+        self.live_timeline.setObjectName("timeline")
+        self.live_timeline.sliderMoved.connect(lambda v: self.live_vlc_player.set_time(v))
+        self.live_timeline.sliderPressed.connect(lambda: self.live_vlc_player.set_time(self.live_timeline.value()))
+        left_col.addWidget(self.live_timeline)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(10)
+        self.live_play_button = QPushButton("▶")
+        self.live_play_button.setObjectName("controlButton")
+        self.live_play_button.setFixedSize(42, 42)
+        self.live_play_button.clicked.connect(self._live_toggle_play)
+        live_back = QPushButton("⏪")
+        live_back.setObjectName("controlButton")
+        live_back.setFixedSize(42, 42)
+        live_back.setToolTip("Voltar 10s")
+        live_back.clicked.connect(lambda: self.live_vlc_player.set_time(max(0, self.live_vlc_player.get_time() - 10000)))
+        refresh_btn = QPushButton("🔄 Atualizar")
+        refresh_btn.setToolTip("Recarrega o arquivo da gravação (pega o trecho mais novo) mantendo a posição")
+        refresh_btn.clicked.connect(lambda: self._live_load_preview(keep_position=True))
+        golive_btn = QPushButton("⏩ Ao vivo")
+        golive_btn.setToolTip("Vai para o ponto mais recente da gravação")
+        golive_btn.clicked.connect(self._live_go_live)
+        self.live_time_label = QLabel("00:00 / 00:00")
+        self.live_time_label.setObjectName("timeDisplay")
+        self.live_time_label.setMinimumWidth(130)
+        controls.addWidget(self.live_play_button)
+        controls.addWidget(live_back)
+        controls.addWidget(refresh_btn)
+        controls.addWidget(golive_btn)
+        controls.addWidget(self.live_time_label)
+        controls.addStretch()
+
+        self.live_speed_buttons: list[QPushButton] = []
+        for rate, label in ((1.0, "1×"), (1.5, "1.5×"), (2.0, "2×")):
+            btn = QPushButton(label)
+            btn.setObjectName("speedActive" if rate == 1.0 else "speedButton")
+            btn.setFixedSize(44 if len(label) > 2 else 38, 28)
+            btn.clicked.connect(lambda checked=False, r=rate: self._live_set_speed(r))
+            self.live_speed_buttons.append(btn)
+            controls.addWidget(btn)
+        left_col.addLayout(controls)
+
+        self.live_log = QPlainTextEdit()
+        self.live_log.setReadOnly(True)
+        self.live_log.setMaximumBlockCount(300)
+        self.live_log.setMaximumHeight(90)
+        left_col.addWidget(self.live_log)
+
+        left_panel = QWidget()
+        left_panel.setLayout(left_col)
+        layout.addWidget(left_panel, 3)
+
+        # ── Coluna direita: transcrição + novo corte ──
+        right_col = QVBoxLayout()
+        right_col.setSpacing(10)
+
+        live_hint = QLabel("Assista a gravação, marque início e fim com 📍, escolha o formato e exporte. "
+                           "A legenda do trecho é gerada com Whisper durante a exportação.")
+        live_hint.setObjectName("muted")
+        live_hint.setWordWrap(True)
+        right_col.addWidget(live_hint)
+
+        cut_box = QGroupBox("Novo corte")
+        cut_form = QFormLayout(cut_box)
+        start_row = QWidget()
+        start_layout = QHBoxLayout(start_row); start_layout.setContentsMargins(0, 0, 0, 0)
+        self.live_cut_start = TimestampInput()
+        mark_start = QPushButton("📍 agora")
+        mark_start.setToolTip("Usa a posição atual do player")
+        mark_start.clicked.connect(lambda: self.live_cut_start.setValue(self.live_vlc_player.get_time() / 1000))
+        start_layout.addWidget(self.live_cut_start, 1); start_layout.addWidget(mark_start)
+        end_row = QWidget()
+        end_layout = QHBoxLayout(end_row); end_layout.setContentsMargins(0, 0, 0, 0)
+        self.live_cut_end = TimestampInput()
+        mark_end = QPushButton("📍 agora")
+        mark_end.setToolTip("Usa a posição atual do player")
+        mark_end.clicked.connect(lambda: self.live_cut_end.setValue(self.live_vlc_player.get_time() / 1000))
+        end_layout.addWidget(self.live_cut_end, 1); end_layout.addWidget(mark_end)
+        self.live_cut_title = QLineEdit()
+        self.live_cut_title.setPlaceholderText("Título do corte (aparece na tela)")
+        self.live_cut_format = QComboBox()
+        self.live_cut_format.addItem("Estender (9:16 preencher)", "estender")
+        self.live_cut_format.addItem("Transparente (9:16 fundo desfocado)", "transparente")
+        self.live_cut_format.addItem("Imagem fixa (9:16 imagem + corte)", "imagem")
+        self.live_cut_format.addItem("Original / longo (16:9)", "original")
+        self.live_cut_format.currentIndexChanged.connect(
+            lambda: self.live_image_row.setVisible(self.live_cut_format.currentData() == "imagem"))
+        self.live_image_row = QWidget()
+        live_img_layout = QHBoxLayout(self.live_image_row); live_img_layout.setContentsMargins(0, 0, 0, 0)
+        self.live_image_label = QLabel("Nenhuma imagem")
+        live_img_btn = QPushButton("Escolher")
+        live_img_btn.clicked.connect(self._live_pick_image)
+        live_img_layout.addWidget(self.live_image_label, 1); live_img_layout.addWidget(live_img_btn)
+        cut_form.addRow("Início", start_row)
+        cut_form.addRow("Fim", end_row)
+        cut_form.addRow("Título", self.live_cut_title)
+        cut_form.addRow("Formato", self.live_cut_format)
+        cut_form.addRow("Imagem", self.live_image_row)
+        self.live_image_row.setVisible(False)
+        self.live_captions_check = QCheckBox("Gerar legendas (Whisper) do trecho")
+        self.live_captions_check.setChecked(True)
+        cut_form.addRow(self.live_captions_check)
+        self.live_export_btn = QPushButton("✂️ Exportar corte")
+        self.live_export_btn.setObjectName("primary")
+        self.live_export_btn.clicked.connect(self._live_export_cut)
+        cut_form.addRow(self.live_export_btn)
+        self.live_cut_progress = QProgressBar()
+        self.live_cut_progress.setRange(0, 1)
+        self.live_cut_progress.setValue(0)
+        self.live_cut_progress.setTextVisible(False)
+        cut_form.addRow(self.live_cut_progress)
+        self.live_cut_log = QPlainTextEdit()
+        self.live_cut_log.setReadOnly(True)
+        self.live_cut_log.setMaximumBlockCount(400)
+        self.live_cut_log.setMaximumHeight(150)
+        cut_form.addRow(self.live_cut_log)
+        right_col.addWidget(cut_box)
+        right_col.addStretch()
+
+        right_panel = QWidget()
+        right_panel.setLayout(right_col)
+        right_panel.setMinimumWidth(340)
+        right_panel.setMaximumWidth(430)
+        layout.addWidget(right_panel, 2)
+
+        self.tabs.addTab(tab_live, "🔴 Live")
+
+    # ── Gravação ──
+
+    def _live_start_stop(self) -> None:
+        if self._live_recording:
+            if self._live_process:
+                self._live_process.kill()
+            if self._live_audio_process:
+                self._live_audio_process.kill()
+            self.live_start_btn.setText("⏺ Gravar live")
+            self.live_status.setText("Parando gravação…")
+            return
+
+        url = self.live_url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, APP_NAME, "Cole a URL da live primeiro.")
+            return
+        downloader = yt_dlp_path()
+        if not downloader:
+            QMessageBox.critical(self, APP_NAME, "yt-dlp não foi encontrado. Consulte o README.")
+            return
+        if not command_exists("ffmpeg"):
+            QMessageBox.critical(self, APP_NAME, "FFmpeg não foi encontrado. Consulte o README.")
+            return
+
+        self._live_dir = OUTPUT_DIR / "Lives" / datetime.now().strftime("live_%Y%m%d_%H%M%S")
+        self._live_dir.mkdir(parents=True, exist_ok=True)
+        self._live_busy = False
+        self._live_needs_remux = False
+        self.live_log.clear()
+
+        # Com --live-from-start o yt-dlp baixa formatos em sequência: o áudio
+        # só começaria quando o vídeo "terminasse" — o que numa live não
+        # acontece. Por isso rodamos DOIS yt-dlp em paralelo: um só para o
+        # vídeo e outro só para o áudio. Sem -N: cada fragmento é colado no
+        # arquivo assim que baixa, mantendo os arquivos sempre legíveis.
+        base = [str(downloader), "--live-from-start", "--no-part", "--newline"]
+        video_cmd = base + ["-f", "bv*[ext=mp4]/b[ext=mp4]/b",
+                            "-o", str(self._live_dir / "video.%(ext)s"), url]
+        audio_cmd = base + ["-f", "ba[ext=m4a]/ba",
+                            "-o", str(self._live_dir / "audio.%(ext)s"), url]
+
+        self._live_process = QProcess(self)
+        self._live_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._live_process.readyReadStandardOutput.connect(
+            lambda: self._live_read_output(self._live_process, "vídeo"))
+        self._live_process.finished.connect(self._live_on_ytdlp_finished)
+        self._live_process.start(video_cmd[0], video_cmd[1:])
+
+        self._live_audio_process = QProcess(self)
+        self._live_audio_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._live_audio_process.readyReadStandardOutput.connect(
+            lambda: self._live_read_output(self._live_audio_process, "áudio"))
+        self._live_audio_process.finished.connect(self._live_on_audio_finished)
+        self._live_audio_process.start(audio_cmd[0], audio_cmd[1:])
+
+        self._live_recording = True
+        self.live_start_btn.setText("⏹ Parar gravação")
+        self.live_status.setText("● Conectando à live (vídeo + áudio)…")
+        self.live_log.appendPlainText(f"Gravando em: {self._live_dir}")
+
+    def _live_read_output(self, process: QProcess, tag: str) -> None:
+        data = bytes(process.readAllStandardOutput())
+        try:
+            output = data.decode("utf-8")
+        except UnicodeDecodeError:
+            output = data.decode("cp1252", errors="replace")
+        for line in output.splitlines():
+            line = line.strip()
+            # Filtra o spam de fragmentos; mantém o resto
+            if line and "Fragment" not in line and "ETA" not in line:
+                self.live_log.appendPlainText(f"[{tag}] {line}")
+
+    def _live_on_ytdlp_finished(self, code: int, status: QProcess.ExitStatus) -> None:
+        self._live_recording = False
+        self.live_start_btn.setText("⏺ Gravar live")
+        self.live_status.setText("Gravação encerrada. Você ainda pode marcar períodos e cortar normalmente.")
+        self.live_log.appendPlainText("Gravação de vídeo encerrada.")
+
+    def _live_on_audio_finished(self, code: int, status: QProcess.ExitStatus) -> None:
+        if code != 0 and self._live_recording:
+            self.live_log.appendPlainText(
+                "⚠️ Download de áudio separado terminou com erro — o áudio pode estar embutido no vídeo.")
+        else:
+            self.live_log.appendPlainText("Gravação de áudio encerrada.")
+
+    def _live_files(self) -> tuple[Path | None, Path | None]:
+        """Devolve (vídeo, áudio_separado). Áudio None quando o vídeo já tem áudio."""
+        if not self._live_dir or not self._live_dir.exists():
+            return None, None
+        # Formato atual: downloads separados video.* e audio.*
+        video = next((p for p in (self._live_dir / f"video.{ext}" for ext in ("mp4", "mkv", "webm", "ts"))
+                      if p.exists()), None)
+        audio = next((p for p in (self._live_dir / f"audio.{ext}" for ext in ("m4a", "webm", "mp4", "opus"))
+                      if p.exists()), None)
+        if video is not None:
+            return video, audio
+        # Compatibilidade com gravações antigas (live.* mesclado ou fragmentado)
+        for name in ("live.mp4", "live.mkv", "live.webm", "live.ts"):
+            merged = self._live_dir / name
+            if merged.exists():
+                return merged, None
+        videos = sorted(self._live_dir.glob("live.f*.mp4"))
+        audios = sorted(self._live_dir.glob("live.f*.m4a"))
+        video = videos[0] if videos else (audios[0] if audios else None)
+        audio = audios[0] if audios else None
+        return video, audio
+
+    # ── Preview ──
+
+    def _live_load_preview(self, keep_position: bool = False, go_end: bool = False) -> None:
+        video, audio = self._live_files()
+        if video is None:
+            QMessageBox.information(self, APP_NAME, "Ainda não há gravação para mostrar. Inicie a gravação primeiro.")
+            return
+        previous_ms = self.live_vlc_player.get_time() if keep_position else 0
+        # Se já sabemos que o VLC não toca o áudio separado, vai direto pro remux
+        if audio is not None and self._live_needs_remux:
+            self._live_remux_goal = "end" if go_end else previous_ms
+            self._live_start_preview_remux()
+            return
+        self.live_vlc_player.stop()
+        self._live_duration = 0.0
+        self.live_vlc_media = self.vlc_instance.media_new(str(video))
+        if audio is not None:
+            try:
+                self.live_vlc_media.add_option(f":input-slave={audio.as_uri()}")
+            except Exception:
+                pass
+        self.live_vlc_player.set_media(self.live_vlc_media)
+        hwnd = self.live_video_frame.winId()
+        if hwnd:
+            self.live_vlc_player.set_hwnd(int(hwnd))
+        self.live_vlc_player.play()
+        self.live_play_button.setText("❚❚")
+        self.live_vlc_media.parse_with_options(vlc.MediaParseFlag.local, -1)
+        if audio is not None:
+            # Tenta anexar o áudio pelo player e depois confere se funcionou
+            try:
+                slave_type = getattr(vlc.MediaSlaveType, "audio", 1)
+                QTimer.singleShot(800, lambda: self.live_vlc_player.add_slave(slave_type, audio.as_uri(), True))
+            except Exception:
+                pass
+            self._live_remux_goal = "end" if go_end else previous_ms
+            QTimer.singleShot(3000, self._live_audio_fixup)
+        if go_end:
+            QTimer.singleShot(900, lambda: self.live_vlc_player.set_time(max(0, self.live_vlc_player.get_length() - 5000)))
+        elif keep_position and previous_ms > 0:
+            QTimer.singleShot(900, lambda: self.live_vlc_player.set_time(previous_ms))
+
+    def _live_audio_fixup(self) -> None:
+        """Confere se a prévia tem áudio; se não tiver, remuxa num arquivo único."""
+        if self.live_vlc_player.get_media() is None:
+            return
+        video, audio = self._live_files()
+        if audio is None:
+            return  # arquivo único, áudio embutido
+        count = self.live_vlc_player.audio_get_track_count()
+        if count and count > 0:
+            # Faixa existe mas pode estar desselecionada
+            if self.live_vlc_player.audio_get_track() == -1:
+                try:
+                    for track_id, _name in self.live_vlc_player.audio_get_track_description():
+                        if track_id != -1:
+                            self.live_vlc_player.audio_set_track(track_id)
+                            break
+                except Exception:
+                    pass
+            return
+        # Sem áudio: lembra a posição atual e parte para o remux
+        self._live_needs_remux = True
+        self._live_remux_goal = self.live_vlc_player.get_time()
+        self._live_start_preview_remux()
+
+    def _live_start_preview_remux(self) -> None:
+        if self._live_remux_running:
+            return
+        video, audio = self._live_files()
+        if video is None or audio is None:
+            return
+        self._live_remux_running = True
+        self._live_remux_count += 1
+        # Alterna o nome para não esbarrar em lock de arquivo do VLC
+        preview = self._live_dir / f"preview_{self._live_remux_count % 2}.mkv"
+        # O áudio baixa muito mais rápido que o vídeo; corta a prévia no menor
+        # dos dois para a timeline não mostrar tempo que ainda não tem vídeo.
+        video_dur = self._live_probe_duration(video)
+        audio_dur = self._live_probe_duration(audio)
+        durations = [d for d in (video_dur, audio_dur) if d > 0]
+        limit = min(durations) if len(durations) == 2 else 0.0
+        self.live_log.appendPlainText(
+            f"🔧 Preparando prévia com áudio… (vídeo baixado: {as_time(video_dur)} | áudio: {as_time(audio_dur)})")
+        self.live_vlc_player.stop()
+        command = ["ffmpeg", "-y", "-i", str(video), "-i", str(audio),
+                   "-map", "0:v", "-map", "1:a", "-c", "copy"]
+        if limit > 0:
+            command += ["-t", str(limit)]
+        command += [str(preview)]
+        self._live_remux_process = QProcess(self)
+        self._live_remux_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._live_remux_process.finished.connect(
+            lambda code, status: self._live_on_preview_remux(code, preview))
+        self._live_remux_process.start(command[0], command[1:])
+
+    def _live_on_preview_remux(self, code: int, preview: Path) -> None:
+        self._live_remux_running = False
+        if code != 0 or not preview.exists():
+            self.live_log.appendPlainText("❌ Falha no remux da prévia.")
+            return
+        self.live_log.appendPlainText("✅ Prévia com áudio pronta.")
+        self._live_duration = 0.0
+        self.live_vlc_media = self.vlc_instance.media_new(str(preview))
+        self.live_vlc_player.set_media(self.live_vlc_media)
+        hwnd = self.live_video_frame.winId()
+        if hwnd:
+            self.live_vlc_player.set_hwnd(int(hwnd))
+        self.live_vlc_player.play()
+        self.live_play_button.setText("❚❚")
+        self.live_vlc_media.parse_with_options(vlc.MediaParseFlag.local, -1)
+        goal = self._live_remux_goal
+        if goal == "end":
+            QTimer.singleShot(900, lambda: self.live_vlc_player.set_time(max(0, self.live_vlc_player.get_length() - 5000)))
+        elif isinstance(goal, int) and goal > 0:
+            QTimer.singleShot(900, lambda: self.live_vlc_player.set_time(goal))
+
+    def _live_go_live(self) -> None:
+        self._live_load_preview(go_end=True)
+
+    def _live_set_speed(self, rate: float) -> None:
+        self.live_vlc_player.set_rate(rate)
+        labels = {1.0: "1×", 1.5: "1.5×", 2.0: "2×"}
+        for btn in self.live_speed_buttons:
+            btn.setObjectName("speedActive" if btn.text() == labels[rate] else "speedButton")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def _live_toggle_play(self) -> None:
+        if self.live_vlc_player.get_media() is None:
+            self._live_load_preview()
+            return
+        if self.live_vlc_player.is_playing():
+            self.live_vlc_player.pause()
+            self.live_play_button.setText("▶")
+        else:
+            self.live_vlc_player.play()
+            self.live_play_button.setText("❚❚")
+
+    def _live_poll_vlc(self) -> None:
+        if self.live_vlc_player.get_media() is None:
+            return
+        length = self.live_vlc_player.get_length()
+        if length > 0 and int(length) != int(self._live_duration * 1000):
+            self._live_duration = length / 1000
+            self.live_timeline.setRange(0, length)
+        pos = self.live_vlc_player.get_time()
+        if not self.live_timeline.isSliderDown():
+            self.live_timeline.setValue(pos)
+        self.live_time_label.setText(f"{as_time(pos / 1000)} / {as_time(self._live_duration)}")
+
+    def _live_pick_image(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(self, "Selecionar imagem do topo", "", "Imagens (*.png *.jpg *.jpeg *.webp)")
+        if filename:
+            self._live_fixed_image_path = Path(filename)
+            self.live_image_label.setText(self._live_fixed_image_path.name)
+
+    def _live_probe_duration(self, path: Path | None) -> float:
+        """Duração (s) já gravada num arquivo em crescimento, via ffprobe."""
+        if not path or not path.exists():
+            return 0.0
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, timeout=10)
+            return float(result.stdout.strip())
+        except (subprocess.SubprocessError, ValueError):
+            return 0.0
+
+    def _live_update_status(self) -> None:
+        if not self._live_recording:
+            return
+        video, audio = self._live_files()
+        video_dur = self._live_probe_duration(video)
+        audio_dur = self._live_probe_duration(audio)
+        if video_dur or audio_dur:
+            self.live_status.setText(
+                f"● Gravando — vídeo baixado: {as_time(video_dur)} | áudio: {as_time(audio_dur)} "
+                "(só dá para cortar até onde o vídeo chegou)")
+
+    def _live_cut_busy(self, busy: bool) -> None:
+        self.live_export_btn.setDisabled(busy)
+        self.live_cut_progress.setRange(0, 0 if busy else 1)
+        if not busy:
+            self.live_cut_progress.setValue(0)
+
+    def _live_cut_read(self, process: QProcess) -> None:
+        data = bytes(process.readAllStandardOutput())
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("cp1252", errors="replace")
+        text = text.strip()
+        if text:
+            self.live_cut_log.appendPlainText(text)
+
+    # ── Exportação de corte da live ──
+
+    def _live_export_cut(self) -> None:
+        video, audio = self._live_files()
+        if video is None:
+            QMessageBox.warning(self, APP_NAME, "Nenhuma gravação disponível ainda.")
+            return
+        start = self.live_cut_start.value()
+        end = self.live_cut_end.value()
+        if end <= start:
+            QMessageBox.warning(self, APP_NAME, "O fim do corte precisa ser depois do início.")
+            return
+        mode = self.live_cut_format.currentData()
+        if mode == "imagem" and not (self._live_fixed_image_path and self._live_fixed_image_path.exists()):
+            QMessageBox.warning(self, APP_NAME, "Escolha a imagem do topo para o formato 'imagem fixa'.")
+            return
+        # O áudio baixa na frente do vídeo: só deixa cortar o que o vídeo já tem
+        video_dur = self._live_probe_duration(video)
+        if video_dur > 0 and end > video_dur + 1:
+            QMessageBox.warning(
+                self, APP_NAME,
+                f"O vídeo só foi baixado até {as_time(video_dur)} (o áudio baixa mais rápido).\n"
+                f"Marque o fim do corte antes disso, ou aguarde o download do vídeo alcançar.")
+            return
+        titulo = self.live_cut_title.text().strip()
+        self._live_cut_count += 1
+        safe_label = "".join(c for c in titulo if c.isalnum() or c in " _-").strip()[:80] or f"corte_live_{self._live_cut_count:02d}"
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        self._live_pending = {
+            "start": start, "end": end, "mode": mode, "titulo": titulo,
+            "video": video, "audio": audio,
+            "output": OUTPUT_DIR / f"{safe_label}.mp4",
+        }
+        self._live_cut_busy(True)
+        self.live_cut_log.clear()
+
+        # Fase 1: legendas do trecho com Whisper (se ligado)
+        if self.live_captions_check.isChecked():
+            self._whisper_bin = whisper_path()
+            if not self._whisper_bin:
+                self.live_cut_log.appendPlainText("⚠️ Whisper não encontrado; exportando sem legendas.")
+                self._live_run_cut(None)
+                return
+            source = audio or video
+            wav = self._live_dir / f"cut_{self._live_cut_count:02d}.wav"
+            self._live_pending["wav"] = wav
+            self.live_cut_log.appendPlainText(f"1/3 🎙️ Extraindo áudio de {as_time(start)} — {as_time(end)}…")
+            command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start),
+                       "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(wav)]
+            proc = QProcess(self)
+            proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
+            proc.finished.connect(self._live_on_cut_audio)
+            self._live_cut_process = proc
+            proc.start(command[0], command[1:])
+        else:
+            self._live_run_cut(None)
+
+    def _live_on_cut_audio(self, code: int, status: QProcess.ExitStatus) -> None:
+        wav = self._live_pending.get("wav")
+        if code != 0 or not wav or not wav.exists():
+            self.live_cut_log.appendPlainText("⚠️ Não deu para extrair o áudio do trecho; exportando sem legendas.")
+            self._live_run_cut(None)
+            return
+        self.live_cut_log.appendPlainText("2/3 🎙️ Transcrevendo com Whisper (modelo base)…")
+        command = [self._whisper_bin, str(wav), "--model", "base", "--language", "Portuguese",
+                   "--task", "transcribe", "--output_format", "srt", "--output_dir", str(self._live_dir)]
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
+        proc.finished.connect(self._live_on_cut_whisper)
+        self._live_cut_process = proc
+        proc.start(command[0], command[1:])
+
+    def _live_on_cut_whisper(self, code: int, status: QProcess.ExitStatus) -> None:
+        wav = self._live_pending.get("wav")
+        srt = wav.with_suffix(".srt") if wav else None
+        if code == 0 and srt and srt.exists():
+            shorten_srt_captions(srt)
+            self._live_run_cut(srt)
+        elif code != 0:
+            self.live_cut_log.appendPlainText(
+                f"⚠️ Whisper terminou com erro (código {code}); exportando sem legendas.")
+            self._live_run_cut(None)
+        else:
+            self.live_cut_log.appendPlainText(
+                "⚠️ Whisper rodou mas não gerou o arquivo de legenda; exportando sem legendas.")
+            self._live_run_cut(None)
+
+    def _live_run_cut(self, srt_path: Path | None) -> None:
+        d = self._live_pending
+        start, end, mode, titulo = d["start"], d["end"], d["mode"], d["titulo"]
+        video, audio, output = d["video"], d["audio"], d["output"]
+        length = end - start
+
+        has_logo = bool(self.logo_path and self.logo_path.exists())
+        has_image = mode == "imagem"
+        audio_idx = 1 if audio is not None else None
+        next_idx = 2 if audio is not None else 1
+        logo_idx = next_idx if has_logo else None
+        next_idx += 1 if has_logo else 0
+        image_idx = next_idx if has_image else None
+
+        chain = build_clip_filter(mode, has_image, image_input=image_idx or 1)
+        current = "base"
+        if has_logo:
+            locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
+            x, y = locations[self.csv_logo_position.currentIndex()]
+            chain += f";[{logo_idx}:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
+            current = "with_logo"
+        if srt_path is not None and srt_path.exists():
+            style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
+                     "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
+                     "BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV=60")
+            chain += (f";[{current}]subtitles=filename='{filter_path(srt_path)}':"
+                      f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
+            current = "captioned"
+        if titulo:
+            font = "C\\:/Windows/Fonts/arialbd.ttf"
+            chain += (f";[{current}]drawtext=fontfile='{font}':text='{escape_drawtext(titulo)}':"
+                      f"x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]")
+            current = "text"
+        chain += f";[{current}]format=yuv420p[outv]"
+
+        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length), "-i", str(video)]
+        if audio is not None:
+            command += ["-ss", str(start), "-t", str(length), "-i", str(audio)]
+        if has_logo:
+            command += ["-loop", "1", "-i", str(self.logo_path)]
+        if has_image:
+            command += ["-loop", "1", "-i", str(self._live_fixed_image_path)]
+        audio_map = f"{audio_idx}:a?" if audio_idx is not None else "0:a?"
+        command += [
+            "-filter_complex", chain, "-map", "[outv]", "-map", audio_map,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
+            str(output),
+        ]
+
+        self.live_cut_log.appendPlainText(f"3/3 ✂️ Exportando corte {as_time(start)} — {as_time(end)} ({mode})…")
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
+        proc.finished.connect(lambda code, status: self._live_on_cut_finished(code, status, output))
+        self._live_cut_process = proc
+        proc.start(command[0], command[1:])
+
+    def _live_on_cut_finished(self, code: int, status: QProcess.ExitStatus, output: Path) -> None:
+        self._live_cut_busy(False)
+        wav = self._live_pending.get("wav")
+        if wav:
+            Path(wav).unlink(missing_ok=True)
+        if code == 0 and status == QProcess.ExitStatus.NormalExit:
+            self.live_cut_log.appendPlainText(f"✅ Corte exportado → {output}")
+            self.live_log.appendPlainText(f"✅ Corte exportado → {output.name}")
+        else:
+            self.live_cut_log.appendPlainText(
+                f"❌ Falha ao exportar {output.name} — veja as mensagens acima para o motivo.")
 
 
 if __name__ == "__main__":

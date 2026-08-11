@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import re
 import shutil
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -42,6 +43,26 @@ def yt_dlp_path() -> Path | None:
     return Path(found) if found else None
 
 
+def whisper_path() -> str | None:
+    """
+    Localiza o executável do Whisper.
+
+    `shutil.which("whisper")` falha quando o app roda pelo python.exe do venv
+    sem o ambiente ativado (o Scripts/ não está no PATH). Por isso procuramos
+    também ao lado do interpretador atual — que é onde o pip instala o
+    whisper.exe dentro do venv.
+    """
+    found = shutil.which("whisper")
+    if found:
+        return found
+    scripts_dir = Path(sys.executable).parent
+    for name in ("whisper.exe", "whisper"):
+        candidate = scripts_dir / name
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def filter_path(path: Path) -> str:
     """Escapa um caminho local para uso dentro de filtro FFmpeg."""
     value = path.resolve().as_posix().replace(":", r"\:")
@@ -51,14 +72,20 @@ def filter_path(path: Path) -> str:
 def escape_drawtext(text: str) -> str:
     """Escapa texto para usar em filtro drawtext do FFmpeg.
 
-    Usa syntaxe: text='...' com escape de caracteres especiais.
+    Usa syntaxe: text="..." com escape de caracteres especiais.
     """
     # Escape order: backslash first, then outros
     text = text.replace("\\", "\\\\")  # \ -> \\
-    text = text.replace("'", "\\'")    # ' -> \'
+    text = text.replace('"', '\\"')    # " -> \"
     text = text.replace(":", "\\:")    # : -> \:
     text = text.replace("%", "\\%")    # % -> \%
     return text
+
+
+def format_title_for_video(title: str) -> str:
+    """Processa título para exibição em vídeo: UPPERCASE + escape para FFmpeg."""
+    title = title.strip().upper()
+    return escape_drawtext(title)
 
 
 def srt_seconds(value: str) -> float:
@@ -258,25 +285,28 @@ def parse_csv_moments(csv_path: Path) -> list[dict]:
     return rows
 
 
-def build_clip_filter(mode: str, has_image: bool) -> str:
+def build_clip_filter(mode: str, has_image: bool, image_input: int = 1) -> str:
     """
     Monta a cadeia filter_complex que converte o vídeo (entrada 0) para 9:16,
-    terminando no rótulo [base]. Quando mode=="imagem", a entrada 1 é a imagem
-    fixa que vai no topo.
+    terminando no rótulo [base]. Quando mode=="imagem", a entrada `image_input`
+    é a imagem fixa que vai no topo.
     """
     if mode == "estender":
         return ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
                 "crop=1080:1920,setsar=1[base]")
     if mode == "transparente":
+        # Fundo desfocado em baixa resolução (540x960) e depois ampliado — o
+        # resultado é visualmente igual, mas ~6x mais rápido que desfocar em
+        # 1080x1920.
         return ("[0:v]split=2[bg][fg];"
-                "[bg]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,boxblur=20:10[blur];"
+                "[bg]scale=540:960:force_original_aspect_ratio=increase,"
+                "crop=540:960,boxblur=10:2,scale=1080:1920[blur];"
                 "[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fit];"
                 "[blur][fit]overlay=(W-w)/2:(H-h)/2,setsar=1[base]")
     if mode == "imagem" and has_image:
         # Dois blocos 16:9 (1080x608) empilhados: imagem em cima, corte embaixo,
         # centralizados no quadro 1080x1920 com bordas pretas.
-        return ("[1:v]scale=1080:608:force_original_aspect_ratio=decrease,"
+        return (f"[{image_input}:v]scale=1080:608:force_original_aspect_ratio=decrease,"
                 "pad=1080:608:(ow-iw)/2:(oh-ih)/2:black,setsar=1[top];"
                 "[0:v]scale=1080:608:force_original_aspect_ratio=decrease,"
                 "pad=1080:608:(ow-iw)/2:(oh-ih)/2:black,setsar=1[bot];"
@@ -284,6 +314,44 @@ def build_clip_filter(mode: str, has_image: bool) -> str:
                 "[stack]pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1[base]")
     # original / longo / fallback: mantém o vídeo como está.
     return "[0:v]null[base]"
+
+
+def parse_srt_segments(path: Path) -> list[tuple[float, float, str]]:
+    """Lê um SRT e devolve [(inicio_s, fim_s, texto), ...]."""
+    try:
+        content = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        content = path.read_text(encoding="cp1252", errors="replace")
+    time_pattern = re.compile(r"(\d\d:\d\d:\d\d[,.]\d\d\d)\s+-->\s+(\d\d:\d\d:\d\d[,.]\d\d\d)")
+    segments: list[tuple[float, float, str]] = []
+    for entry in re.split(r"\r?\n\s*\r?\n", content.strip()):
+        lines = [line.strip() for line in entry.splitlines() if line.strip()]
+        time_index = next((i for i, line in enumerate(lines) if time_pattern.fullmatch(line)), None)
+        if time_index is None:
+            continue
+        match = time_pattern.fullmatch(lines[time_index])
+        text = " ".join(lines[time_index + 1:]).strip()
+        if text:
+            segments.append((srt_seconds(match.group(1)), srt_seconds(match.group(2)), text))
+    return segments
+
+
+def segments_to_srt(segments: list[tuple[float, float, str]], clip_start: float,
+                    clip_end: float, output_path: Path) -> bool:
+    """
+    Filtra os segmentos que caem dentro de [clip_start, clip_end] e escreve um
+    SRT com tempos relativos ao início do corte. Devolve False se nada caiu no
+    intervalo.
+    """
+    selected = [(max(s, clip_start) - clip_start, min(e, clip_end) - clip_start, text)
+                for s, e, text in segments if e > clip_start and s < clip_end]
+    if not selected:
+        return False
+    lines: list[str] = []
+    for i, (s, e, text) in enumerate(selected, start=1):
+        lines.extend([str(i), f"{srt_timestamp(s)} --> {srt_timestamp(e)}", text, ""])
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    return True
 
 
 def build_srt_for_clip(start_s: float, end_s: float, text: str, output_path: Path) -> None:

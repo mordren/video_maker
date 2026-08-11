@@ -77,4 +77,15 @@ inicio,fim,titulo,formato,imagem,comentario
 
 Sem cabeçalho, o app aceita o formato antigo por posição: `inicio, fim, titulo, legenda`.
 
+## Cortes de Live (aba 🔴 Live)
+
+Cole a URL de uma live do YouTube e clique em **⏺ Gravar live**:
+
+- A gravação usa `yt-dlp --live-from-start`, ou seja, baixa **desde o começo da live** mesmo que você entre atrasado. Os arquivos ficam em `Vídeos\CortaLegenda\Lives\live_<data>` e crescem continuamente enquanto a live roda.
+- No player, **🔄 Atualizar** recarrega o arquivo (pega o trecho mais novo mantendo a posição), **⏩ Ao vivo** pula para o ponto mais recente, **⏪** volta 10s e os botões **1× / 1.5× / 2×** mudam a velocidade — útil para alcançar o ao-vivo assistindo rápido.
+- Em **Novo corte** você marca início/fim (com **📍 agora** na posição do player), define o título (queimado na tela), o formato (estender / transparente / imagem fixa / original) e clica **✂️ Exportar corte** — tudo **sem esperar a live acabar**.
+- Na exportação, o app extrai o áudio do período marcado, gera as legendas com **Whisper** (sincronizadas, estilo Montserrat amarela) e queima no vídeo junto com logo e título. Dá para desligar as legendas no checkbox.
+
+Observação: evite marcar o fim do corte nos últimos segundos do ao-vivo — deixe uns 10s de folga para o trecho já estar gravado em disco.
+
 Use somente links de vídeos que você tem autorização para baixar e reutilizar, respeitando os termos da plataforma e os direitos autorais.
