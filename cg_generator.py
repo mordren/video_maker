@@ -101,24 +101,69 @@ def svg_to_png(svg_content: str, output_path: Path) -> bool:
         svg_path.unlink(missing_ok=True)
 
 
-def create_cg_overlay(title: str, output_dir: Path) -> Path | None:
+def compose_with_icon(cg_png_path: Path, icon_path: Path, output_path: Path) -> bool:
+    """Compõe o CG PNG com o ícone usando FFmpeg.
+
+    Args:
+        cg_png_path: Caminho do PNG do CG base
+        icon_path: Caminho do PNG do ícone
+        output_path: Caminho para salvar PNG final
+
+    Returns:
+        True se sucesso, False caso contrário
+    """
+    if not icon_path.exists():
+        return False
+
+    try:
+        # Usa FFmpeg para fazer overlay do ícone no CG
+        # O ícone fica no canto superior direito
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(cg_png_path),
+            "-i", str(icon_path),
+            "-filter_complex", "[0:v][1:v]overlay=x=(W-w-30):y=15[out]",
+            "-map", "[out]",
+            "-c:v", "png",
+            str(output_path)
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def create_cg_overlay(title: str, output_dir: Path, icon_path: Path | None = None) -> Path | None:
     """Cria arquivo PNG com CG do Informativo Nacional.
 
     Args:
         title: Título do trecho (será convertido para UPPERCASE)
         output_dir: Diretório para salvar PNG
+        icon_path: Caminho opcional do PNG do ícone
 
     Returns:
         Caminho do PNG ou None se falhar
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    cg_path = output_dir / "cg_overlay.png"
+    cg_base = output_dir / "cg_base.png"
+    cg_final = output_dir / "cg_overlay.png"
 
     # Garante que o título está em UPPERCASE
     title = title.upper().strip()
 
+    # Gera SVG e converte para PNG
     svg = generate_cg_svg(title)
-    if svg_to_png(svg, cg_path):
-        return cg_path
+    if not svg_to_png(svg, cg_base):
+        return None
+
+    # Se houver ícone, compõe com o CG base
+    if icon_path and icon_path.exists():
+        if compose_with_icon(cg_base, icon_path, cg_final):
+            cg_base.unlink(missing_ok=True)
+            return cg_final
+    else:
+        # Sem ícone, retorna o CG base
+        cg_base.rename(cg_final)
+        return cg_final
 
     return None

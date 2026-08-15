@@ -34,6 +34,8 @@ from utils import (
     TimestampInput,
 )
 
+from cg_generator import create_cg_overlay
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -44,6 +46,7 @@ class MainWindow(QMainWindow):
         self.logo_path: Path | None = DEFAULT_LOGO if DEFAULT_LOGO.exists() else None
         self.fixed_image_path: Path | None = None
         self.caption_path: Path | None = None
+        self.cg_icon_path: Path | None = Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png") if Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png").exists() else None
         self.duration = 0.0
         self.work_dir = Path(tempfile.mkdtemp(prefix="corta_legenda_"))
         self.process: QProcess | None = None
@@ -816,6 +819,10 @@ class MainWindow(QMainWindow):
         self.csv_captions = QCheckBox("Gerar legendas com Whisper (sincronizadas por corte)")
         self.csv_captions.setChecked(True)
         overlay_form.addRow(self.csv_captions)
+        self.csv_use_cg = QCheckBox("Usar CG 'Informativo Nacional' (overlay no rodapé)")
+        self.csv_use_cg.setChecked(True if self.cg_icon_path else False)
+        self.csv_use_cg.setEnabled(bool(self.cg_icon_path))
+        overlay_form.addRow(self.csv_use_cg)
         panel.addWidget(overlay_box)
 
         # Preview
@@ -1125,7 +1132,12 @@ class MainWindow(QMainWindow):
 
         has_image = mode == "imagem"
         has_logo = bool(self.logo_path and self.logo_path.exists())
+        has_cg = self.csv_use_cg.isChecked() and self.cg_icon_path
+
+        # Calcula o índice de entrada do FFmpeg
         image_input = 2 if has_logo else 1
+        cg_input = image_input + (1 if has_image else 0)
+
         chain = build_clip_filter(mode, has_image, image_input=image_input)
         current = "base"
 
@@ -1147,8 +1159,19 @@ class MainWindow(QMainWindow):
                       f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
             current = "captioned"
 
-        # Aplicar texto: usar título do corte
-        if titulo.strip():
+        # Aplicar CG "Informativo Nacional" se ativado
+        cg_path = None
+        if has_cg:
+            cg_path = create_cg_overlay(titulo, self.work_dir, self.cg_icon_path)
+            if cg_path:
+                # CG fica no rodapé (Y = altura_video - 240)
+                chain += f";[{current}][{cg_input}:v]overlay=x=0:y=main_h-240[with_cg]"
+                current = "with_cg"
+            else:
+                self.csv_log.appendPlainText("   ⚠️ Erro ao gerar CG; continuando sem overlay.")
+
+        # Aplicar texto: usar título do corte (quando não há CG)
+        if titulo.strip() and not has_cg:
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             text = format_title_for_video(titulo)
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
@@ -1161,6 +1184,8 @@ class MainWindow(QMainWindow):
             command += ["-loop", "1", "-i", str(self.logo_path)]
         if has_image:
             command += ["-loop", "1", "-i", str(m["image_path"])]
+        if cg_path:
+            command += ["-loop", "1", "-i", str(cg_path)]
         command += [
             "-filter_complex", chain, "-map", "[outv]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
