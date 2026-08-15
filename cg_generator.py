@@ -30,6 +30,11 @@ _CHAR_RATIO = 0.62
 _LINE_RATIO = 1.15
 
 
+def _text_width(text: str, size: int) -> float:
+    """Largura estimada do texto (Arial bold) em pixels."""
+    return len(text) * size * _CHAR_RATIO
+
+
 def _fit_fontsize(text: str, max_width: int, max_size: int, min_size: int) -> int:
     """Maior fontsize (Arial bold) em que `text` cabe em `max_width`."""
     if not text:
@@ -38,33 +43,72 @@ def _fit_fontsize(text: str, max_width: int, max_size: int, min_size: int) -> in
     return max(min_size, min(max_size, ideal))
 
 
+def _wrap_lines(text: str, n: int) -> list[str]:
+    """Quebra `text` em até `n` linhas equilibradas por comprimento."""
+    words = text.split()
+    if len(words) <= 1:
+        return [text]
+    target = len(text) / n            # comprimento alvo por linha
+    lines: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for w in words:
+        # Fecha a linha quando passar do alvo, deixando as demais palavras
+        # para as próximas linhas (nunca mais que n linhas).
+        if cur and cur_len + len(w) + 1 > target and len(lines) < n - 1:
+            lines.append(" ".join(cur))
+            cur, cur_len = [w], len(w)
+        else:
+            cur.append(w)
+            cur_len += len(w) + 1
+    if cur:
+        lines.append(" ".join(cur))
+    return lines
+
+
+def _fit_title(title: str, avail: int) -> tuple[list[str], int]:
+    """Escolhe quebra e fonte do título p/ caber na largura sem ser cortado.
+
+    Tenta 1 linha; se ficaria pequena demais, quebra em 2 linhas.
+    Devolve (linhas, fontsize).
+    """
+    # 1 linha, se a fonte resultante for confortável (>= 34).
+    one = _fit_fontsize(title, avail, max_size=54, min_size=34)
+    if _text_width(title, one) <= avail:
+        return [title], one
+    # 2 linhas equilibradas.
+    lines = _wrap_lines(title, 2)
+    longest = max(lines, key=len)
+    size = _fit_fontsize(longest, avail, max_size=46, min_size=22)
+    return lines, size
+
+
 def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
     """Monta a cadeia de filtros do lower-third de fundo branco.
 
     Layout: logo à esquerda, faixa de acento verde/amarelo, e à direita o
-    subtítulo (verde) sobre o título (preto). O tamanho das fontes é calculado
-    a partir do comprimento do texto e o bloco (subtítulo + título) é
-    centralizado verticalmente — assim textos curtos e longos ficam sempre
-    distribuídos da mesma forma.
+    título (preto, grande) em cima e o subtítulo (verde, menor) embaixo. As
+    fontes são calculadas pelo comprimento do texto e o título quebra em duas
+    linhas quando é longo, para nunca ser cortado. O bloco inteiro é
+    centralizado na vertical.
     """
     title = title.upper().strip()
     subtitle = subtitle.upper().strip()
-    t = escape_drawtext(title)
     sub = escape_drawtext(subtitle)
 
     text_x = logo_w + 34          # início do texto, depois do logo + acento
     avail = CG_WIDTH - text_x - 30  # largura disponível até a margem direita
 
-    # Fontes calculadas pelo comprimento (subtítulo é sempre menor que o título).
-    title_size = _fit_fontsize(title, avail, max_size=54, min_size=24)
+    title_lines, title_size = _fit_title(title, avail)
     sub_size = _fit_fontsize(subtitle, avail, max_size=32, min_size=20) if subtitle else 0
 
     # Altura de cada linha e do bloco inteiro, para centralizar na vertical.
     sub_h = int(sub_size * _LINE_RATIO) if subtitle else 0
-    title_h = int(title_size * _LINE_RATIO)
+    title_line_h = int(title_size * _LINE_RATIO)
+    title_h = title_line_h * len(title_lines)
     accent_gap = 14 if subtitle else 0   # espaço p/ o detalhe amarelo
-    block_h = sub_h + accent_gap + title_h
-    top = max(16, (LT_HEIGHT - block_h) // 2)
+    block_h = title_h + accent_gap + sub_h
+    top = max(10, (LT_HEIGHT - block_h) // 2)
 
     parts = [
         # Faixa vertical verde separando o logo do texto
@@ -72,23 +116,24 @@ def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
         # Faixa vertical amarela fininha colada na verde
         f"drawbox=x={logo_w + 18}:y=20:w=4:h={LT_HEIGHT - 40}:color={AMARELO}@1:t=fill",
     ]
-    title_y = top
+    # Título (grande, preto) no topo.
+    for i, line in enumerate(title_lines):
+        parts.append(
+            f"drawtext=fontfile='{_FONT}':text='{escape_drawtext(line)}':"
+            f"x={text_x}:y={top + i * title_line_h}:"
+            f"fontsize={title_size}:fontcolor=black"
+        )
+    # Subtítulo (verde, menor) embaixo, com o detalhe amarelo acima dele.
     if subtitle:
-        sub_y = top
-        accent_y = sub_y + sub_h + 2
-        title_y = accent_y + accent_gap
+        accent_y = top + title_h + 4
+        sub_y = accent_y + accent_gap
+        parts.append(
+            f"drawbox=x={text_x}:y={accent_y}:w=90:h=5:color={AMARELO}@1:t=fill"
+        )
         parts.append(
             f"drawtext=fontfile='{_FONT}':text='{sub}':x={text_x}:y={sub_y}:"
             f"fontsize={sub_size}:fontcolor={VERDE}"
         )
-        # Detalhe amarelo entre subtítulo e título
-        parts.append(
-            f"drawbox=x={text_x}:y={accent_y}:w=90:h=5:color={AMARELO}@1:t=fill"
-        )
-    parts.append(
-        f"drawtext=fontfile='{_FONT}':text='{t}':x={text_x}:y={title_y}:"
-        f"fontsize={title_size}:fontcolor=black"
-    )
     return ",".join(parts)
 
 

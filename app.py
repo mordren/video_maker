@@ -597,20 +597,22 @@ class MainWindow(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(self, "Salvar vídeo final", str(default), "MP4 (*.mp4)")
         if not filename: return
         start, length = self.cut_values()
-        # Logo (se houver) é a entrada 1; a imagem fixa vem logo depois.
-        self._image_input_index = 2 if self.logo_path else 1
-        # Gera o lower-third (se ativado) e calcula o índice da sua entrada no FFmpeg.
+        # Gera o lower-third (se ativado). Com ele, o logo do canto some
+        # (usa-se um ou outro), pois o lower-third já traz o logo à esquerda.
         self._cg_path = None
         if self.use_cg.isChecked() and self.cg_icon_path:
             self._cg_path = create_lower_third(
                 self.text_input.text(), self.subtitle_input.text(),
                 self.work_dir, self.cg_icon_path,
             )
-            cg_index = 1 + (1 if self.logo_path else 0) + (1 if mode == "vertical_image" else 0)
-            self._cg_input_index = cg_index
+        self._draw_logo = bool(self.logo_path) and not self._cg_path
+        # Logo (se desenhado) é a entrada 1; a imagem fixa vem logo depois.
+        self._image_input_index = 2 if self._draw_logo else 1
+        if self._cg_path:
+            self._cg_input_index = 1 + (1 if self._draw_logo else 0) + (1 if mode == "vertical_image" else 0)
         filters = self.video_filters()
         command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length), "-i", str(self.video_path)]
-        if self.logo_path: command += ["-loop", "1", "-i", str(self.logo_path)]
+        if self._draw_logo: command += ["-loop", "1", "-i", str(self.logo_path)]
         if mode == "vertical_image": command += ["-loop", "1", "-i", str(self.fixed_image_path)]
         if self._cg_path: command += ["-loop", "1", "-i", str(self._cg_path)]
         command += ["-filter_complex", filters, "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
@@ -624,7 +626,7 @@ class MainWindow(QMainWindow):
             chain, label = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920", "base"
         elif mode == "vertical_blur":
             chain = "[0:v]split=2[bg][fg];[bg]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,boxblur=10:2,scale=1080:1920[blur];[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fit]"
-            if self.logo_path:
+            if self._draw_logo:
                 x, y = locations[self.logo_position.currentIndex()]
                 chain += f";[1:v]scale={self.logo_size.value()}:-1[logo];[fit][logo]overlay={x}:{y}[fit_with_logo];[blur][fit_with_logo]overlay=(W-w)/2:(H-h)/2"
                 logo_applied = True
@@ -645,7 +647,7 @@ class MainWindow(QMainWindow):
             chain, label = "[0:v]null", "base"
         chain += f"[{label}]"
         current = label
-        if self.logo_path and not logo_applied:
+        if self._draw_logo and not logo_applied:
             x, y = locations[self.logo_position.currentIndex()]
             chain += f";[1:v]scale={self.logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
             current = "with_logo"
@@ -1157,18 +1159,21 @@ class MainWindow(QMainWindow):
         output = OUTPUT_DIR / f"{safe_label}.mp4"
 
         has_image = mode == "imagem"
-        has_logo = bool(self.logo_path and self.logo_path.exists())
 
-        # Calcula o índice de entrada do FFmpeg
-        image_input = 2 if has_logo else 1
-        cg_input = image_input + (1 if has_image else 0)
-
-        # Gera o lower-third (se ativado) antes de tudo, para saber se afasta a legenda.
+        # Gera o lower-third (se ativado) antes de tudo, para saber se afasta a
+        # legenda e se o logo do canto deve sumir (usa-se um ou outro).
         cg_path = None
         if self.csv_use_cg.isChecked() and self.cg_icon_path:
             cg_path = create_lower_third(titulo, m.get("subtitulo", ""), self.work_dir, self.cg_icon_path)
             if not cg_path:
                 self.csv_log.appendPlainText("   ⚠️ Erro ao gerar lower-third; continuando sem overlay.")
+
+        # Com lower-third ativo, o logo do canto não é desenhado.
+        has_logo = bool(self.logo_path and self.logo_path.exists()) and not cg_path
+
+        # Calcula o índice de entrada do FFmpeg
+        image_input = 2 if has_logo else 1
+        cg_input = image_input + (1 if has_image else 0)
 
         chain = build_clip_filter(mode, has_image, image_input=image_input)
         current = "base"
