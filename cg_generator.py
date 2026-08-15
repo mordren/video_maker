@@ -1,169 +1,93 @@
 """Gerador de CG (Graphics) estilo Informativo Nacional para sobreposição em vídeos.
 
 Design baseado nas cores da bandeira brasileira: verde, amarelo, azul e branco.
+O CG é montado diretamente com filtros nativos do FFmpeg (drawbox/drawtext),
+sem precisar de bibliotecas externas (Pillow) nem de suporte a SVG.
 """
 
 from pathlib import Path
 import subprocess
-import tempfile
+
+from utils import escape_drawtext
+
+# Cores (identidade visual da bandeira brasileira)
+VERDE = "#1B7E3E"
+AMARELO = "#FDD835"
+AZUL = "#002776"
+BRANCO = "#FFFFFF"
+FUNDO = "#141428"
+
+CG_WIDTH = 1080
+CG_HEIGHT = 240
+
+_FONT = "C\\:/Windows/Fonts/arialbd.ttf"
 
 
-def generate_cg_svg(title: str, width: int = 1080, height: int = 240) -> str:
-    """Gera SVG com design de jornal 'Informativo Nacional'.
-
-    Args:
-        title: Título do trecho (ex: "ZEMA JÁ PERDEU")
-        width: Largura da imagem (padrão 1080px)
-        height: Altura da imagem (padrão 240px - para ficar no rodapé do vídeo 9:16)
-
-    Returns:
-        String com SVG renderizado
-    """
-    # Cores baseadas na identidade visual (bandeira brasileira)
-    verde = "#1B7E3E"      # Verde da bandeira
-    amarelo = "#FDD835"    # Amarelo da bandeira
-    azul = "#002776"       # Azul da bandeira
-    branco = "#FFFFFF"     # Branco
-    cinza_escuro = "#1a1a2a"
-
-    # Altura das secções
-    altura_barra_topo = 12
-    altura_titulo = 80
-    altura_infos = 90
-
-    svg = f"""<?xml version="1.0" encoding="UTF-8"?>
-<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
-  <!-- Fundo principal (azul escuro) -->
-  <rect width="{width}" height="{height}" fill="{cinza_escuro}"/>
-
-  <!-- Barra verde superior (identidade visual) -->
-  <rect width="{width}" height="{altura_barra_topo}" fill="{verde}"/>
-
-  <!-- Barra verde na lateral esquerda -->
-  <rect width="12" height="{height}" fill="{verde}"/>
-
-  <!-- Barra amarela como divisor -->
-  <rect y="{altura_barra_topo + 90}" width="{width}" height="4" fill="{amarelo}"/>
-
-  <!-- Seção do nome do jornal -->
-  <!-- "INFORMATIVO" em branco grande -->
-  <text x="40" y="55" font-family="Arial, sans-serif" font-size="36" font-weight="900"
-        fill="{branco}" letter-spacing="3">INFORMATIVO</text>
-
-  <!-- "NACIONAL" em amarelo -->
-  <text x="40" y="95" font-family="Arial, sans-serif" font-size="36" font-weight="900"
-        fill="{amarelo}" letter-spacing="3">NACIONAL</text>
-
-  <!-- Separador visual -->
-  <line x1="40" y1="110" x2="{width - 40}" y2="110" stroke="{amarelo}" stroke-width="2"/>
-
-  <!-- Título do trecho (conteúdo principal) -->
-  <text x="40" y="165" font-family="Arial, sans-serif" font-size="34" font-weight="bold"
-        fill="{branco}">{title}</text>
-
-  <!-- Barra inferior azul (identidade visual) -->
-  <rect y="{height - 8}" width="{width}" height="8" fill="{azul}"/>
-
-  <!-- Pequeno badge/símbolo no canto superior direito (decorativo) -->
-  <rect x="{width - 80}" y="20" width="60" height="60" fill="none" stroke="{amarelo}" stroke-width="2"/>
-</svg>"""
-
-    return svg
-
-
-def svg_to_png(svg_content: str, output_path: Path) -> bool:
-    """Converte SVG para PNG usando FFmpeg.
-
-    Args:
-        svg_content: Conteúdo SVG como string
-        output_path: Caminho para salvar PNG
-
-    Returns:
-        True se sucesso, False caso contrário
-    """
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.svg', delete=False, encoding='utf-8') as f:
-        f.write(svg_content)
-        svg_path = Path(f.name)
-
-    try:
-        # Usa FFmpeg para converter SVG para PNG
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(svg_path),
-            "-vf", "scale=1080:240",
-            str(output_path)
-        ]
-        result = subprocess.run(cmd, capture_output=True, timeout=10)
-        return result.returncode == 0
-    except Exception:
-        return False
-    finally:
-        svg_path.unlink(missing_ok=True)
-
-
-def compose_with_icon(cg_png_path: Path, icon_path: Path, output_path: Path) -> bool:
-    """Compõe o CG PNG com o ícone usando FFmpeg.
-
-    Args:
-        cg_png_path: Caminho do PNG do CG base
-        icon_path: Caminho do PNG do ícone
-        output_path: Caminho para salvar PNG final
-
-    Returns:
-        True se sucesso, False caso contrário
-    """
-    if not icon_path.exists():
-        return False
-
-    try:
-        # Usa FFmpeg para fazer overlay do ícone no CG
-        # O ícone fica no canto superior direito
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(cg_png_path),
-            "-i", str(icon_path),
-            "-filter_complex", "[0:v][1:v]overlay=x=(W-w-30):y=15[out]",
-            "-map", "[out]",
-            "-c:v", "png",
-            str(output_path)
-        ]
-        result = subprocess.run(cmd, capture_output=True, timeout=10)
-        return result.returncode == 0
-    except Exception:
-        return False
+def _cg_filter_chain(title: str) -> str:
+    """Monta a cadeia de filtros que desenha o CG sobre uma base color."""
+    t = escape_drawtext(title.upper().strip())
+    return (
+        # Barra verde superior
+        f"drawbox=x=0:y=0:w={CG_WIDTH}:h=12:color={VERDE}@1:t=fill,"
+        # Barra verde lateral esquerda
+        f"drawbox=x=0:y=0:w=12:h={CG_HEIGHT}:color={VERDE}@1:t=fill,"
+        # Barra azul inferior
+        f"drawbox=x=0:y={CG_HEIGHT - 8}:w={CG_WIDTH}:h=8:color={AZUL}@1:t=fill,"
+        # Divisor amarelo entre cabeçalho e título
+        f"drawbox=x=40:y=118:w={CG_WIDTH - 80}:h=3:color={AMARELO}@1:t=fill,"
+        # "INFORMATIVO" (branco)
+        f"drawtext=fontfile='{_FONT}':text='INFORMATIVO':x=40:y=28:"
+        f"fontsize=40:fontcolor={BRANCO}:borderw=1:bordercolor=black,"
+        # "NACIONAL" (amarelo)
+        f"drawtext=fontfile='{_FONT}':text='NACIONAL':x=40:y=72:"
+        f"fontsize=40:fontcolor={AMARELO}:borderw=1:bordercolor=black,"
+        # Título do trecho (branco)
+        f"drawtext=fontfile='{_FONT}':text='{t}':x=40:y=150:"
+        f"fontsize=44:fontcolor={BRANCO}:borderw=2:bordercolor=black"
+    )
 
 
 def create_cg_overlay(title: str, output_dir: Path, icon_path: Path | None = None) -> Path | None:
-    """Cria arquivo PNG com CG do Informativo Nacional.
+    """Gera um PNG do CG 'Informativo Nacional' com o título e o ícone opcional.
 
     Args:
         title: Título do trecho (será convertido para UPPERCASE)
-        output_dir: Diretório para salvar PNG
-        icon_path: Caminho opcional do PNG do ícone
+        output_dir: Diretório para salvar o PNG
+        icon_path: Caminho opcional do PNG do ícone (canto superior direito)
 
     Returns:
-        Caminho do PNG ou None se falhar
+        Caminho do PNG gerado, ou None se falhar.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    cg_base = output_dir / "cg_base.png"
-    cg_final = output_dir / "cg_overlay.png"
+    cg_path = output_dir / "cg_overlay.png"
 
-    # Garante que o título está em UPPERCASE
-    title = title.upper().strip()
+    chain = _cg_filter_chain(title)
 
-    # Gera SVG e converte para PNG
-    svg = generate_cg_svg(title)
-    if not svg_to_png(svg, cg_base):
-        return None
+    command = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=c={FUNDO}:s={CG_WIDTH}x{CG_HEIGHT}:d=1",
+    ]
 
-    # Se houver ícone, compõe com o CG base
     if icon_path and icon_path.exists():
-        if compose_with_icon(cg_base, icon_path, cg_final):
-            cg_base.unlink(missing_ok=True)
-            return cg_final
+        # Ícone entra como segunda entrada e é sobreposto à direita.
+        command += ["-i", str(icon_path)]
+        icon_h = CG_HEIGHT - 40
+        filter_complex = (
+            f"[0:v]{chain}[cg];"
+            f"[1:v]scale=-1:{icon_h}[icon];"
+            f"[cg][icon]overlay=x=W-w-30:y=(H-h)/2[out]"
+        )
+        command += [
+            "-filter_complex", filter_complex, "-map", "[out]",
+            "-frames:v", "1", str(cg_path),
+        ]
     else:
-        # Sem ícone, retorna o CG base
-        cg_base.rename(cg_final)
-        return cg_final
+        command += ["-vf", chain, "-frames:v", "1", str(cg_path)]
 
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=15)
+        if result.returncode == 0 and cg_path.exists():
+            return cg_path
+    except Exception:
+        pass
     return None

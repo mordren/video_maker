@@ -293,6 +293,10 @@ class MainWindow(QMainWindow):
         overlay_form.addRow("Posição", self.logo_position)
         overlay_form.addRow("Largura", self.logo_size)
         overlay_form.addRow("Texto", self.text_input)
+        self.use_cg = QCheckBox("Usar CG 'Informativo Nacional' (rodapé com o texto acima)")
+        self.use_cg.setChecked(bool(self.cg_icon_path))
+        self.use_cg.setEnabled(bool(self.cg_icon_path))
+        overlay_form.addRow(self.use_cg)
         panel.addWidget(overlay_box)
 
         caption_box = QGroupBox("4. Legendas")
@@ -592,10 +596,17 @@ class MainWindow(QMainWindow):
         start, length = self.cut_values()
         # Logo (se houver) é a entrada 1; a imagem fixa vem logo depois.
         self._image_input_index = 2 if self.logo_path else 1
+        # Gera o CG (se ativado) e calcula o índice da sua entrada no FFmpeg.
+        self._cg_path = None
+        if self.use_cg.isChecked() and self.cg_icon_path:
+            self._cg_path = create_cg_overlay(self.text_input.text(), self.work_dir, self.cg_icon_path)
+            cg_index = 1 + (1 if self.logo_path else 0) + (1 if mode == "vertical_image" else 0)
+            self._cg_input_index = cg_index
         filters = self.video_filters()
         command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length), "-i", str(self.video_path)]
         if self.logo_path: command += ["-loop", "1", "-i", str(self.logo_path)]
         if mode == "vertical_image": command += ["-loop", "1", "-i", str(self.fixed_image_path)]
+        if self._cg_path: command += ["-loop", "1", "-i", str(self._cg_path)]
         command += ["-filter_complex", filters, "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
         self.run_process(command, f"Vídeo exportado em:\n{filename}")
 
@@ -632,7 +643,11 @@ class MainWindow(QMainWindow):
             x, y = locations[self.logo_position.currentIndex()]
             chain += f";[1:v]scale={self.logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
             current = "with_logo"
-        if self.text_input.text().strip():
+        if getattr(self, "_cg_path", None):
+            # CG "Informativo Nacional" no rodapé (substitui o drawtext simples).
+            chain += f";[{current}][{self._cg_input_index}:v]overlay=x=0:y=main_h-240[with_cg]"
+            current = "with_cg"
+        elif self.text_input.text().strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             text = format_title_for_video(self.text_input.text())
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
