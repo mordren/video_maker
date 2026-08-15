@@ -30,7 +30,7 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, format_title_for_video, parse_csv_moments, parse_time_string,
-    shorten_srt_captions, whisper_path, yt_dlp_path,
+    shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
 )
 
@@ -533,10 +533,13 @@ class MainWindow(QMainWindow):
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
             if caption:
                 srt_files = sorted(self.work_dir.glob("*.srt"), key=lambda p: p.stat().st_mtime)
-                if srt_files:
+                if srt_files and srt_has_content(srt_files[-1]):
                     self.caption_path = srt_files[-1]
                     shorten_srt_captions(self.caption_path)
                     self.caption_status.setText(f"Legendas prontas: {self.caption_path.name}")
+                else:
+                    self.caption_path = None
+                    self.caption_status.setText("Nenhuma fala detectada no trecho; sem legendas.")
             QMessageBox.information(self, APP_NAME, message)
         else:
             QMessageBox.critical(self, APP_NAME, "O processamento falhou. Veja o log abaixo e confirme se FFmpeg/Whisper estão instalados.")
@@ -661,7 +664,7 @@ class MainWindow(QMainWindow):
             text = format_title_for_video(self.text_input.text())
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
-        if self.caption_path and self.caption_path.exists():
+        if srt_has_content(self.caption_path):
             # Com lower-third, sobe a legenda p/ não encostar nele. MarginV é em
             # unidades do script ASS (~288 alto), não em pixels — 90 dá folga.
             margin_v = 90 if use_lt else 60
@@ -1144,11 +1147,11 @@ class MainWindow(QMainWindow):
 
     def _csv_after_whisper(self, code: int, status: QProcess.ExitStatus, idx: int) -> None:
         srt_path = self.work_dir / f"_csv_audio_{idx}.srt"
-        if code == 0 and status == QProcess.ExitStatus.NormalExit and srt_path.exists():
+        if code == 0 and status == QProcess.ExitStatus.NormalExit and srt_has_content(srt_path):
             shorten_srt_captions(srt_path)
             self._csv_clip_srt = srt_path
         else:
-            self.csv_log.appendPlainText("   ⚠️ Whisper falhou neste corte; seguindo sem legenda.")
+            self.csv_log.appendPlainText("   ⚠️ Sem fala detectada (ou Whisper falhou); seguindo sem legenda.")
         self._csv_export_clip()
 
     def _csv_export_clip(self) -> None:
@@ -1186,7 +1189,7 @@ class MainWindow(QMainWindow):
             current = "with_logo"
 
         # Aplicar legendas se existir (afastadas do rodapé quando há lower-third)
-        if self._csv_clip_srt and self._csv_clip_srt.exists():
+        if srt_has_content(self._csv_clip_srt):
             margin_v = 90 if cg_path else 60
             style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
                      "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"

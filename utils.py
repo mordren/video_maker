@@ -88,6 +88,21 @@ def format_title_for_video(title: str) -> str:
     return escape_drawtext(title)
 
 
+def srt_has_content(path: Path | None) -> bool:
+    """True se o SRT existe e tem ao menos uma legenda com marcação de tempo.
+
+    O libass falha ("Unable to open") num .srt vazio — o que acontece quando o
+    Whisper não detecta fala no trecho. Esta checagem evita quebrar o FFmpeg.
+    """
+    if not path or not path.exists():
+        return False
+    try:
+        content = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return False
+    return "-->" in content
+
+
 def srt_seconds(value: str) -> float:
     hours, minutes, rest = value.replace(",", ".").split(":")
     return int(hours) * 3600 + int(minutes) * 60 + float(rest)
