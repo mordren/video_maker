@@ -34,7 +34,7 @@ from utils import (
     TimestampInput,
 )
 
-from cg_generator import create_cg_overlay
+from cg_generator import LT_HEIGHT, create_lower_third
 
 
 class MainWindow(QMainWindow):
@@ -289,11 +289,14 @@ class MainWindow(QMainWindow):
         self.logo_position.setCurrentIndex(3)
         self.logo_size = QSpinBox(); self.logo_size.setRange(40, 600); self.logo_size.setValue(250); self.logo_size.setSuffix(" px")
         self.text_input = QLineEdit("Glauber Fugiu do Mamãe Falei!")
+        self.subtitle_input = QLineEdit("")
+        self.subtitle_input.setPlaceholderText("Chapéu/subtítulo (ex: ELEIÇÕES 2026)")
         overlay_form.addRow("Logo", logo_row)
         overlay_form.addRow("Posição", self.logo_position)
         overlay_form.addRow("Largura", self.logo_size)
-        overlay_form.addRow("Texto", self.text_input)
-        self.use_cg = QCheckBox("Usar CG 'Informativo Nacional' (rodapé com o texto acima)")
+        overlay_form.addRow("Título", self.text_input)
+        overlay_form.addRow("Subtítulo", self.subtitle_input)
+        self.use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")
         self.use_cg.setChecked(bool(self.cg_icon_path))
         self.use_cg.setEnabled(bool(self.cg_icon_path))
         overlay_form.addRow(self.use_cg)
@@ -596,10 +599,13 @@ class MainWindow(QMainWindow):
         start, length = self.cut_values()
         # Logo (se houver) é a entrada 1; a imagem fixa vem logo depois.
         self._image_input_index = 2 if self.logo_path else 1
-        # Gera o CG (se ativado) e calcula o índice da sua entrada no FFmpeg.
+        # Gera o lower-third (se ativado) e calcula o índice da sua entrada no FFmpeg.
         self._cg_path = None
         if self.use_cg.isChecked() and self.cg_icon_path:
-            self._cg_path = create_cg_overlay(self.text_input.text(), self.work_dir, self.cg_icon_path)
+            self._cg_path = create_lower_third(
+                self.text_input.text(), self.subtitle_input.text(),
+                self.work_dir, self.cg_icon_path,
+            )
             cg_index = 1 + (1 if self.logo_path else 0) + (1 if mode == "vertical_image" else 0)
             self._cg_input_index = cg_index
         filters = self.video_filters()
@@ -643,9 +649,10 @@ class MainWindow(QMainWindow):
             x, y = locations[self.logo_position.currentIndex()]
             chain += f";[1:v]scale={self.logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
             current = "with_logo"
-        if getattr(self, "_cg_path", None):
-            # CG "Informativo Nacional" no rodapé (substitui o drawtext simples).
-            chain += f";[{current}][{self._cg_input_index}:v]overlay=x=0:y=main_h-240[with_cg]"
+        use_lt = bool(getattr(self, "_cg_path", None))
+        if use_lt:
+            # Lower-third "Informativo Nacional" rente ao rodapé.
+            chain += f";[{current}][{self._cg_input_index}:v]overlay=x=0:y=main_h-{LT_HEIGHT}[with_cg]"
             current = "with_cg"
         elif self.text_input.text().strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
@@ -653,7 +660,10 @@ class MainWindow(QMainWindow):
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
         if self.caption_path and self.caption_path.exists():
-            style = "FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV=60"
+            # Com lower-third, sobe a legenda p/ não encostar nele. MarginV é em
+            # unidades do script ASS (~288 alto), não em pixels — 90 dá folga.
+            margin_v = 90 if use_lt else 60
+            style = f"FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}"
             chain += f";[{current}]subtitles=filename='{filter_path(self.caption_path)}':fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]"
             current = "captioned"
         return chain + f";[{current}]format=yuv420p[outv]"
@@ -803,7 +813,8 @@ class MainWindow(QMainWindow):
         csv_row.addWidget(self.csv_label, 1)
         csv_box_layout.addLayout(csv_row)
         csv_hint = QLabel(
-            "Colunas (com cabeçalho): inicio, fim, titulo, formato, imagem.\n"
+            "Colunas (com cabeçalho): inicio, fim, titulo, subtitulo, formato, imagem.\n"
+            "• subtitulo: chapéu do lower-third (linha verde acima do título)\n"
             "• formato: estender / transparente / imagem / original (vazio = padrão abaixo)\n"
             "• imagem: caminho do PNG/JPG, usado só quando formato=imagem"
         )
@@ -834,7 +845,7 @@ class MainWindow(QMainWindow):
         self.csv_captions = QCheckBox("Gerar legendas com Whisper (sincronizadas por corte)")
         self.csv_captions.setChecked(True)
         overlay_form.addRow(self.csv_captions)
-        self.csv_use_cg = QCheckBox("Usar CG 'Informativo Nacional' (overlay no rodapé)")
+        self.csv_use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")
         self.csv_use_cg.setChecked(True if self.cg_icon_path else False)
         self.csv_use_cg.setEnabled(bool(self.cg_icon_path))
         overlay_form.addRow(self.csv_use_cg)
@@ -1147,46 +1158,44 @@ class MainWindow(QMainWindow):
 
         has_image = mode == "imagem"
         has_logo = bool(self.logo_path and self.logo_path.exists())
-        has_cg = self.csv_use_cg.isChecked() and self.cg_icon_path
 
         # Calcula o índice de entrada do FFmpeg
         image_input = 2 if has_logo else 1
         cg_input = image_input + (1 if has_image else 0)
 
+        # Gera o lower-third (se ativado) antes de tudo, para saber se afasta a legenda.
+        cg_path = None
+        if self.csv_use_cg.isChecked() and self.cg_icon_path:
+            cg_path = create_lower_third(titulo, m.get("subtitulo", ""), self.work_dir, self.cg_icon_path)
+            if not cg_path:
+                self.csv_log.appendPlainText("   ⚠️ Erro ao gerar lower-third; continuando sem overlay.")
+
         chain = build_clip_filter(mode, has_image, image_input=image_input)
         current = "base"
 
         # Aplicar logo se existir
-        logo_applied = False
-        if self.logo_path and self.logo_path.exists():
+        if has_logo:
             locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
             x, y = locations[self.csv_logo_position.currentIndex()]
             chain += f";[1:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
             current = "with_logo"
-            logo_applied = True
 
-        # Aplicar legendas se existir
+        # Aplicar legendas se existir (afastadas do rodapé quando há lower-third)
         if self._csv_clip_srt and self._csv_clip_srt.exists():
+            margin_v = 90 if cg_path else 60
             style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
                      "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
-                     "BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV=60")
+                     f"BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}")
             chain += (f";[{current}]subtitles=filename='{filter_path(self._csv_clip_srt)}':"
                       f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
             current = "captioned"
 
-        # Aplicar CG "Informativo Nacional" se ativado
-        cg_path = None
-        if has_cg:
-            cg_path = create_cg_overlay(titulo, self.work_dir, self.cg_icon_path)
-            if cg_path:
-                # CG fica no rodapé (Y = altura_video - 240)
-                chain += f";[{current}][{cg_input}:v]overlay=x=0:y=main_h-240[with_cg]"
-                current = "with_cg"
-            else:
-                self.csv_log.appendPlainText("   ⚠️ Erro ao gerar CG; continuando sem overlay.")
-
-        # Aplicar texto: usar título do corte (quando não há CG)
-        if titulo.strip() and not has_cg:
+        # Sobrepor o lower-third rente ao rodapé
+        if cg_path:
+            chain += f";[{current}][{cg_input}:v]overlay=x=0:y=main_h-{LT_HEIGHT}[with_cg]"
+            current = "with_cg"
+        elif titulo.strip():
+            # Sem lower-third: título simples com drawtext.
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             text = format_title_for_video(titulo)
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
