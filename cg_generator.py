@@ -87,26 +87,28 @@ def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
     """Monta a cadeia de filtros do lower-third de fundo branco.
 
     Layout: logo à esquerda, faixa de acento verde/amarelo, e à direita o
-    título (preto, grande) em cima e o subtítulo (verde, menor) embaixo. As
-    fontes são calculadas pelo comprimento do texto e o título quebra em duas
-    linhas quando é longo, para nunca ser cortado. O bloco inteiro é
+    título (verde, menor) em cima e o subtítulo (preto, maior) embaixo. As
+    fontes são calculadas pelo comprimento do texto e o subtítulo quebra em
+    duas linhas quando é longo, para nunca ser cortado. O bloco inteiro é
     centralizado na vertical.
     """
     title = title.upper().strip()
     subtitle = subtitle.upper().strip()
-    sub = escape_drawtext(subtitle)
+    tit = escape_drawtext(title)
 
     text_x = logo_w + 34          # início do texto, depois do logo + acento
     avail = CG_WIDTH - text_x - 30  # largura disponível até a margem direita
 
-    title_lines, title_size = _fit_title(title, avail)
-    sub_size = _fit_fontsize(subtitle, avail, max_size=32, min_size=20) if subtitle else 0
+    # Título: linha verde menor, no topo.
+    title_size = _fit_fontsize(title, avail, max_size=32, min_size=20) if title else 0
+    # Subtítulo: linha preta maior, embaixo, quebrando em 2 linhas se preciso.
+    sub_lines, sub_size = _fit_title(subtitle, avail) if subtitle else ([], 0)
 
     # Altura de cada linha e do bloco inteiro, para centralizar na vertical.
-    sub_h = int(sub_size * _LINE_RATIO) if subtitle else 0
-    title_line_h = int(title_size * _LINE_RATIO)
-    title_h = title_line_h * len(title_lines)
-    accent_gap = 14 if subtitle else 0   # espaço p/ o detalhe amarelo
+    title_h = int(title_size * _LINE_RATIO) if title else 0
+    sub_line_h = int(sub_size * _LINE_RATIO) if subtitle else 0
+    sub_h = sub_line_h * len(sub_lines)
+    accent_gap = 14 if title else 0   # espaço p/ o detalhe amarelo
     block_h = title_h + accent_gap + sub_h
     top = max(10, (LT_HEIGHT - block_h) // 2)
 
@@ -116,23 +118,24 @@ def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
         # Faixa vertical amarela fininha colada na verde
         f"drawbox=x={logo_w + 18}:y=20:w=4:h={LT_HEIGHT - 40}:color={AMARELO}@1:t=fill",
     ]
-    # Título (grande, preto) no topo.
-    for i, line in enumerate(title_lines):
+    sub_y0 = top
+    # Título (verde, menor) no topo, com o detalhe amarelo abaixo dele.
+    if title:
         parts.append(
-            f"drawtext=fontfile='{_FONT}':text='{escape_drawtext(line)}':"
-            f"x={text_x}:y={top + i * title_line_h}:"
-            f"fontsize={title_size}:fontcolor=black"
+            f"drawtext=fontfile='{_FONT}':text='{tit}':x={text_x}:y={top}:"
+            f"fontsize={title_size}:fontcolor={VERDE}"
         )
-    # Subtítulo (verde, menor) embaixo, com o detalhe amarelo acima dele.
-    if subtitle:
-        accent_y = top + title_h + 4
-        sub_y = accent_y + accent_gap
+        accent_y = top + title_h + 2
+        sub_y0 = accent_y + accent_gap
         parts.append(
             f"drawbox=x={text_x}:y={accent_y}:w=90:h=5:color={AMARELO}@1:t=fill"
         )
+    # Subtítulo (grande, preto) embaixo.
+    for i, line in enumerate(sub_lines):
         parts.append(
-            f"drawtext=fontfile='{_FONT}':text='{sub}':x={text_x}:y={sub_y}:"
-            f"fontsize={sub_size}:fontcolor={VERDE}"
+            f"drawtext=fontfile='{_FONT}':text='{escape_drawtext(line)}':"
+            f"x={text_x}:y={sub_y0 + i * sub_line_h}:"
+            f"fontsize={sub_size}:fontcolor=black"
         )
     return ",".join(parts)
 
