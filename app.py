@@ -326,9 +326,14 @@ class MainWindow(QMainWindow):
         self.export_button = QPushButton("Exportar vídeo")
         self.export_button.setObjectName("primary")
         self.export_button.clicked.connect(self.export_video)
+        self.cancel_button = QPushButton("Cancelar")
+        self.cancel_button.setObjectName("cancelButton")
+        self.cancel_button.clicked.connect(self.cancel_edit)
+        self.cancel_button.setEnabled(False)
         self.progress = QProgressBar(); self.progress.setRange(0, 1); self.progress.setValue(0); self.progress.setTextVisible(False)
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumBlockCount(300); self.log.setMaximumHeight(95)
         panel.addWidget(self.export_button)
+        panel.addWidget(self.cancel_button)
         panel.addWidget(self.progress)
         panel.addWidget(self.log)
         panel.addStretch()
@@ -375,6 +380,9 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background: #252a3e; }
             QPushButton#primary { background: #6366f1; color: white; border: none; font-weight: 700; padding: 13px 16px; }
             QPushButton#primary:hover { background: #4f46e5; }
+            QPushButton#cancelButton { background: #2a1a1f; color: #f0a0a8; border: 1px solid #7f2f3a; font-weight: 600; }
+            QPushButton#cancelButton:hover { background: #7f2f3a; color: white; }
+            QPushButton#cancelButton:disabled { background: #1a1d2c; color: #555a6a; border: 1px solid #2d3140; }
             QPushButton#downloadButton { background: #3b82f6; color: white; border: none; font-weight: 600; }
             QPushButton#downloadButton:hover { background: #2563eb; }
             QPushButton#controlButton { background: #1a1d2c; border: 1px solid #2d3140; border-radius: 8px;
@@ -515,8 +523,25 @@ class MainWindow(QMainWindow):
         self.caption_button.setDisabled(busy)
         self.export_button.setDisabled(busy)
         self.download_button.setDisabled(busy)
+        self.cancel_button.setEnabled(busy)
         self.progress.setRange(0, 0 if busy else 1)
         if not busy: self.progress.setValue(0)
+
+    def cancel_edit(self) -> None:
+        """Cancela o processo atual da aba Edição (legenda, download ou export)."""
+        # Impede novas tentativas do download e evita a mensagem de erro final.
+        self._dl_attempt = getattr(self, "_dl_max_attempts", 0)
+        self._cancelled = True
+        proc = self.process
+        if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
+            try:
+                proc.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            proc.kill()
+            proc.waitForFinished(2000)
+        self.set_busy(False)
+        self.log.appendPlainText("\n⛔ Operação cancelada.")
 
     def run_process(self, command: list[str], success_message: str, caption: bool = False) -> None:
         self.set_busy(True, caption)
@@ -957,6 +982,12 @@ class MainWindow(QMainWindow):
         self.csv_process_btn.clicked.connect(self._process_csv_batch)
         panel.addWidget(self.csv_process_btn)
 
+        self.csv_cancel_btn = QPushButton("Cancelar")
+        self.csv_cancel_btn.setObjectName("cancelButton")
+        self.csv_cancel_btn.clicked.connect(self._cancel_csv_batch)
+        self.csv_cancel_btn.setEnabled(False)
+        panel.addWidget(self.csv_cancel_btn)
+
         self.csv_progress = QProgressBar()
         self.csv_progress.setRange(0, 1); self.csv_progress.setValue(0)
         self.csv_progress.setTextVisible(True)
@@ -1049,6 +1080,7 @@ class MainWindow(QMainWindow):
         self.csv_progress.setRange(0, total)
         self.csv_progress.setValue(0)
         self.csv_process_btn.setDisabled(True)
+        self.csv_cancel_btn.setEnabled(True)
         self.csv_log.clear()
         legend_note = "com legendas Whisper" if self._csv_use_whisper else "sem legendas automáticas"
         self.csv_log.appendPlainText(f"Iniciando corte de {total} momentos ({legend_note})...\n")
@@ -1058,7 +1090,25 @@ class MainWindow(QMainWindow):
         self._csv_process_output = ""
         self._csv_total = total
         self._csv_errors: list[str] = []
+        self._csv_cancelled = False
         self._process_next_csv()
+
+    def _cancel_csv_batch(self) -> None:
+        """Interrompe o lote de cortes em andamento na aba CSV."""
+        self._csv_cancelled = True
+        proc = getattr(self, "_csv_process", None)
+        if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
+            try:
+                proc.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            proc.kill()
+            proc.waitForFinished(2000)
+        self.csv_process_btn.setDisabled(False)
+        self.csv_cancel_btn.setEnabled(False)
+        self.csv_progress.setRange(0, 1)
+        self.csv_progress.setValue(0)
+        self.csv_log.appendPlainText("\n⛔ Processamento cancelado.")
 
     def _csv_on_moment_selected(self) -> None:
         rows = self.csv_moments_list.selectionModel().selectedRows()
@@ -1182,6 +1232,8 @@ class MainWindow(QMainWindow):
         return mode
 
     def _process_next_csv(self) -> None:
+        if getattr(self, "_csv_cancelled", False):
+            return
         if self._csv_batch_index >= self._csv_total:
             self._csv_batch_done()
             return
@@ -1347,6 +1399,7 @@ class MainWindow(QMainWindow):
 
     def _csv_batch_done(self) -> None:
         self.csv_process_btn.setDisabled(False)
+        self.csv_cancel_btn.setEnabled(False)
         errors = len(self._csv_errors)
         ok = self._csv_total - errors
         self.csv_log.appendPlainText(f"\n🎉 Concluído! {ok} cortes salvos em:\n{OUTPUT_DIR}")
@@ -1505,6 +1558,11 @@ class MainWindow(QMainWindow):
         self.live_export_btn.setObjectName("primary")
         self.live_export_btn.clicked.connect(self._live_export_cut)
         cut_form.addRow(self.live_export_btn)
+        self.live_cancel_btn = QPushButton("Cancelar")
+        self.live_cancel_btn.setObjectName("cancelButton")
+        self.live_cancel_btn.clicked.connect(self._live_cancel_cut)
+        self.live_cancel_btn.setEnabled(False)
+        cut_form.addRow(self.live_cancel_btn)
         self.live_cut_progress = QProgressBar()
         self.live_cut_progress.setRange(0, 1)
         self.live_cut_progress.setValue(0)
@@ -1815,9 +1873,27 @@ class MainWindow(QMainWindow):
 
     def _live_cut_busy(self, busy: bool) -> None:
         self.live_export_btn.setDisabled(busy)
+        self.live_cancel_btn.setEnabled(busy)
         self.live_cut_progress.setRange(0, 0 if busy else 1)
         if not busy:
             self.live_cut_progress.setValue(0)
+
+    def _live_cancel_cut(self) -> None:
+        """Cancela a exportação de corte em andamento na aba Live."""
+        proc = self._live_cut_process
+        if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
+            try:
+                proc.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            proc.kill()
+            proc.waitForFinished(2000)
+        self._live_cut_process = None
+        wav = self._live_pending.get("wav")
+        if wav:
+            Path(wav).unlink(missing_ok=True)
+        self._live_cut_busy(False)
+        self.live_cut_log.appendPlainText("⛔ Corte cancelado.")
 
     def _live_cut_read(self, process: QProcess) -> None:
         data = bytes(process.readAllStandardOutput())
