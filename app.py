@@ -527,6 +527,51 @@ class MainWindow(QMainWindow):
         self.process.finished.connect(lambda code, status: self.process_finished(code, status, success_message, caption))
         self.process.start(command[0], command[1:])
 
+    def run_download(self, command: list[str], success_message: str, max_attempts: int = 4) -> None:
+        """Executa o yt-dlp reextraindo URLs a cada falha.
+
+        As URLs de mídia do YouTube têm binding de sessão e às vezes já nascem
+        "mortas" (HTTP 403). Como o --retries do yt-dlp bate na mesma URL, não
+        resolve; reexecutar o comando inteiro reextrai URLs frescas. O .part é
+        retomado entre as tentativas, então nada é rebaixado à toa.
+        """
+        self._dl_command = command
+        self._dl_success_msg = success_message
+        self._dl_attempt = 0
+        self._dl_max_attempts = max_attempts
+        self._start_download_attempt()
+
+    def _start_download_attempt(self) -> None:
+        self._dl_attempt += 1
+        self.set_busy(True)
+        if self._dl_attempt == 1:
+            self.log.appendPlainText("\n> yt-dlp …")
+        else:
+            self.log.appendPlainText(
+                f"\n↻ Tentativa {self._dl_attempt}/{self._dl_max_attempts} "
+                "(reextraindo URLs)…"
+            )
+        self.process = QProcess(self)
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self.append_process_output)
+        self.process.finished.connect(self._download_finished)
+        self.process.start(self._dl_command[0], self._dl_command[1:])
+
+    def _download_finished(self, code: int, status: QProcess.ExitStatus) -> None:
+        if code == 0 and status == QProcess.ExitStatus.NormalExit:
+            self.set_busy(False)
+            QMessageBox.information(self, APP_NAME, self._dl_success_msg)
+            return
+        if self._dl_attempt < self._dl_max_attempts:
+            self.log.appendPlainText("   ⚠️ Falhou (URL expirada/403). Reextraindo e tentando de novo…")
+            self._start_download_attempt()
+            return
+        self.set_busy(False)
+        QMessageBox.critical(
+            self, APP_NAME,
+            "O download falhou após várias tentativas. O YouTube pode estar "
+            "bloqueando este vídeo agora — tente novamente em alguns minutos.")
+
     def append_process_output(self) -> None:
         data = bytes(self.process.readAllStandardOutput())
         try:
@@ -617,7 +662,7 @@ class MainWindow(QMainWindow):
                         "--convert-subs", "srt",
                         "--no-abort-on-error"]
         command.append(url)
-        self.run_process(command, f"Download concluído em:\n{DOWNLOAD_DIR}\n\nAgora selecione o vídeo para editá-lo.")
+        self.run_download(command, f"Download concluído em:\n{DOWNLOAD_DIR}\n\nAgora selecione o vídeo para editá-lo.")
 
     def cut_values(self) -> tuple[float, float]:
         start = self.start_input.value()
