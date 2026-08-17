@@ -9,6 +9,7 @@ os.environ["QT_DISABLE_HW_VIDEO_DECODING"] = "1"
 os.environ["QT_FFMPEG_NO_HWACCEL"] = "1"
 os.environ["QMEDIAPLAYER_USE_HW"] = "0"
 
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime
@@ -540,6 +541,17 @@ class MainWindow(QMainWindow):
                 else:
                     self.caption_path = None
                     self.caption_status.setText("Nenhuma fala detectada no trecho; sem legendas.")
+            else:
+                # Exportação de vídeo: salva a transcrição (.srt pt-br) ao lado.
+                srt_src = getattr(self, "_srt_to_export", None)
+                srt_dst = getattr(self, "_srt_export_target", None)
+                if srt_src and srt_dst and srt_has_content(srt_src):
+                    try:
+                        shutil.copyfile(srt_src, srt_dst)
+                        message += f"\n\nTranscrição salva em:\n{srt_dst}"
+                    except OSError:
+                        pass
+                self._srt_to_export = None
             QMessageBox.information(self, APP_NAME, message)
         else:
             QMessageBox.critical(self, APP_NAME, "O processamento falhou. Veja o log abaixo e confirme se FFmpeg/Whisper estão instalados.")
@@ -619,6 +631,9 @@ class MainWindow(QMainWindow):
         if mode == "vertical_image": command += ["-loop", "1", "-i", str(self.fixed_image_path)]
         if self._cg_path: command += ["-loop", "1", "-i", str(self._cg_path)]
         command += ["-filter_complex", filters, "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
+        # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
+        self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
+        self._srt_export_target = Path(filename).with_suffix(".srt")
         self.run_process(command, f"Vídeo exportado em:\n{filename}")
 
     def video_filters(self) -> str:
@@ -1255,6 +1270,12 @@ class MainWindow(QMainWindow):
                     self.csv_log.appendPlainText(f"      {line[:100]}")
         else:
             self.csv_log.appendPlainText(f"   ✅ OK → {output.name}")
+            # Salva a transcrição (.srt pt-br) ao lado do vídeo, se houver.
+            if srt_has_content(self._csv_clip_srt):
+                try:
+                    shutil.copyfile(self._csv_clip_srt, output.with_suffix(".srt"))
+                except OSError:
+                    pass
         self._process_next_csv()
 
     def _csv_batch_done(self) -> None:
