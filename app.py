@@ -1075,7 +1075,10 @@ class MainWindow(QMainWindow):
         if self.csv_captions.isChecked() and not self._csv_use_whisper:
             QMessageBox.warning(self, APP_NAME, "Whisper não foi encontrado. Os cortes serão gerados sem legendas geradas automaticamente.")
 
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        # Salva os cortes numa subpasta com o nome do vídeo de origem.
+        safe_dir = "".join(c for c in self.video_path.stem if c.isalnum() or c in " _-").strip()[:120] or "Cortes"
+        self._csv_output_dir = OUTPUT_DIR / safe_dir
+        self._csv_output_dir.mkdir(parents=True, exist_ok=True)
         total = len(self._csv_moments)
         self.csv_progress.setRange(0, total)
         self.csv_progress.setValue(0)
@@ -1293,7 +1296,7 @@ class MainWindow(QMainWindow):
         start, end, titulo = m["start_s"], m["end_s"], m["label"]
         mode = self._csv_clip_mode
         safe_label = "".join(c for c in titulo if c.isalnum() or c in " _-").strip()[:80]
-        output = OUTPUT_DIR / f"{safe_label}.mp4"
+        output = self._csv_output_dir / f"{safe_label}.mp4"
 
         has_image = mode == "imagem"
 
@@ -1402,10 +1405,11 @@ class MainWindow(QMainWindow):
         self.csv_cancel_btn.setEnabled(False)
         errors = len(self._csv_errors)
         ok = self._csv_total - errors
-        self.csv_log.appendPlainText(f"\n🎉 Concluído! {ok} cortes salvos em:\n{OUTPUT_DIR}")
+        out_dir = getattr(self, "_csv_output_dir", OUTPUT_DIR)
+        self.csv_log.appendPlainText(f"\n🎉 Concluído! {ok} cortes salvos em:\n{out_dir}")
         if errors:
             self.csv_log.appendPlainText(f"⚠️ {errors} falhas: {', '.join(self._csv_errors)}")
-        QMessageBox.information(self, APP_NAME, f"Processamento concluído!\n\n✅ {ok} vídeos exportados\n❌ {errors} falhas\n\nPasta: {OUTPUT_DIR}")
+        QMessageBox.information(self, APP_NAME, f"Processamento concluído!\n\n✅ {ok} vídeos exportados\n❌ {errors} falhas\n\nPasta: {out_dir}")
 
     # ──────────────────────────────────────────────────────────────
     #  Aba Live — gravação + transcrição em tempo real + cortes
