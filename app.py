@@ -239,9 +239,16 @@ class MainWindow(QMainWindow):
         acceleration_row.addWidget(self.fragment_count)
         download_hint = QLabel("Mais conexões podem acelerar vídeos segmentados.")
         download_hint.setObjectName("muted")
+        self.download_subs = QCheckBox("Baixar também a transcrição/legenda do vídeo (pt-br)")
+        self.download_subs.setChecked(True)
+        self.download_subs.setToolTip(
+            "Baixa as legendas do próprio vídeo (oficiais ou automáticas do YouTube) "
+            "em pt-br, convertidas para .srt ao lado do vídeo."
+        )
         source_layout.addWidget(self.url_input)
         source_layout.addLayout(acceleration_row)
         source_layout.addWidget(self.download_button)
+        source_layout.addWidget(self.download_subs)
         source_layout.addWidget(download_hint)
         panel.addWidget(source_box)
 
@@ -594,7 +601,17 @@ class MainWindow(QMainWindow):
         command = [str(downloader), "--no-playlist", "--match-filter", "!is_live",
                    "-N", str(self.fragment_count.value()), "-f", "bv*+ba/b",
                    "--merge-output-format", "mp4", "-P", str(DOWNLOAD_DIR),
-                   "-o", "%(title).200B.%(ext)s", url]
+                   "-o", "%(title).200B.%(ext)s"]
+        if self.download_subs.isChecked():
+            # Legendas do próprio vídeo (oficiais + automáticas do YouTube) em
+            # pt-br, convertidas para .srt ao lado do vídeo. A lista de idiomas
+            # é enxuta de propósito: incluir "pt.*" puxa dezenas de traduções
+            # automáticas e dispara HTTP 429 (Too Many Requests).
+            command += ["--write-subs", "--write-auto-subs",
+                        "--sub-langs", "pt-BR,pt,pt-orig",
+                        "--convert-subs", "srt",
+                        "--no-abort-on-error"]
+        command.append(url)
         self.run_process(command, f"Download concluído em:\n{DOWNLOAD_DIR}\n\nAgora selecione o vídeo para editá-lo.")
 
     def cut_values(self) -> tuple[float, float]:
