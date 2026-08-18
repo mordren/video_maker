@@ -1560,6 +1560,18 @@ class MainWindow(QMainWindow):
         url_row.addWidget(self.live_start_btn)
         left_col.addLayout(url_row)
 
+        # Offset de início (para live com duração anterior)
+        offset_row = QHBoxLayout()
+        offset_label = QLabel("Começar a partir de (HH:MM:SS):")
+        self.live_seek_offset = QLineEdit()
+        self.live_seek_offset.setPlaceholderText("ex: 1:30:45 ou deixar em branco")
+        self.live_seek_offset.setMaximumWidth(150)
+        self.live_seek_offset.setToolTip("Útil para lives com duração anterior — começa do offset especificado")
+        offset_row.addWidget(offset_label)
+        offset_row.addWidget(self.live_seek_offset)
+        offset_row.addStretch()
+        left_col.addLayout(offset_row)
+
         self.live_status = QLabel("Cole a URL e clique em Gravar.")
         self.live_status.setObjectName("muted")
         left_col.addWidget(self.live_status)
@@ -1735,6 +1747,12 @@ class MainWindow(QMainWindow):
         self._live_busy = False
         self._live_needs_remux = False
         self.live_log.clear()
+
+        # Se offset foi especificado, log informativo
+        offset_str = self.live_seek_offset.text().strip()
+        if offset_str:
+            self.live_log.appendPlainText(f"ℹ️ Offset de início: {offset_str} (você pode marcar na timeline depois)")
+        self.live_log.appendPlainText("● Conectando e gravando…")
 
         # Com --live-from-start o yt-dlp baixa formatos em sequência: o áudio
         # só começaria quando o vídeo "terminasse" — o que numa live não
