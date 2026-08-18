@@ -103,6 +103,37 @@ def srt_has_content(path: Path | None) -> bool:
     return "-->" in content
 
 
+def find_video_subtitle(video_path: Path | None) -> Path | None:
+    """Procura uma legenda .srt em pt ao lado do vídeo (ex.: baixada pelo yt-dlp).
+
+    Aceita "<nome>.srt" e "<nome>.<lang>.srt" quando <lang> começa com "pt"
+    (pt-BR, pt, pt-orig...). Preferência: pt-BR > pt > pt-orig > "<nome>.srt".
+    Devolve o primeiro com conteúdo válido, ou None.
+    """
+    if not video_path:
+        return None
+    folder = video_path.parent
+    stem = video_path.stem
+    if not folder.exists():
+        return None
+    candidates: list[tuple[int, Path]] = []
+    for p in folder.iterdir():
+        if not p.is_file() or not p.name.lower().endswith(".srt"):
+            continue
+        if p.name == f"{stem}.srt":
+            candidates.append((3, p))
+        elif p.name.startswith(f"{stem}."):
+            lang = p.name[len(stem) + 1:-4].lower()   # parte entre o nome e .srt
+            if lang.startswith("pt"):
+                rank = {"pt-br": 0, "pt": 1, "pt-orig": 2}.get(lang, 2)
+                candidates.append((rank, p))
+    candidates.sort(key=lambda t: t[0])
+    for _, p in candidates:
+        if srt_has_content(p):
+            return p
+    return None
+
+
 def srt_seconds(value: str) -> float:
     hours, minutes, rest = value.replace(",", ".").split(":")
     return int(hours) * 3600 + int(minutes) * 60 + float(rest)

@@ -30,7 +30,8 @@ from utils import (
     APP_NAME, DEFAULT_LOGO, DOWNLOAD_DIR, FONT_DIR, OUTPUT_DIR,
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
-    escape_drawtext, filter_path, format_title_for_video, parse_csv_moments, parse_time_string,
+    escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
+    parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
 )
@@ -635,11 +636,23 @@ class MainWindow(QMainWindow):
 
     def generate_captions(self) -> None:
         if not self.validate_video(): return
+        start, length = self.cut_values()
+        # 1) Reaproveita a legenda do vídeo (ex.: baixada pelo yt-dlp), sem Whisper.
+        existing = find_video_subtitle(self.video_path)
+        if existing:
+            out = self.work_dir / "trecho_para_legendar.srt"
+            if segments_to_srt(parse_srt_segments(existing), start, start + length, out):
+                shorten_srt_captions(out)
+                self.caption_path = out
+                self.caption_status.setText(f"Legenda do vídeo reaproveitada: {existing.name}")
+                QMessageBox.information(self, APP_NAME, f"Legenda do vídeo reaproveitada ({existing.name}).\nSerá aplicada na exportação.")
+                return
+            self.log.appendPlainText(f"ℹ️ {existing.name} não cobre este trecho; usando Whisper.")
+        # 2) Sem legenda pronta: transcreve com Whisper.
         whisper = whisper_path()
         if not whisper:
             QMessageBox.warning(self, APP_NAME, "Whisper não foi encontrado. Instale as dependências do README para usar legendas offline.")
             return
-        start, length = self.cut_values()
         audio_path = self.work_dir / "trecho_para_legendar.wav"
         try:
             subprocess.run(["ffmpeg", "-y", "-ss", str(start), "-t", str(length), "-i", str(self.video_path), "-vn", "-ac", "1", "-ar", "16000", str(audio_path)], check=True, capture_output=True)
@@ -1071,9 +1084,13 @@ class MainWindow(QMainWindow):
             return
 
         self._whisper_bin = whisper_path()
-        self._csv_use_whisper = self.csv_captions.isChecked() and self._whisper_bin is not None
-        if self.csv_captions.isChecked() and not self._csv_use_whisper:
-            QMessageBox.warning(self, APP_NAME, "Whisper não foi encontrado. Os cortes serão gerados sem legendas geradas automaticamente.")
+        self._csv_captions_on = self.csv_captions.isChecked()
+        # Se o vídeo já tem legenda (ex.: baixada pelo yt-dlp), reaproveita-a e
+        # dispensa o Whisper. Só cai no Whisper quando não há legenda pronta.
+        self._csv_source_srt = find_video_subtitle(self.video_path) if self._csv_captions_on else None
+        self._csv_use_whisper = self._csv_captions_on and self._whisper_bin is not None
+        if self._csv_captions_on and not self._csv_source_srt and not self._whisper_bin:
+            QMessageBox.warning(self, APP_NAME, "Sem legenda pronta e Whisper não encontrado. Os cortes serão gerados sem legendas.")
 
         # Salva os cortes numa subpasta com o nome do vídeo de origem.
         safe_dir = "".join(c for c in self.video_path.stem if c.isalnum() or c in " _-").strip()[:120] or "Cortes"
@@ -1085,7 +1102,12 @@ class MainWindow(QMainWindow):
         self.csv_process_btn.setDisabled(True)
         self.csv_cancel_btn.setEnabled(True)
         self.csv_log.clear()
-        legend_note = "com legendas Whisper" if self._csv_use_whisper else "sem legendas automáticas"
+        if self._csv_source_srt:
+            legend_note = f"legenda do vídeo: {self._csv_source_srt.name}"
+        elif self._csv_use_whisper:
+            legend_note = "com legendas Whisper"
+        else:
+            legend_note = "sem legendas automáticas"
         self.csv_log.appendPlainText(f"Iniciando corte de {total} momentos ({legend_note})...\n")
 
         self._csv_batch_index = 0
@@ -1248,7 +1270,19 @@ class MainWindow(QMainWindow):
         )
         self._csv_clip_srt = None
 
-        # Fase 1: legendas via Whisper (se ligado e disponível).
+        # Fase 1a: reaproveita a legenda do vídeo (sem Whisper), se existir.
+        if self._csv_captions_on and getattr(self, "_csv_source_srt", None):
+            start, end = m["start_s"], m["end_s"]
+            out = self.work_dir / f"_csv_clip_{self._csv_batch_index}.srt"
+            if segments_to_srt(parse_srt_segments(self._csv_source_srt), start, end, out):
+                shorten_srt_captions(out)
+                self._csv_clip_srt = out
+                self.csv_log.appendPlainText("   📄 Legenda do vídeo reaproveitada (sem Whisper).")
+                self._csv_export_clip()
+                return
+            self.csv_log.appendPlainText("   ℹ️ Legenda do vídeo não cobre este trecho.")
+
+        # Fase 1b: legendas via Whisper (se ligado e disponível).
         if self._csv_use_whisper:
             start, end = m["start_s"], m["end_s"]
             audio_path = self.work_dir / f"_csv_audio_{self._csv_batch_index}.wav"
