@@ -572,17 +572,24 @@ class MainWindow(QMainWindow):
 
     def _start_download_attempt(self) -> None:
         self._dl_attempt += 1
-        self.set_busy(True)
         if self._dl_attempt == 1:
             self.log.appendPlainText("\n> yt-dlp …")
+            self._execute_download_command()
         else:
             self.log.appendPlainText(
                 f"\n↻ Tentativa {self._dl_attempt}/{self._dl_max_attempts} "
                 "(aguardando 2s + reextraindo URLs)…"
             )
-            # Pequeno delay para URLs refrescarem entre tentativas
-            from time import sleep
-            sleep(2)
+            # Aguarda 2s sem bloquear a thread principal (usa timer assíncrono)
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._execute_download_command)
+            timer.start(2000)
+            self._dl_retry_timer = timer
+
+    def _execute_download_command(self) -> None:
+        """Executa o comando de download (chamado imediatamente ou após delay)."""
+        self.set_busy(True)
         # A partir da tentativa 3, muda a estratégia de player (tenta web_embedded)
         command = self._dl_command.copy()
         if self._dl_attempt >= 3:
