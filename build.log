@@ -1,0 +1,132 @@
+309 INFO: PyInstaller: 6.22.0, contrib hooks: 2026.6
+309 INFO: Python: 3.12.10
+348 INFO: Platform: Windows-11-10.0.26200-SP0
+348 INFO: Python environment: C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\.venv
+357 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video '
+ 'Maker\\.venv\\Scripts\\pyinstaller.exe',
+ 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip',
+ 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\DLLs',
+ 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\Lib',
+ 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312',
+ 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv',
+ 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video '
+ 'Maker\\.venv\\Lib\\site-packages',
+ 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker']
+1048 INFO: Appending 'datas' from .spec
+1050 INFO: checking Analysis
+1050 INFO: Building Analysis because Analysis-00.toc is non existent
+1050 INFO: Looking for Python shared library...
+1050 INFO: Using Python shared library: C:\Users\joaor\AppData\Local\Programs\Python\Python312\python312.dll
+1050 INFO: Running Analysis Analysis-00.toc
+1050 INFO: Target bytecode optimization level: 0
+1050 INFO: Initializing module dependency graph...
+1052 INFO: Initializing module graph hook caches...
+1145 INFO: Analyzing modules for base_library.zip ...
+3381 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4048 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4301 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5511 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9245 INFO: Caching module dependency graph...
+9299 INFO: Analyzing C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\app.py
+9715 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9859 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9893 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10227 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10440 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14152 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18422 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+34301 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+37800 INFO: Analyzing hidden import 'yt_dlp'
+37801 ERROR: Hidden import 'yt_dlp' not found
+37801 INFO: Processing module hooks (post-graph stage)...
+37811 INFO: Performing binary vs. data reclassification (124 entries)
+37847 INFO: Looking for ctypes DLLs
+37925 INFO: Analyzing run-time hooks ...
+37927 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+37930 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+37933 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+37935 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+37948 INFO: Creating base_library.zip...
+37977 INFO: Looking for dynamic libraries
+38314 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\shiboken6']
+38314 INFO: Extra DLL search directories (PATH): ['C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6']
+39798 WARNING: Library not found: could not resolve 'bcrypt.dll', dependency of 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\python312.dll'.
+39800 WARNING: Library not found: could not resolve 'VERSION.dll', dependency of 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\python312.dll'.
+39801 WARNING: Library not found: could not resolve 'dwmapi.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\styles\\qmodernwindowsstyle.dll'.
+39801 WARNING: Library not found: could not resolve 'UxTheme.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\styles\\qmodernwindowsstyle.dll'.
+39801 WARNING: Library not found: could not resolve 'imagehlp.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\opengl32sw.dll'.
+39803 WARNING: Library not found: could not resolve 'Secur32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\tls\\qschannelbackend.dll'.
+39804 WARNING: Library not found: could not resolve 'bcrypt.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\tls\\qschannelbackend.dll'.
+39804 WARNING: Library not found: could not resolve 'ncrypt.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\tls\\qschannelbackend.dll'.
+39809 WARNING: Library not found: could not resolve 'WTSAPI32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39809 WARNING: Library not found: could not resolve 'SHLWAPI.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39810 WARNING: Library not found: could not resolve 'COMDLG32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39810 WARNING: Library not found: could not resolve 'd2d1.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39810 WARNING: Library not found: could not resolve 'SETUPAPI.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39811 WARNING: Library not found: could not resolve 'dwmapi.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39811 WARNING: Library not found: could not resolve 'DWrite.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39811 WARNING: Library not found: could not resolve 'd3d11.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39811 WARNING: Library not found: could not resolve 'WINMM.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39812 WARNING: Library not found: could not resolve 'VERSION.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39813 WARNING: Library not found: could not resolve 'd3d9.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39813 WARNING: Library not found: could not resolve 'IMM32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39813 WARNING: Library not found: could not resolve 'UIAutomationCore.DLL', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qdirect2d.dll'.
+39815 WARNING: Library not found: could not resolve 'IMM32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforminputcontexts\\qtvirtualkeyboardplugin.dll'.
+39816 WARNING: Library not found: could not resolve 'WTSAPI32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39816 WARNING: Library not found: could not resolve 'SHLWAPI.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39816 WARNING: Library not found: could not resolve 'COMDLG32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39817 WARNING: Library not found: could not resolve 'SETUPAPI.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39817 WARNING: Library not found: could not resolve 'dwmapi.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39818 WARNING: Library not found: could not resolve 'WINMM.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39818 WARNING: Library not found: could not resolve 'd3d9.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39819 WARNING: Library not found: could not resolve 'IMM32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39819 WARNING: Library not found: could not resolve 'UIAutomationCore.DLL', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\plugins\\platforms\\qwindows.dll'.
+39827 WARNING: Library not found: could not resolve 'IPHLPAPI.DLL', dependency of 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_socket.pyd'.
+39832 WARNING: Library not found: could not resolve 'PROPSYS.dll', dependency of 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\_wmi.pyd'.
+39834 WARNING: Library not found: could not resolve 'dxgi.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Gui.dll'.
+39835 WARNING: Library not found: could not resolve 'DWrite.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Gui.dll'.
+39835 WARNING: Library not found: could not resolve 'd3d11.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Gui.dll'.
+39836 WARNING: Library not found: could not resolve 'd3d12.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Gui.dll'.
+39836 WARNING: Library not found: could not resolve 'UxTheme.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Gui.dll'.
+39839 WARNING: Library not found: could not resolve 'dwmapi.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Widgets.dll'.
+39839 WARNING: Library not found: could not resolve 'UxTheme.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Widgets.dll'.
+39840 WARNING: Library not found: could not resolve 'AUTHZ.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39840 WARNING: Library not found: could not resolve 'ntdll.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39840 WARNING: Library not found: could not resolve 'icuuc.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39840 WARNING: Library not found: could not resolve 'USERENV.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39841 WARNING: Library not found: could not resolve 'WINMM.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39842 WARNING: Library not found: could not resolve 'MPR.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39842 WARNING: Library not found: could not resolve 'NETAPI32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39844 WARNING: Library not found: could not resolve 'VERSION.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Core.dll'.
+39844 WARNING: Library not found: could not resolve 'DNSAPI.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Network.dll'.
+39844 WARNING: Library not found: could not resolve 'IPHLPAPI.DLL', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Network.dll'.
+39845 WARNING: Library not found: could not resolve 'Secur32.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Network.dll'.
+39846 WARNING: Library not found: could not resolve 'WINHTTP.dll', dependency of 'C:\\Users\\joaor\\OneDrive\\Documentos\\ChatGPT\\Video Maker\\.venv\\Lib\\site-packages\\PySide6\\Qt6Network.dll'.
+39850 WARNING: Library not found: could not resolve 'bcrypt.dll', dependency of 'C:\\Users\\joaor\\AppData\\Local\\Programs\\Python\\Python312\\DLLs\\libcrypto-3.dll'.
+39881 INFO: Warnings written to C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\build\CortaLegenda\warn-CortaLegenda.txt
+39900 INFO: Graph cross-reference written to C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\build\CortaLegenda\xref-CortaLegenda.html
+39921 INFO: checking PYZ
+40030 INFO: Building because toc changed
+40030 INFO: Building PYZ (ZlibArchive) C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\build\CortaLegenda\PYZ-00.pyz
+40220 INFO: Building PYZ (ZlibArchive) C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\build\CortaLegenda\PYZ-00.pyz completed successfully.
+40234 INFO: checking PKG
+40234 INFO: Building PKG because PKG-00.toc is non existent
+40234 INFO: Building PKG (CArchive) Corta+Legenda.pkg
+56091 INFO: Building PKG (CArchive) Corta+Legenda.pkg completed successfully.
+56096 INFO: Bootloader C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+56096 INFO: checking EXE
+56096 INFO: Building EXE because EXE-00.toc is non existent
+56096 INFO: Building EXE from EXE-00.toc
+56098 INFO: Copying bootloader EXE to C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\dist\Corta+Legenda.exe
+56247 INFO: Copying icon to EXE
+56341 INFO: Copying 0 resources to EXE
+56342 INFO: Embedding manifest in EXE
+56418 INFO: Appending PKG archive to EXE
+56588 INFO: Fixing EXE headers
+58112 INFO: Building EXE from EXE-00.toc completed successfully.
+58120 INFO: checking COLLECT
+58120 INFO: Building COLLECT because COLLECT-00.toc is non existent
+58120 INFO: Building COLLECT COLLECT-00.toc
+58535 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+58539 INFO: Build complete! The results are available in: C:\Users\joaor\OneDrive\Documentos\ChatGPT\Video Maker\dist

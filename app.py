@@ -553,13 +553,16 @@ class MainWindow(QMainWindow):
         self.process.finished.connect(lambda code, status: self.process_finished(code, status, success_message, caption))
         self.process.start(command[0], command[1:])
 
-    def run_download(self, command: list[str], success_message: str, max_attempts: int = 4) -> None:
+    def run_download(self, command: list[str], success_message: str, max_attempts: int = 6) -> None:
         """Executa o yt-dlp reextraindo URLs a cada falha.
 
         As URLs de mídia do YouTube têm binding de sessão e às vezes já nascem
         "mortas" (HTTP 403). Como o --retries do yt-dlp bate na mesma URL, não
         resolve; reexecutar o comando inteiro reextrai URLs frescas. O .part é
         retomado entre as tentativas, então nada é rebaixado à toa.
+
+        Tenta até 6 vezes com delay de 2s entre elas. A partir da tentativa 3,
+        muda a estratégia de player (default+web_safari → web_embedded).
         """
         self._dl_command = command
         self._dl_success_msg = success_message
@@ -575,13 +578,26 @@ class MainWindow(QMainWindow):
         else:
             self.log.appendPlainText(
                 f"\n↻ Tentativa {self._dl_attempt}/{self._dl_max_attempts} "
-                "(reextraindo URLs)…"
+                "(aguardando 2s + reextraindo URLs)…"
             )
+            # Pequeno delay para URLs refrescarem entre tentativas
+            from time import sleep
+            sleep(2)
+        # A partir da tentativa 3, muda a estratégia de player (tenta web_embedded)
+        command = self._dl_command.copy()
+        if self._dl_attempt >= 3:
+            try:
+                idx = command.index("--extractor-args")
+                # Troca "default,web_safari" por "web_embedded" (clientes diferentes)
+                command[idx + 1] = "youtube:player_client=web_embedded"
+                self.log.appendPlainText("   → Tentando com outro player (web_embedded)…")
+            except (ValueError, IndexError):
+                pass
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self.append_process_output)
         self.process.finished.connect(self._download_finished)
-        self.process.start(self._dl_command[0], self._dl_command[1:])
+        self.process.start(command[0], command[1:])
 
     def _download_finished(self, code: int, status: QProcess.ExitStatus) -> None:
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
