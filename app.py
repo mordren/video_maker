@@ -890,6 +890,15 @@ class MainWindow(QMainWindow):
         self.csv_clip_image_label.setObjectName("muted")
         self.csv_clip_image_label.setWordWrap(True)
         format_select_form.addRow(self.csv_clip_image_label)
+        image_btn_row = QWidget()
+        image_btn_layout = QHBoxLayout(image_btn_row); image_btn_layout.setContentsMargins(0, 0, 0, 0)
+        self.csv_clip_image_btn = QPushButton("Escolher imagem")
+        self.csv_clip_image_btn.clicked.connect(self._csv_pick_clip_image)
+        self.csv_clip_image_clear = QPushButton("Remover")
+        self.csv_clip_image_clear.clicked.connect(self._csv_clear_clip_image)
+        image_btn_layout.addWidget(self.csv_clip_image_btn, 1)
+        image_btn_layout.addWidget(self.csv_clip_image_clear)
+        format_select_form.addRow(image_btn_row)
         right_panel.addWidget(format_select_box)
 
         # Formato padrão para todos
@@ -902,10 +911,21 @@ class MainWindow(QMainWindow):
         self.csv_default_format.addItem("Original / longo (16:9)", "original")
         self.csv_default_format.setCurrentIndex(0)
         default_format_form.addRow("Formato", self.csv_default_format)
+        self.csv_default_image_label = QLabel("Nenhuma imagem")
+        self.csv_default_image_label.setObjectName("muted")
+        self.csv_default_image_label.setWordWrap(True)
+        default_image_row = QWidget()
+        default_image_layout = QHBoxLayout(default_image_row); default_image_layout.setContentsMargins(0, 0, 0, 0)
+        default_image_btn = QPushButton("Escolher imagem")
+        default_image_btn.clicked.connect(self._csv_pick_default_image)
+        default_image_layout.addWidget(self.csv_default_image_label, 1)
+        default_image_layout.addWidget(default_image_btn)
+        default_format_form.addRow("Imagem (p/ 'imagem fixa')", default_image_row)
         apply_all_btn = QPushButton("🎬 Aplicar a todos")
         apply_all_btn.clicked.connect(self._csv_apply_format_to_all)
         default_format_form.addRow(apply_all_btn)
         right_panel.addWidget(default_format_box)
+        self._csv_default_image: Path | None = None
 
         # Resto das configurações
         panel = QVBoxLayout()
@@ -1056,10 +1076,13 @@ class MainWindow(QMainWindow):
             # Inicializa _format_override se não existir
             if "_format_override" not in m:
                 m["_format_override"] = ""
-            # Tabela de preview
-            fmt = m.get("formato") or "(padrão)"
-            if m.get("formato") == "imagem" and not (m.get("image_path") and m["image_path"].exists()):
-                fmt = "imagem ⚠ sem arquivo"
+            # Tabela de preview: usa o formato efetivo (override do painel > CSV).
+            effective = m.get("_format_override") or m.get("formato") or ""
+            fmt = effective or "(padrão)"
+            if effective == "imagem":
+                img = m.get("image_path")
+                if not (img and Path(img).exists()):
+                    fmt = "imagem ⚠ sem arquivo"
             self.csv_table.setItem(i, 0, QTableWidgetItem(as_time(m["start_s"])))
             self.csv_table.setItem(i, 1, QTableWidgetItem(as_time(m["end_s"])))
             self.csv_table.setItem(i, 2, QTableWidgetItem(m["label"]))
@@ -1189,30 +1212,75 @@ class MainWindow(QMainWindow):
         self._csv_update_image_display()
 
     def _csv_update_image_display(self) -> None:
-        """Mostra a imagem quando formato é 'imagem'."""
-        if self._csv_selected_index < 0 or self._csv_selected_index >= len(self._csv_moments):
+        """Mostra a imagem e habilita os botões quando o formato é 'imagem'."""
+        has_clip = 0 <= self._csv_selected_index < len(self._csv_moments)
+        m = self._csv_moments[self._csv_selected_index] if has_clip else None
+        mode = (m.get("_format_override") or m.get("formato") or "") if m else ""
+        is_image = mode == "imagem"
+        # Os botões só fazem sentido para um trecho no formato "imagem".
+        self.csv_clip_image_btn.setEnabled(has_clip and is_image)
+        self.csv_clip_image_clear.setEnabled(has_clip and is_image and bool(m and m.get("image_path")))
+        if not has_clip or not is_image:
             self.csv_clip_image_label.setText("")
             return
-        m = self._csv_moments[self._csv_selected_index]
-        mode = m.get("_format_override") or m.get("formato") or ""
-        if mode == "imagem":
-            image = m.get("image_path")
-            if image and Path(image).exists():
-                self.csv_clip_image_label.setText(f"📷 Imagem: {image.name}")
-            else:
-                self.csv_clip_image_label.setText("⚠️ Imagem: não encontrada")
+        image = m.get("image_path")
+        if image and Path(image).exists():
+            self.csv_clip_image_label.setText(f"📷 Imagem: {Path(image).name}")
+        elif image:
+            self.csv_clip_image_label.setText(f"⚠️ Imagem não encontrada: {Path(image).name}")
         else:
-            self.csv_clip_image_label.setText("")
+            self.csv_clip_image_label.setText("Nenhuma imagem escolhida para este trecho.")
+
+    def _csv_pick_clip_image(self) -> None:
+        """Escolhe a imagem do trecho selecionado (formato 'imagem fixa')."""
+        if not (0 <= self._csv_selected_index < len(self._csv_moments)):
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar imagem do topo", "", "Imagens (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if not filename:
+            return
+        m = self._csv_moments[self._csv_selected_index]
+        m["image_path"] = Path(filename)
+        self._populate_csv_table(self._csv_moments)
+        self.csv_moments_list.selectRow(self._csv_selected_index)
+        self._csv_update_image_display()
+
+    def _csv_clear_clip_image(self) -> None:
+        if not (0 <= self._csv_selected_index < len(self._csv_moments)):
+            return
+        self._csv_moments[self._csv_selected_index]["image_path"] = None
+        self._populate_csv_table(self._csv_moments)
+        self.csv_moments_list.selectRow(self._csv_selected_index)
+        self._csv_update_image_display()
+
+    def _csv_pick_default_image(self) -> None:
+        """Escolhe uma imagem para aplicar a todos os trechos com 'Aplicar a todos'."""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar imagem do topo", "", "Imagens (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if not filename:
+            return
+        self._csv_default_image = Path(filename)
+        self.csv_default_image_label.setText(self._csv_default_image.name)
 
     def _csv_apply_format_to_all(self) -> None:
-        """Aplica o formato selecionado a todos os momentos."""
+        """Aplica o formato (e a imagem, se houver) selecionados a todos os momentos."""
         if not self._csv_moments:
             return
         selected_format = self.csv_default_format.currentData()
         for m in self._csv_moments:
             m["_format_override"] = selected_format
+            # Se o formato for "imagem" e houver imagem escolhida, aplica a todos.
+            if selected_format == "imagem" and self._csv_default_image:
+                m["image_path"] = self._csv_default_image
         self._populate_csv_table(self._csv_moments)
-        self.csv_log.appendPlainText(f"✅ Formato '{self.csv_default_format.currentText()}' aplicado a todos os {len(self._csv_moments)} momentos.")
+        if self._csv_selected_index >= 0:
+            self.csv_moments_list.selectRow(self._csv_selected_index)
+        extra = ""
+        if selected_format == "imagem" and self._csv_default_image:
+            extra = f" (imagem: {self._csv_default_image.name})"
+        self.csv_log.appendPlainText(
+            f"✅ Formato '{self.csv_default_format.currentText()}'{extra} aplicado a todos os {len(self._csv_moments)} momentos.")
+        self._csv_update_image_display()
 
     def _csv_vlc_seek(self, ms: int) -> None:
         self.csv_vlc_player.set_time(ms)
