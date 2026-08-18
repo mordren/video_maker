@@ -1741,7 +1741,11 @@ class MainWindow(QMainWindow):
         # acontece. Por isso rodamos DOIS yt-dlp em paralelo: um só para o
         # vídeo e outro só para o áudio. Sem -N: cada fragmento é colado no
         # arquivo assim que baixa, mantendo os arquivos sempre legíveis.
-        base = [str(downloader), "--live-from-start", "--no-part", "--newline"]
+        # --extractor-args: usa player_client=default,web_safari para evitar 403.
+        # --retries/--fragment-retries: tenta reconectar em caso de falha.
+        base = [str(downloader), "--live-from-start", "--no-part", "--newline",
+                 "--extractor-args", "youtube:player_client=default,web_safari",
+                 "--retries", "10", "--fragment-retries", "10"]
         video_cmd = base + ["-f", "bv*[ext=mp4]/b[ext=mp4]/b",
                             "-o", str(self._live_dir / "video.%(ext)s"), url]
         audio_cmd = base + ["-f", "ba[ext=m4a]/ba",
