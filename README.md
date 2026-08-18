@@ -14,6 +14,16 @@ Aplicativo Windows que corta um vídeo, converte para formato vertical, aplica l
 
 O app inicia com `assets\\default-logo.png`, no canto inferior esquerdo com 250 px, e com o texto padrão "Glauber Fugiu do Mamãe Falei!". A seleção de vídeo abre diretamente em `Vídeos\\CortaLegenda\\Downloads`.
 
+## Uso Rápido (Executável Standalone)
+
+Se você só quer **usar o app sem instalar nada**:
+
+1. Baixe o `Corta+Legenda.exe` da pasta `dist/` ou execute `INSTALAR.bat` para copiar para o menu Iniciar.
+2. [Instale FFmpeg](https://ffmpeg.org/download.html) (necessário para processar vídeos).
+3. Pronto — clique no `.exe` e comece a cortar vídeos.
+
+Detalhes: veja [DISTRIBUICAO.md](./DISTRIBUICAO.md).
+
 ## Instalação para desenvolvimento
 
 1. Instale o [Python 3.11 ou 3.12](https://www.python.org/downloads/windows/) e marque a opção **Add Python to PATH**.
