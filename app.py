@@ -646,7 +646,13 @@ class MainWindow(QMainWindow):
                 # Exportação de vídeo: salva a transcrição (.srt pt-br) ao lado.
                 srt_src = getattr(self, "_srt_to_export", None)
                 srt_dst = getattr(self, "_srt_export_target", None)
-                if srt_src and srt_dst and srt_has_content(srt_src):
+                # Se não há legenda preparada, tenta encontrar do vídeo original
+                if not srt_src and self.video_path:
+                    existing = find_video_subtitle(self.video_path)
+                    if existing and srt_has_content(existing):
+                        srt_src = existing
+                # Copia a legenda ao lado do vídeo exportado
+                if srt_src and srt_dst:
                     try:
                         shutil.copyfile(srt_src, srt_dst)
                         message += f"\n\nTranscrição salva em:\n{srt_dst}"
@@ -1470,6 +1476,14 @@ class MainWindow(QMainWindow):
             text = format_title_for_video(titulo)
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
+
+        # Adiciona subtítulo explicativo se existir (campo do CSV)
+        subtitulo_explicativo = m.get("subtitulo_explicativo", "").strip()
+        if subtitulo_explicativo:
+            font = "C\\:/Windows/Fonts/arial.ttf"
+            text = escape_drawtext(subtitulo_explicativo)
+            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.20:fontsize=24:fontcolor=white:borderw=2:bordercolor=black[with_subtitle]"
+            current = "with_subtitle"
 
         chain += f";[{current}]format=yuv420p[outv]"
 
