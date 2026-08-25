@@ -36,7 +36,13 @@ from utils import (
     TimestampInput,
 )
 
-from cg_generator import LT_HEIGHT, create_lower_third
+from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
+
+# MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
+# em pixels: 1 unidade ≈ 6,67 px num vídeo 9:16 (1920 px de altura). Converte a
+# faixa ocupada pelo lower-third + uma folga de 60 px para essas unidades, de
+# modo que a legenda pare logo acima do CG em vez de flutuar no meio da tela.
+LT_CAPTION_MARGIN_V = round((LT_HEIGHT + LT_BOTTOM_MARGIN + 60) * 288 / 1920)
 
 
 class MainWindow(QMainWindow):
@@ -824,8 +830,10 @@ class MainWindow(QMainWindow):
             current = "with_logo"
         use_lt = bool(getattr(self, "_cg_path", None))
         if use_lt:
-            # Lower-third "Informativo Nacional" rente ao rodapé.
-            chain += f";[{current}][{self._cg_input_index}:v]overlay=x=0:y=main_h-{LT_HEIGHT}[with_cg]"
+            # Lower-third "Informativo Nacional", acima da faixa que o YouTube
+            # cobre com a própria interface (canal, descrição, botões).
+            chain += (f";[{current}][{self._cg_input_index}:v]"
+                      f"overlay=x=0:y=main_h-{LT_HEIGHT + LT_BOTTOM_MARGIN}[with_cg]")
             current = "with_cg"
         elif self.text_input.text().strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
@@ -833,9 +841,8 @@ class MainWindow(QMainWindow):
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
         if srt_has_content(self.caption_path):
-            # Com lower-third, sobe a legenda p/ não encostar nele. MarginV é em
-            # unidades do script ASS (~288 alto), não em pixels — 90 dá folga.
-            margin_v = 90 if use_lt else 60
+            # Com lower-third, sobe a legenda p/ não encostar nele.
+            margin_v = LT_CAPTION_MARGIN_V if use_lt else 60
             style = f"FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}"
             chain += f";[{current}]subtitles=filename='{filter_path(self.caption_path)}':fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]"
             current = "captioned"
@@ -1477,7 +1484,7 @@ class MainWindow(QMainWindow):
 
         # Aplicar legendas se existir (afastadas do rodapé quando há lower-third)
         if srt_has_content(self._csv_clip_srt):
-            margin_v = 90 if cg_path else 60
+            margin_v = LT_CAPTION_MARGIN_V if cg_path else 60
             style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
                      "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
                      f"BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}")
@@ -1485,9 +1492,10 @@ class MainWindow(QMainWindow):
                       f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
             current = "captioned"
 
-        # Sobrepor o lower-third rente ao rodapé
+        # Lower-third acima da faixa coberta pela interface do YouTube
         if cg_path:
-            chain += f";[{current}][{cg_input}:v]overlay=x=0:y=main_h-{LT_HEIGHT}[with_cg]"
+            chain += (f";[{current}][{cg_input}:v]"
+                      f"overlay=x=0:y=main_h-{LT_HEIGHT + LT_BOTTOM_MARGIN}[with_cg]")
             current = "with_cg"
         elif titulo.strip():
             # Sem lower-third: título simples com drawtext (mais acima, fonte menor).
