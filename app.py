@@ -2210,7 +2210,7 @@ class MainWindow(QMainWindow):
         if titulo:
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             chain += (f";[{current}]drawtext=fontfile='{font}':text='{escape_drawtext(titulo)}':"
-                      f"x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]")
+                      f"x=(w-text_w)/2:y=h*0.08:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]")
             current = "text"
         chain += f";[{current}]format=yuv420p[outv]"
 
