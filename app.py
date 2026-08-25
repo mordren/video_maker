@@ -1505,7 +1505,7 @@ class MainWindow(QMainWindow):
             current = "text"
 
         # Adiciona subtítulo explicativo se existir (campo do CSV)
-        subtitulo_explicativo = m.get("subtitulo_explicativo", "").strip()
+        subtitulo_explicativo = m.get("comentario", "").strip()
         if subtitulo_explicativo:
             font = "C\\:/Windows/Fonts/arial.ttf"
             text = escape_drawtext(subtitulo_explicativo)
