@@ -811,7 +811,7 @@ class MainWindow(QMainWindow):
         elif self.text_input.text().strip():
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             text = format_title_for_video(self.text_input.text())
-            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
+            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.08:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
         if srt_has_content(self.caption_path):
             # Com lower-third, sobe a legenda p/ não encostar nele. MarginV é em
@@ -1471,10 +1471,10 @@ class MainWindow(QMainWindow):
             chain += f";[{current}][{cg_input}:v]overlay=x=0:y=main_h-{LT_HEIGHT}[with_cg]"
             current = "with_cg"
         elif titulo.strip():
-            # Sem lower-third: título simples com drawtext.
+            # Sem lower-third: título simples com drawtext (mais acima, fonte menor).
             font = "C\\:/Windows/Fonts/arialbd.ttf"
             text = format_title_for_video(titulo)
-            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.12:fontsize=54:fontcolor=white:borderw=3:bordercolor=black[text]"
+            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.08:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
 
         # Adiciona subtítulo explicativo se existir (campo do CSV)
@@ -1482,7 +1482,7 @@ class MainWindow(QMainWindow):
         if subtitulo_explicativo:
             font = "C\\:/Windows/Fonts/arial.ttf"
             text = escape_drawtext(subtitulo_explicativo)
-            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.20:fontsize=24:fontcolor=white:borderw=2:bordercolor=black[with_subtitle]"
+            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=h*0.14:fontsize=16:fontcolor=white:borderw=2:bordercolor=black[with_subtitle]"
             current = "with_subtitle"
 
         chain += f";[{current}]format=yuv420p[outv]"
