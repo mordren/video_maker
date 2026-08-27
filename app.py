@@ -30,7 +30,8 @@ from utils import (
     APP_NAME, DEFAULT_LOGO, DOWNLOAD_DIR, FONT_DIR, OUTPUT_DIR,
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
-    escape_drawtext, extract_thumbnail, filter_path, find_video_subtitle, format_title_for_video,
+    escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
+    render_thumbnail, thumbnail_path,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
@@ -683,15 +684,11 @@ class MainWindow(QMainWindow):
                         message += f"\n\nTranscrição salva em:\n{srt_dst}"
                     except OSError:
                         pass
-                # Gera thumbnail (primeiro frame) do vídeo exportado
-                video_path = getattr(self, "_video_export_path", None)
-                if video_path:
-                    thumb = extract_thumbnail(video_path)
-                    if thumb and thumb.exists():
-                        try:
-                            thumb.unlink()  # Deleta após criar (é só para preview)
-                        except OSError:
-                            pass
+                # Frame de post (primeiro frame, com GC e sem legenda).
+                job = getattr(self, "_thumb_job", None)
+                if job and render_thumbnail(*job):
+                    message += f"\n\nFrame de post salvo em:\n{job[1]}"
+                self._thumb_job = None
                 self._srt_to_export = None
             QMessageBox.information(self, APP_NAME, message)
         else:
@@ -793,19 +790,26 @@ class MainWindow(QMainWindow):
         self._image_input_index = 2 if self._draw_logo else 1
         if self._cg_path:
             self._cg_input_index = 1 + (1 if self._draw_logo else 0) + (1 if mode == "vertical_image" else 0)
-        filters = self.video_filters()
-        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length), "-i", str(self.video_path)]
-        if self._draw_logo: command += ["-loop", "1", "-i", str(self.logo_path)]
-        if mode == "vertical_image": command += ["-loop", "1", "-i", str(self.fixed_image_path)]
-        if self._cg_path: command += ["-loop", "1", "-i", str(self._cg_path)]
-        command += ["-filter_complex", filters, "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
+        inputs = ["-i", str(self.video_path)]
+        if self._draw_logo: inputs += ["-loop", "1", "-i", str(self.logo_path)]
+        if mode == "vertical_image": inputs += ["-loop", "1", "-i", str(self.fixed_image_path)]
+        if self._cg_path: inputs += ["-loop", "1", "-i", str(self._cg_path)]
+        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length)] + inputs
+        command += ["-filter_complex", self.video_filters(), "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
+        # Frame de post: mesmo visual (GC/logo) no primeiro frame, sem legenda.
+        thumb = thumbnail_path(Path(filename))
+        self._thumb_job = (
+            ["ffmpeg", "-y", "-ss", str(start)] + inputs
+            + ["-filter_complex", self.video_filters(captions=False),
+               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
+            thumb,
+        )
         # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
         self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
         self._srt_export_target = Path(filename).with_suffix(".srt")
-        self._video_export_path = Path(filename)
         self.run_process(command, f"Vídeo exportado em:\n{filename}")
 
-    def video_filters(self) -> str:
+    def video_filters(self, captions: bool = True) -> str:
         mode = self.ratio.currentData()
         locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
         logo_applied = False
@@ -850,7 +854,7 @@ class MainWindow(QMainWindow):
             text = format_title_for_video(self.text_input.text())
             chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
             current = "text"
-        if srt_has_content(self.caption_path):
+        if captions and srt_has_content(self.caption_path):
             # Com lower-third, sobe a legenda p/ não encostar nele.
             margin_v = LT_CAPTION_MARGIN_V if use_lt else 60
             style = f"FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}"
@@ -1482,57 +1486,69 @@ class MainWindow(QMainWindow):
         image_input = 2 if has_logo else 1
         cg_input = image_input + (1 if has_image else 0)
 
-        chain = build_clip_filter(mode, has_image, image_input=image_input)
-        current = "base"
+        def build_chain(captions: bool) -> str:
+            chain = build_clip_filter(mode, has_image, image_input=image_input)
+            current = "base"
 
-        # Aplicar logo se existir
+            # Aplicar logo se existir
+            if has_logo:
+                locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
+                x, y = locations[self.csv_logo_position.currentIndex()]
+                chain += f";[1:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
+                current = "with_logo"
+
+            # Aplicar legendas se existir (afastadas do rodapé quando há lower-third)
+            if captions and srt_has_content(self._csv_clip_srt):
+                margin_v = LT_CAPTION_MARGIN_V if cg_path else 60
+                style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
+                         "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
+                         f"BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}")
+                chain += (f";[{current}]subtitles=filename='{filter_path(self._csv_clip_srt)}':"
+                          f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
+                current = "captioned"
+
+            # Lower-third acima da faixa coberta pela interface do YouTube
+            if cg_path:
+                chain += (f";[{current}][{cg_input}:v]"
+                          f"overlay=x=0:y=main_h-{LT_HEIGHT + LT_BOTTOM_MARGIN}[with_cg]")
+                current = "with_cg"
+            elif titulo.strip():
+                # Sem lower-third: título simples com drawtext (mais acima, fonte menor).
+                font = "C\\:/Windows/Fonts/arialbd.ttf"
+                text = format_title_for_video(titulo)
+                chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
+                current = "text"
+
+            # Adiciona subtítulo explicativo se existir (campo do CSV)
+            subtitulo_explicativo = m.get("comentario", "").strip()
+            if subtitulo_explicativo:
+                font = "C\\:/Windows/Fonts/arial.ttf"
+                text = escape_drawtext(subtitulo_explicativo)
+                chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=80:fontsize=16:fontcolor=white:borderw=2:bordercolor=black[with_subtitle]"
+                current = "with_subtitle"
+
+            return chain + f";[{current}]format=yuv420p[outv]"
+
+        inputs = ["-i", str(self.video_path)]
         if has_logo:
-            locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
-            x, y = locations[self.csv_logo_position.currentIndex()]
-            chain += f";[1:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
-            current = "with_logo"
-
-        # Aplicar legendas se existir (afastadas do rodapé quando há lower-third)
-        if srt_has_content(self._csv_clip_srt):
-            margin_v = LT_CAPTION_MARGIN_V if cg_path else 60
-            style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
-                     "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
-                     f"BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}")
-            chain += (f";[{current}]subtitles=filename='{filter_path(self._csv_clip_srt)}':"
-                      f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
-            current = "captioned"
-
-        # Lower-third acima da faixa coberta pela interface do YouTube
-        if cg_path:
-            chain += (f";[{current}][{cg_input}:v]"
-                      f"overlay=x=0:y=main_h-{LT_HEIGHT + LT_BOTTOM_MARGIN}[with_cg]")
-            current = "with_cg"
-        elif titulo.strip():
-            # Sem lower-third: título simples com drawtext (mais acima, fonte menor).
-            font = "C\\:/Windows/Fonts/arialbd.ttf"
-            text = format_title_for_video(titulo)
-            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
-            current = "text"
-
-        # Adiciona subtítulo explicativo se existir (campo do CSV)
-        subtitulo_explicativo = m.get("comentario", "").strip()
-        if subtitulo_explicativo:
-            font = "C\\:/Windows/Fonts/arial.ttf"
-            text = escape_drawtext(subtitulo_explicativo)
-            chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=80:fontsize=16:fontcolor=white:borderw=2:bordercolor=black[with_subtitle]"
-            current = "with_subtitle"
-
-        chain += f";[{current}]format=yuv420p[outv]"
-
-        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start), "-i", str(self.video_path)]
-        if has_logo:
-            command += ["-loop", "1", "-i", str(self.logo_path)]
+            inputs += ["-loop", "1", "-i", str(self.logo_path)]
         if has_image:
-            command += ["-loop", "1", "-i", str(m["image_path"])]
+            inputs += ["-loop", "1", "-i", str(m["image_path"])]
         if cg_path:
-            command += ["-loop", "1", "-i", str(cg_path)]
+            inputs += ["-loop", "1", "-i", str(cg_path)]
+
+        # Frame de post: primeiro frame do corte, com GC e sem legenda escrita.
+        thumb = thumbnail_path(output)
+        self._csv_thumb_job = (
+            ["ffmpeg", "-y", "-ss", str(start)] + inputs
+            + ["-filter_complex", build_chain(captions=False),
+               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
+            thumb,
+        )
+
+        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start)] + inputs
         command += [
-            "-filter_complex", chain, "-map", "[outv]", "-map", "0:a?",
+            "-filter_complex", build_chain(captions=True), "-map", "[outv]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
             str(output),
@@ -1574,13 +1590,14 @@ class MainWindow(QMainWindow):
                     shutil.copyfile(self._csv_clip_srt, output.with_suffix(".srt"))
                 except OSError:
                     pass
-            # Gera e deleta thumbnail (primeiro frame)
-            thumb = extract_thumbnail(output)
-            if thumb and thumb.exists():
-                try:
-                    thumb.unlink()
-                except OSError:
-                    pass
+            # Frame de post (primeiro frame, com GC e sem legenda).
+            job = getattr(self, "_csv_thumb_job", None)
+            if job:
+                if render_thumbnail(*job):
+                    self.csv_log.appendPlainText(f"   🖼️ Post → {job[1].name}")
+                else:
+                    self.csv_log.appendPlainText("   ⚠️ Não deu para gerar o frame de post.")
+                self._csv_thumb_job = None
         self._process_next_csv()
 
     def _csv_batch_done(self) -> None:
@@ -2218,37 +2235,52 @@ class MainWindow(QMainWindow):
         next_idx += 1 if has_logo else 0
         image_idx = next_idx if has_image else None
 
-        chain = build_clip_filter(mode, has_image, image_input=image_idx or 1)
-        current = "base"
-        if has_logo:
-            locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
-            x, y = locations[self.csv_logo_position.currentIndex()]
-            chain += f";[{logo_idx}:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
-            current = "with_logo"
-        if srt_path is not None and srt_path.exists():
-            style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
-                     "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
-                     "BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV=60")
-            chain += (f";[{current}]subtitles=filename='{filter_path(srt_path)}':"
-                      f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
-            current = "captioned"
-        if titulo:
-            font = "C\\:/Windows/Fonts/arialbd.ttf"
-            chain += (f";[{current}]drawtext=fontfile='{font}':text='{escape_drawtext(titulo)}':"
-                      f"x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]")
-            current = "text"
-        chain += f";[{current}]format=yuv420p[outv]"
+        def build_chain(captions: bool) -> str:
+            chain = build_clip_filter(mode, has_image, image_input=image_idx or 1)
+            current = "base"
+            if has_logo:
+                locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
+                x, y = locations[self.csv_logo_position.currentIndex()]
+                chain += f";[{logo_idx}:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
+                current = "with_logo"
+            if captions and srt_path is not None and srt_path.exists():
+                style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
+                         "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
+                         "BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV=60")
+                chain += (f";[{current}]subtitles=filename='{filter_path(srt_path)}':"
+                          f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
+                current = "captioned"
+            if titulo:
+                font = "C\\:/Windows/Fonts/arialbd.ttf"
+                chain += (f";[{current}]drawtext=fontfile='{font}':text='{escape_drawtext(titulo)}':"
+                          f"x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]")
+                current = "text"
+            return chain + f";[{current}]format=yuv420p[outv]"
 
-        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length), "-i", str(video)]
+        seek = ["-ss", str(start), "-t", str(length), "-i", str(video)]
         if audio is not None:
-            command += ["-ss", str(start), "-t", str(length), "-i", str(audio)]
+            seek += ["-ss", str(start), "-t", str(length), "-i", str(audio)]
+        extra = []
         if has_logo:
-            command += ["-loop", "1", "-i", str(self.logo_path)]
+            extra += ["-loop", "1", "-i", str(self.logo_path)]
         if has_image:
-            command += ["-loop", "1", "-i", str(self._live_fixed_image_path)]
+            extra += ["-loop", "1", "-i", str(self._live_fixed_image_path)]
+
+        # Frame de post: primeiro frame do corte, sem legenda escrita.
+        thumb = thumbnail_path(output)
+        thumb_seek = ["-ss", str(start), "-i", str(video)]
+        if audio is not None:
+            thumb_seek += ["-ss", str(start), "-i", str(audio)]
+        self._live_thumb_job = (
+            ["ffmpeg", "-y"] + thumb_seek + extra
+            + ["-filter_complex", build_chain(captions=False),
+               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
+            thumb,
+        )
+
         audio_map = f"{audio_idx}:a?" if audio_idx is not None else "0:a?"
-        command += [
-            "-filter_complex", chain, "-map", "[outv]", "-map", audio_map,
+        command = ["ffmpeg", "-y"] + seek + extra + [
+            "-filter_complex", build_chain(captions=True), "-map", "[outv]", "-map", audio_map,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
             str(output),
@@ -2270,13 +2302,14 @@ class MainWindow(QMainWindow):
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
             self.live_cut_log.appendPlainText(f"✅ Corte exportado → {output}")
             self.live_log.appendPlainText(f"✅ Corte exportado → {output.name}")
-            # Gera e deleta thumbnail (primeiro frame)
-            thumb = extract_thumbnail(output)
-            if thumb and thumb.exists():
-                try:
-                    thumb.unlink()
-                except OSError:
-                    pass
+            # Frame de post (primeiro frame, sem legenda escrita).
+            job = getattr(self, "_live_thumb_job", None)
+            if job:
+                if render_thumbnail(*job):
+                    self.live_cut_log.appendPlainText(f"🖼️ Post → {job[1].name}")
+                else:
+                    self.live_cut_log.appendPlainText("⚠️ Não deu para gerar o frame de post.")
+                self._live_thumb_job = None
         else:
             self.live_cut_log.appendPlainText(
                 f"❌ Falha ao exportar {output.name} — veja as mensagens acima para o motivo.")

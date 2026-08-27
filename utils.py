@@ -422,22 +422,21 @@ def build_srt_for_clip(start_s: float, end_s: float, text: str, output_path: Pat
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def extract_thumbnail(video_path: Path) -> Path | None:
-    """Extrai o primeiro frame do vídeo como PNG (thumbnail/post).
+def thumbnail_path(video_path: Path) -> Path:
+    """Caminho do PNG de post que acompanha o vídeo exportado."""
+    return video_path.with_suffix(".png")
 
-    Retorna o caminho da imagem PNG, ou None se falhar.
+
+def render_thumbnail(command: list[str], thumb_path: Path) -> Path | None:
+    """Renderiza o frame de post com um comando FFmpeg de 1 frame.
+
+    O comando é o mesmo da exportação, mas sem o filtro `subtitles` — assim a
+    imagem sai com o GC e sem legenda escrita. Retorna o PNG, ou None se falhar.
     """
     import subprocess
 
-    if not video_path.exists():
-        return None
-
-    thumb_path = video_path.with_stem(video_path.stem + "_thumb").with_suffix(".png")
     try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-ss", "0", "-i", str(video_path), "-vframes", "1", "-q:v", "2", str(thumb_path)],
-            capture_output=True, timeout=30, check=True
-        )
+        subprocess.run(command, capture_output=True, timeout=60, check=True)
         return thumb_path if thumb_path.exists() else None
     except Exception:
         return None

@@ -23,7 +23,7 @@ LT_HEIGHT = 160  # altura do lower-third de fundo branco
 # Distância entre a base do lower-third e a borda inferior do vídeo. O YouTube
 # (Shorts/Reels) cobre a faixa de baixo com a própria interface — nome do canal,
 # descrição, botões — então o CG precisa ficar acima dessa zona.
-LT_BOTTOM_MARGIN = 320
+LT_BOTTOM_MARGIN = 416
 
 _FONT = "C\\:/Windows/Fonts/arialbd.ttf"
 
@@ -77,13 +77,13 @@ def _fit_title(title: str, avail: int) -> tuple[list[str], int]:
     Devolve (linhas, fontsize).
     """
     # 1 linha, se a fonte resultante for confortável (>= 28).
-    one = _fit_fontsize(title, avail, max_size=44, min_size=28)
+    one = _fit_fontsize(title, avail, max_size=38, min_size=24)
     if _text_width(title, one) <= avail:
         return [title], one
     # 2 linhas equilibradas.
     lines = _wrap_lines(title, 2)
     longest = max(lines, key=len)
-    size = _fit_fontsize(longest, avail, max_size=38, min_size=20)
+    size = _fit_fontsize(longest, avail, max_size=32, min_size=18)
     return lines, size
 
 
@@ -104,7 +104,7 @@ def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
     avail = CG_WIDTH - text_x - 30  # largura disponível até a margem direita
 
     # Título: linha verde menor, no topo.
-    title_size = _fit_fontsize(title, avail, max_size=26, min_size=16) if title else 0
+    title_size = _fit_fontsize(title, avail, max_size=22, min_size=14) if title else 0
     # Subtítulo: linha preta maior, embaixo, quebrando em 2 linhas se preciso.
     sub_lines, sub_size = _fit_title(subtitle, avail) if subtitle else ([], 0)
 
