@@ -684,11 +684,10 @@ class MainWindow(QMainWindow):
                         message += f"\n\nTranscrição salva em:\n{srt_dst}"
                     except OSError:
                         pass
-                # Frame de post (primeiro frame, com GC e sem legenda).
-                job = getattr(self, "_thumb_job", None)
-                if job and render_thumbnail(*job):
-                    message += f"\n\nFrame de post salvo em:\n{job[1]}"
-                self._thumb_job = None
+                post = getattr(self, "_post_frame", None)
+                if post:
+                    message += f"\n\nFrame de post (também é a capa do vídeo):\n{post}"
+                self._post_frame = None
                 self._srt_to_export = None
             QMessageBox.information(self, APP_NAME, message)
         else:
@@ -791,25 +790,36 @@ class MainWindow(QMainWindow):
         if self._cg_path:
             self._cg_input_index = 1 + (1 if self._draw_logo else 0) + (1 if mode == "vertical_image" else 0)
         inputs = ["-i", str(self.video_path)]
-        if self._draw_logo: inputs += ["-loop", "1", "-i", str(self.logo_path)]
-        if mode == "vertical_image": inputs += ["-loop", "1", "-i", str(self.fixed_image_path)]
-        if self._cg_path: inputs += ["-loop", "1", "-i", str(self._cg_path)]
-        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length)] + inputs
-        command += ["-filter_complex", self.video_filters(), "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
-        # Frame de post: mesmo visual (GC/logo) no primeiro frame, sem legenda.
+        n_inputs = 1
+        if self._draw_logo:
+            inputs += ["-loop", "1", "-i", str(self.logo_path)]; n_inputs += 1
+        if mode == "vertical_image":
+            inputs += ["-loop", "1", "-i", str(self.fixed_image_path)]; n_inputs += 1
+        if self._cg_path:
+            inputs += ["-loop", "1", "-i", str(self._cg_path)]; n_inputs += 1
+
+        # 1) Frame de post: mesmo visual (GC/logo), sem legenda escrita.
         thumb = thumbnail_path(Path(filename))
-        self._thumb_job = (
+        self._post_frame = render_thumbnail(
             ["ffmpeg", "-y", "-ss", str(start)] + inputs
             + ["-filter_complex", self.video_filters(captions=False),
                "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
             thumb,
         )
+        # 2) O frame de post entra como primeiro frame do vídeo exportado.
+        post_input = None
+        if self._post_frame:
+            inputs += ["-loop", "1", "-i", str(thumb)]
+            post_input = n_inputs
+
+        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length)] + inputs
+        command += ["-filter_complex", self.video_filters(post_input=post_input), "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
         # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
         self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
         self._srt_export_target = Path(filename).with_suffix(".srt")
         self.run_process(command, f"Vídeo exportado em:\n{filename}")
 
-    def video_filters(self, captions: bool = True) -> str:
+    def video_filters(self, captions: bool = True, post_input: int | None = None) -> str:
         mode = self.ratio.currentData()
         locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
         logo_applied = False
@@ -860,7 +870,21 @@ class MainWindow(QMainWindow):
             style = f"FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}"
             chain += f";[{current}]subtitles=filename='{filter_path(self.caption_path)}':fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]"
             current = "captioned"
+        chain, current = self._with_post_frame(chain, current, post_input)
         return chain + f";[{current}]format=yuv420p[outv]"
+
+    @staticmethod
+    def _with_post_frame(chain: str, current: str, post_input: int | None) -> tuple[str, str]:
+        """Cobre o frame 0 com o PNG de post, para ele ser a capa do vídeo.
+
+        O PNG é o mesmo quadro sem legenda, então trocar só o frame inicial não
+        muda nada visualmente — apenas garante que a capa que as redes pegam do
+        primeiro frame saia limpa. Não altera duração nem sincronia do áudio.
+        """
+        if post_input is None:
+            return chain, current
+        chain += f";[{current}][{post_input}:v]overlay=0:0:enable='lt(n,1)'[with_post]"
+        return chain, "with_post"
 
     # ──────────────────────────────────────────────────────────────
     #  Aba CSV — processamento em lote
@@ -1486,7 +1510,7 @@ class MainWindow(QMainWindow):
         image_input = 2 if has_logo else 1
         cg_input = image_input + (1 if has_image else 0)
 
-        def build_chain(captions: bool) -> str:
+        def build_chain(captions: bool, post_input: int | None = None) -> str:
             chain = build_clip_filter(mode, has_image, image_input=image_input)
             current = "base"
 
@@ -1527,28 +1551,36 @@ class MainWindow(QMainWindow):
                 chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=80:fontsize=16:fontcolor=white:borderw=2:bordercolor=black[with_subtitle]"
                 current = "with_subtitle"
 
+            chain, current = self._with_post_frame(chain, current, post_input)
             return chain + f";[{current}]format=yuv420p[outv]"
 
         inputs = ["-i", str(self.video_path)]
+        n_inputs = 1
         if has_logo:
-            inputs += ["-loop", "1", "-i", str(self.logo_path)]
+            inputs += ["-loop", "1", "-i", str(self.logo_path)]; n_inputs += 1
         if has_image:
-            inputs += ["-loop", "1", "-i", str(m["image_path"])]
+            inputs += ["-loop", "1", "-i", str(m["image_path"])]; n_inputs += 1
         if cg_path:
-            inputs += ["-loop", "1", "-i", str(cg_path)]
+            inputs += ["-loop", "1", "-i", str(cg_path)]; n_inputs += 1
 
-        # Frame de post: primeiro frame do corte, com GC e sem legenda escrita.
+        # 1) Frame de post: primeiro frame do corte, com GC e sem legenda escrita.
         thumb = thumbnail_path(output)
-        self._csv_thumb_job = (
+        self._csv_post_frame = render_thumbnail(
             ["ffmpeg", "-y", "-ss", str(start)] + inputs
             + ["-filter_complex", build_chain(captions=False),
                "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
             thumb,
         )
+        # 2) Esse frame vira a capa: entra por cima do frame 0 do vídeo.
+        post_input = None
+        if self._csv_post_frame:
+            inputs += ["-loop", "1", "-i", str(thumb)]
+            post_input = n_inputs
 
         command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start)] + inputs
         command += [
-            "-filter_complex", build_chain(captions=True), "-map", "[outv]", "-map", "0:a?",
+            "-filter_complex", build_chain(captions=True, post_input=post_input),
+            "-map", "[outv]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
             str(output),
@@ -1590,14 +1622,12 @@ class MainWindow(QMainWindow):
                     shutil.copyfile(self._csv_clip_srt, output.with_suffix(".srt"))
                 except OSError:
                     pass
-            # Frame de post (primeiro frame, com GC e sem legenda).
-            job = getattr(self, "_csv_thumb_job", None)
-            if job:
-                if render_thumbnail(*job):
-                    self.csv_log.appendPlainText(f"   🖼️ Post → {job[1].name}")
-                else:
-                    self.csv_log.appendPlainText("   ⚠️ Não deu para gerar o frame de post.")
-                self._csv_thumb_job = None
+            post = getattr(self, "_csv_post_frame", None)
+            if post:
+                self.csv_log.appendPlainText(f"   🖼️ Post/capa → {post.name}")
+            else:
+                self.csv_log.appendPlainText("   ⚠️ Não deu para gerar o frame de post.")
+            self._csv_post_frame = None
         self._process_next_csv()
 
     def _csv_batch_done(self) -> None:
@@ -2235,7 +2265,7 @@ class MainWindow(QMainWindow):
         next_idx += 1 if has_logo else 0
         image_idx = next_idx if has_image else None
 
-        def build_chain(captions: bool) -> str:
+        def build_chain(captions: bool, post_input: int | None = None) -> str:
             chain = build_clip_filter(mode, has_image, image_input=image_idx or 1)
             current = "base"
             if has_logo:
@@ -2255,6 +2285,7 @@ class MainWindow(QMainWindow):
                 chain += (f";[{current}]drawtext=fontfile='{font}':text='{escape_drawtext(titulo)}':"
                           f"x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]")
                 current = "text"
+            chain, current = self._with_post_frame(chain, current, post_input)
             return chain + f";[{current}]format=yuv420p[outv]"
 
         seek = ["-ss", str(start), "-t", str(length), "-i", str(video)]
@@ -2266,21 +2297,27 @@ class MainWindow(QMainWindow):
         if has_image:
             extra += ["-loop", "1", "-i", str(self._live_fixed_image_path)]
 
-        # Frame de post: primeiro frame do corte, sem legenda escrita.
+        # 1) Frame de post: primeiro frame do corte, sem legenda escrita.
         thumb = thumbnail_path(output)
         thumb_seek = ["-ss", str(start), "-i", str(video)]
         if audio is not None:
             thumb_seek += ["-ss", str(start), "-i", str(audio)]
-        self._live_thumb_job = (
+        self._live_post_frame = render_thumbnail(
             ["ffmpeg", "-y"] + thumb_seek + extra
             + ["-filter_complex", build_chain(captions=False),
                "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
             thumb,
         )
+        # 2) Esse frame vira a capa: entra por cima do frame 0 do vídeo.
+        post_input = None
+        if self._live_post_frame:
+            extra += ["-loop", "1", "-i", str(thumb)]
+            post_input = next_idx + (1 if has_image else 0)
 
         audio_map = f"{audio_idx}:a?" if audio_idx is not None else "0:a?"
         command = ["ffmpeg", "-y"] + seek + extra + [
-            "-filter_complex", build_chain(captions=True), "-map", "[outv]", "-map", audio_map,
+            "-filter_complex", build_chain(captions=True, post_input=post_input),
+            "-map", "[outv]", "-map", audio_map,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
             str(output),
@@ -2302,14 +2339,12 @@ class MainWindow(QMainWindow):
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
             self.live_cut_log.appendPlainText(f"✅ Corte exportado → {output}")
             self.live_log.appendPlainText(f"✅ Corte exportado → {output.name}")
-            # Frame de post (primeiro frame, sem legenda escrita).
-            job = getattr(self, "_live_thumb_job", None)
-            if job:
-                if render_thumbnail(*job):
-                    self.live_cut_log.appendPlainText(f"🖼️ Post → {job[1].name}")
-                else:
-                    self.live_cut_log.appendPlainText("⚠️ Não deu para gerar o frame de post.")
-                self._live_thumb_job = None
+            post = getattr(self, "_live_post_frame", None)
+            if post:
+                self.live_cut_log.appendPlainText(f"🖼️ Post/capa → {post.name}")
+            else:
+                self.live_cut_log.appendPlainText("⚠️ Não deu para gerar o frame de post.")
+            self._live_post_frame = None
         else:
             self.live_cut_log.appendPlainText(
                 f"❌ Falha ao exportar {output.name} — veja as mensagens acima para o motivo.")
