@@ -1093,7 +1093,7 @@ class MainWindow(QMainWindow):
         preview_box = QGroupBox("Momentos detetados")
         preview_layout = QVBoxLayout(preview_box)
         self.csv_table = QTableWidget(0, 5)
-        self.csv_table.setHorizontalHeaderLabels(["Início", "Fim", "Título", "Formato", "Comentário"])
+        self.csv_table.setHorizontalHeaderLabels(["Início", "Fim", "Título", "Formato", "Subtítulo"])
         self.csv_table.setMinimumHeight(180)
         self.csv_table.setObjectName("csvTable")
         preview_layout.addWidget(self.csv_table)
@@ -1180,7 +1180,7 @@ class MainWindow(QMainWindow):
             self.csv_table.setItem(i, 1, QTableWidgetItem(as_time(m["end_s"])))
             self.csv_table.setItem(i, 2, QTableWidgetItem(m["label"]))
             self.csv_table.setItem(i, 3, QTableWidgetItem(fmt))
-            self.csv_table.setItem(i, 4, QTableWidgetItem(m.get("comentario", "")))
+            self.csv_table.setItem(i, 4, QTableWidgetItem(m.get("subtitulo", "")))
             # Lista de momentos (clicável)
             item_text = f"{m['label']}\n{as_time(m['start_s'])} — {as_time(m['end_s'])}"
             self.csv_moments_list.setItem(i, 0, QTableWidgetItem(item_text))
@@ -1542,14 +1542,6 @@ class MainWindow(QMainWindow):
                 text = format_title_for_video(titulo)
                 chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
                 current = "text"
-
-            # Adiciona subtítulo explicativo se existir (campo do CSV)
-            subtitulo_explicativo = m.get("comentario", "").strip()
-            if subtitulo_explicativo:
-                font = "C\\:/Windows/Fonts/arial.ttf"
-                text = escape_drawtext(subtitulo_explicativo)
-                chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=80:fontsize=16:fontcolor=white:borderw=2:bordercolor=black[with_subtitle]"
-                current = "with_subtitle"
 
             chain, current = self._with_post_frame(chain, current, post_input)
             return chain + f";[{current}]format=yuv420p[outv]"

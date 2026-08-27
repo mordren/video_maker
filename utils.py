@@ -238,7 +238,6 @@ _COLUMN_ALIASES = {
     "legenda": {"legenda", "caption", "texto"},
     "formato": {"formato", "format", "modo", "mode", "tipo"},
     "imagem": {"imagem", "image", "img", "capa", "foto"},
-    "comentario": {"comentario", "comentário", "comment", "notas", "observacao", "observação"},
 }
 
 
@@ -268,7 +267,7 @@ def parse_csv_moments(csv_path: Path) -> list[dict]:
       • imagem: caminho da imagem fixa (usado só quando formato=imagem).
         Caminhos relativos são resolvidos a partir da pasta do próprio CSV.
 
-    Devolve lista de dicts: {start_s, end_s, label, legenda, formato, image_path, comentario}.
+    Devolve lista de dicts: {start_s, end_s, label, subtitulo, legenda, formato, image_path}.
     """
     base_dir = csv_path.resolve().parent
     # Tenta múltiplas codificações
@@ -328,7 +327,6 @@ def parse_csv_moments(csv_path: Path) -> list[dict]:
             "legenda": cell(row, "legenda"),
             "formato": normalize_format(cell(row, "formato")),
             "image_path": image_path,
-            "comentario": cell(row, "comentario"),
         })
     return rows
 
