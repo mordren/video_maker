@@ -422,6 +422,27 @@ def build_srt_for_clip(start_s: float, end_s: float, text: str, output_path: Pat
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def extract_thumbnail(video_path: Path) -> Path | None:
+    """Extrai o primeiro frame do vídeo como PNG (thumbnail/post).
+
+    Retorna o caminho da imagem PNG, ou None se falhar.
+    """
+    import subprocess
+
+    if not video_path.exists():
+        return None
+
+    thumb_path = video_path.with_stem(video_path.stem + "_thumb").with_suffix(".png")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", "0", "-i", str(video_path), "-vframes", "1", "-q:v", "2", str(thumb_path)],
+            capture_output=True, timeout=30, check=True
+        )
+        return thumb_path if thumb_path.exists() else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Widget reutilizável
 # ---------------------------------------------------------------------------

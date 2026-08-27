@@ -30,7 +30,7 @@ from utils import (
     APP_NAME, DEFAULT_LOGO, DOWNLOAD_DIR, FONT_DIR, OUTPUT_DIR,
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
-    escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
+    escape_drawtext, extract_thumbnail, filter_path, find_video_subtitle, format_title_for_video,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
@@ -683,6 +683,15 @@ class MainWindow(QMainWindow):
                         message += f"\n\nTranscrição salva em:\n{srt_dst}"
                     except OSError:
                         pass
+                # Gera thumbnail (primeiro frame) do vídeo exportado
+                video_path = getattr(self, "_video_export_path", None)
+                if video_path:
+                    thumb = extract_thumbnail(video_path)
+                    if thumb and thumb.exists():
+                        try:
+                            thumb.unlink()  # Deleta após criar (é só para preview)
+                        except OSError:
+                            pass
                 self._srt_to_export = None
             QMessageBox.information(self, APP_NAME, message)
         else:
@@ -793,6 +802,7 @@ class MainWindow(QMainWindow):
         # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
         self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
         self._srt_export_target = Path(filename).with_suffix(".srt")
+        self._video_export_path = Path(filename)
         self.run_process(command, f"Vídeo exportado em:\n{filename}")
 
     def video_filters(self) -> str:
@@ -1564,6 +1574,13 @@ class MainWindow(QMainWindow):
                     shutil.copyfile(self._csv_clip_srt, output.with_suffix(".srt"))
                 except OSError:
                     pass
+            # Gera e deleta thumbnail (primeiro frame)
+            thumb = extract_thumbnail(output)
+            if thumb and thumb.exists():
+                try:
+                    thumb.unlink()
+                except OSError:
+                    pass
         self._process_next_csv()
 
     def _csv_batch_done(self) -> None:
@@ -2253,6 +2270,13 @@ class MainWindow(QMainWindow):
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
             self.live_cut_log.appendPlainText(f"✅ Corte exportado → {output}")
             self.live_log.appendPlainText(f"✅ Corte exportado → {output.name}")
+            # Gera e deleta thumbnail (primeiro frame)
+            thumb = extract_thumbnail(output)
+            if thumb and thumb.exists():
+                try:
+                    thumb.unlink()
+                except OSError:
+                    pass
         else:
             self.live_cut_log.appendPlainText(
                 f"❌ Falha ao exportar {output.name} — veja as mensagens acima para o motivo.")
