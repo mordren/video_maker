@@ -28,92 +28,134 @@ LT_BOTTOM_MARGIN = 416
 _FONT = "C\\:/Windows/Fonts/arialbd.ttf"
 
 
-# Largura média de um caractere em Arial Bold, como fração do fontsize.
-_CHAR_RATIO = 0.62
 # Altura de uma linha, como fração do fontsize (inclui espaçamento).
 _LINE_RATIO = 1.15
 
+# Largura de cada glifo da Arial Bold, em milésimos do fontsize. São as métricas
+# da Helvetica-Bold, com que a Arial Bold é compatível. Medir caractere a
+# caractere importa: "MANHÃ" e "III" têm 5 letras, mas a primeira ocupa quase o
+# triplo da largura da segunda — um "ratio" médio por caractere erra feio nos
+# dois sentidos (texto cortado num caso, fonte pequena à toa no outro).
+_GLYPH_W = {
+    " ": 278, "!": 333, '"': 474, "#": 556, "$": 556, "%": 889, "&": 722,
+    "'": 238, "(": 333, ")": 333, "*": 389, "+": 584, ",": 278, "-": 333,
+    ".": 278, "/": 278, ":": 333, ";": 333, "<": 584, "=": 584, ">": 584,
+    "?": 611, "@": 975, "[": 333, "\\": 278, "]": 333, "^": 584, "_": 556,
+    "`": 333, "{": 389, "|": 280, "}": 389, "~": 584,
+    "A": 722, "B": 722, "C": 722, "D": 722, "E": 667, "F": 611, "G": 778,
+    "H": 722, "I": 278, "J": 556, "K": 722, "L": 611, "M": 833, "N": 722,
+    "O": 778, "P": 667, "Q": 778, "R": 722, "S": 667, "T": 611, "U": 722,
+    "V": 667, "W": 944, "X": 667, "Y": 667, "Z": 611,
+    "a": 556, "b": 611, "c": 556, "d": 611, "e": 556, "f": 333, "g": 611,
+    "h": 611, "i": 278, "j": 278, "k": 556, "l": 278, "m": 889, "n": 611,
+    "o": 611, "p": 611, "q": 611, "r": 389, "s": 556, "t": 333, "u": 611,
+    "v": 556, "w": 778, "x": 556, "y": 556, "z": 500,
+}
+for _digit in "0123456789":
+    _GLYPH_W[_digit] = 556
+# Acentuadas ocupam a mesma largura da letra-base.
+for _accented, _base in (("ÁÀÂÃÄ", "A"), ("ÉÈÊË", "E"), ("ÍÌÎÏ", "I"),
+                         ("ÓÒÔÕÖ", "O"), ("ÚÙÛÜ", "U"), ("Ç", "C"), ("Ñ", "N"),
+                         ("áàâãä", "a"), ("éèêë", "e"), ("íìîï", "i"),
+                         ("óòôõö", "o"), ("úùûü", "u"), ("ç", "c"), ("ñ", "n")):
+    for _char in _accented:
+        _GLYPH_W[_char] = _GLYPH_W[_base]
+
+_FALLBACK_W = 611   # largura de segurança p/ caractere fora da tabela
+_MIN_SIZE = 12      # abaixo disso não dá para ler no vídeo
+
 
 def _text_width(text: str, size: int) -> float:
-    """Largura estimada do texto (Arial bold) em pixels."""
-    return len(text) * size * _CHAR_RATIO
-
-
-def _fit_fontsize(text: str, max_width: int, max_size: int, min_size: int) -> int:
-    """Maior fontsize (Arial bold) em que `text` cabe em `max_width`."""
-    if not text:
-        return max_size
-    ideal = int(max_width / (len(text) * _CHAR_RATIO))
-    return max(min_size, min(max_size, ideal))
+    """Largura do texto em pixels, na Arial Bold, para um dado fontsize."""
+    return sum(_GLYPH_W.get(c, _FALLBACK_W) for c in text) * size / 1000
 
 
 def _wrap_lines(text: str, n: int) -> list[str]:
-    """Quebra `text` em até `n` linhas equilibradas por comprimento."""
+    """Quebra `text` em até `n` linhas equilibradas pela largura medida."""
     words = text.split()
-    if len(words) <= 1:
-        return [text]
-    target = len(text) / n            # comprimento alvo por linha
+    if n <= 1 or len(words) <= 1:
+        return [text] if text else []
+    target = _text_width(text, 1000) / n   # largura alvo por linha
+    space = _GLYPH_W[" "]
     lines: list[str] = []
     cur: list[str] = []
-    cur_len = 0
-    for w in words:
+    cur_w = 0.0
+    for word in words:
+        word_w = _text_width(word, 1000)
         # Fecha a linha quando passar do alvo, deixando as demais palavras
         # para as próximas linhas (nunca mais que n linhas).
-        if cur and cur_len + len(w) + 1 > target and len(lines) < n - 1:
+        if cur and cur_w + space + word_w > target and len(lines) < n - 1:
             lines.append(" ".join(cur))
-            cur, cur_len = [w], len(w)
+            cur, cur_w = [word], word_w
         else:
-            cur.append(w)
-            cur_len += len(w) + 1
+            cur_w += (space + word_w) if cur else word_w
+            cur.append(word)
     if cur:
         lines.append(" ".join(cur))
     return lines
 
 
-def _fit_title(title: str, avail: int) -> tuple[list[str], int]:
-    """Escolhe quebra e fonte do título p/ caber na largura sem ser cortado.
+def _fit_headline(text: str, avail_w: int, avail_h: float,
+                  max_size: int = 40, max_lines: int = 2) -> tuple[list[str], int]:
+    """Quebra e fonte da manchete que caibam na largura *e* na altura dadas.
 
-    Tenta 1 linha; se ficaria pequena demais, quebra em 2 linhas.
-    Devolve (linhas, fontsize).
+    Para cada número de linhas testa os dois limites — o que a largura permite
+    e o que a altura permite — e fica com o arranjo que rende a maior fonte.
+    Como o tamanho sai de uma medição, e não de um piso arbitrário, o texto
+    nunca é cortado na borda do CG.
     """
-    # 1 linha, se a fonte resultante for confortável (>= 28).
-    one = _fit_fontsize(title, avail, max_size=38, min_size=24)
-    if _text_width(title, one) <= avail:
-        return [title], one
-    # 2 linhas equilibradas.
-    lines = _wrap_lines(title, 2)
-    longest = max(lines, key=len)
-    size = _fit_fontsize(longest, avail, max_size=32, min_size=18)
-    return lines, size
+    if not text:
+        return [], 0
+    best_lines, best_size = [text], 0
+    for n in range(1, max_lines + 1):
+        lines = _wrap_lines(text, n)
+        widest = max(_text_width(line, 1000) for line in lines)
+        by_width = int(avail_w * 1000 / widest) if widest else max_size
+        by_height = int(avail_h / (len(lines) * _LINE_RATIO))
+        size = min(max_size, by_width, by_height)
+        if size > best_size:
+            best_lines, best_size = lines, size
+    return best_lines, max(best_size, _MIN_SIZE)
+
+
+def _fit_kicker(text: str, avail_w: int, max_size: int = 22) -> tuple[list[str], int]:
+    """Fonte do chapéu (uma linha só, encolhe até caber na largura)."""
+    if not text:
+        return [], 0
+    width = _text_width(text, 1000)
+    size = min(max_size, int(avail_w * 1000 / width)) if width else max_size
+    return [text], max(size, _MIN_SIZE)
 
 
 def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
     """Monta a cadeia de filtros do lower-third de fundo branco.
 
     Layout: logo à esquerda, faixa de acento verde/amarelo, e à direita o
-    título (verde, menor) em cima e o subtítulo (preto, maior) embaixo. As
-    fontes são calculadas pelo comprimento do texto e o subtítulo quebra em
-    duas linhas quando é longo, para nunca ser cortado. O bloco inteiro é
-    centralizado na vertical.
+    subtítulo (chapéu verde, pequeno) em cima e o título (preto, grande)
+    embaixo — a manchete é o título, como num GC de telejornal.
+
+    As duas fontes saem de uma medição real do texto (largura glifo a glifo e
+    altura do bloco), então nada é cortado nem sobra espaço vazio à toa. O
+    título quebra em duas linhas quando isso rende uma fonte maior. O bloco
+    inteiro é centralizado na vertical.
     """
     title = title.upper().strip()
     subtitle = subtitle.upper().strip()
-    tit = escape_drawtext(title)
 
-    text_x = logo_w + 34          # início do texto, depois do logo + acento
+    text_x = logo_w + 34            # início do texto, depois do logo + acento
     avail = CG_WIDTH - text_x - 30  # largura disponível até a margem direita
+    avail_h = LT_HEIGHT - 24        # respiro em cima e embaixo
 
-    # Título: linha verde menor, no topo.
-    title_size = _fit_fontsize(title, avail, max_size=22, min_size=14) if title else 0
-    # Subtítulo: linha preta maior, embaixo, quebrando em 2 linhas se preciso.
-    sub_lines, sub_size = _fit_title(subtitle, avail) if subtitle else ([], 0)
+    # Chapéu: linha verde pequena, no topo.
+    kicker_lines, kicker_size = _fit_kicker(subtitle, avail)
+    kicker_h = int(kicker_size * _LINE_RATIO) if kicker_lines else 0
+    accent_gap = 14 if kicker_lines else 0   # espaço p/ o detalhe amarelo
 
-    # Altura de cada linha e do bloco inteiro, para centralizar na vertical.
-    title_h = int(title_size * _LINE_RATIO) if title else 0
-    sub_line_h = int(sub_size * _LINE_RATIO) if subtitle else 0
-    sub_h = sub_line_h * len(sub_lines)
-    accent_gap = 14 if title else 0   # espaço p/ o detalhe amarelo
-    block_h = title_h + accent_gap + sub_h
+    # Manchete: linha preta grande, embaixo, no espaço que sobrou.
+    head_lines, head_size = _fit_headline(title, avail, avail_h - kicker_h - accent_gap)
+    head_line_h = int(head_size * _LINE_RATIO) if head_lines else 0
+
+    block_h = kicker_h + accent_gap + head_line_h * len(head_lines)
     top = max(10, (LT_HEIGHT - block_h) // 2)
 
     parts = [
@@ -122,24 +164,24 @@ def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
         # Faixa vertical amarela fininha colada na verde
         f"drawbox=x={logo_w + 18}:y=20:w=4:h={LT_HEIGHT - 40}:color={AMARELO}@1:t=fill",
     ]
-    sub_y0 = top
-    # Título (verde, menor) no topo, com o detalhe amarelo abaixo dele.
-    if title:
+    head_y0 = top
+    # Chapéu (verde, menor) no topo, com o detalhe amarelo abaixo dele.
+    if kicker_lines:
         parts.append(
-            f"drawtext=fontfile='{_FONT}':text='{tit}':x={text_x}:y={top}:"
-            f"fontsize={title_size}:fontcolor={VERDE}"
+            f"drawtext=fontfile='{_FONT}':text='{escape_drawtext(kicker_lines[0])}':"
+            f"x={text_x}:y={top}:fontsize={kicker_size}:fontcolor={VERDE}"
         )
-        accent_y = top + title_h + 2
-        sub_y0 = accent_y + accent_gap
+        accent_y = top + kicker_h + 2
+        head_y0 = accent_y + accent_gap
         parts.append(
             f"drawbox=x={text_x}:y={accent_y}:w=90:h=5:color={AMARELO}@1:t=fill"
         )
-    # Subtítulo (grande, preto) embaixo.
-    for i, line in enumerate(sub_lines):
+    # Manchete (grande, preta) embaixo.
+    for i, line in enumerate(head_lines):
         parts.append(
             f"drawtext=fontfile='{_FONT}':text='{escape_drawtext(line)}':"
-            f"x={text_x}:y={sub_y0 + i * sub_line_h}:"
-            f"fontsize={sub_size}:fontcolor=black"
+            f"x={text_x}:y={head_y0 + i * head_line_h}:"
+            f"fontsize={head_size}:fontcolor=black"
         )
     return ",".join(parts)
 

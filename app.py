@@ -41,9 +41,14 @@ from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
 # em pixels: 1 unidade ≈ 6,67 px num vídeo 9:16 (1920 px de altura). Converte a
-# faixa ocupada pelo lower-third + uma folga de 60 px para essas unidades, de
-# modo que a legenda pare logo acima do CG em vez de flutuar no meio da tela.
-LT_CAPTION_MARGIN_V = round((LT_HEIGHT + LT_BOTTOM_MARGIN + 60) * 288 / 1920)
+# faixa ocupada pelo lower-third + uma folga para essas unidades, de modo que a
+# legenda pare acima do CG em vez de flutuar no meio da tela.
+#
+# A folga precisa ser generosa: MarginV posiciona a *caixa* da linha, que é mais
+# alta que os glifos (descida + contorno de 2,5), então uma folga pequena ainda
+# deixa a legenda encostando no CG.
+LT_CAPTION_GAP = 140
+LT_CAPTION_MARGIN_V = round((LT_HEIGHT + LT_BOTTOM_MARGIN + LT_CAPTION_GAP) * 288 / 1920)
 
 
 class MainWindow(QMainWindow):
