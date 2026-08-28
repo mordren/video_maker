@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from utils import (
-    APP_NAME, DEFAULT_LOGO, DOWNLOAD_DIR, FONT_DIR, OUTPUT_DIR,
+    APP_NAME, DOWNLOAD_DIR, FONT_DIR, OUTPUT_DIR,
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
@@ -89,7 +89,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 780)
         self.video_path: Path | None = None
-        self.logo_path: Path | None = DEFAULT_LOGO if DEFAULT_LOGO.exists() else None
         self.fixed_image_path: Path | None = None
         self.caption_path: Path | None = None
         self.cg_icon_path: Path | None = Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png") if Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png").exists() else None
@@ -348,24 +347,11 @@ class MainWindow(QMainWindow):
         self.fixed_image_row.setVisible(False)
         panel.addWidget(format_box)
 
-        overlay_box = QGroupBox("3. Logo e texto")
+        overlay_box = QGroupBox("3. Texto")
         overlay_form = QFormLayout(overlay_box)
-        logo_row = QWidget()
-        logo_layout = QHBoxLayout(logo_row); logo_layout.setContentsMargins(0, 0, 0, 0)
-        self.logo_label = QLabel(self.logo_path.name if self.logo_path else "Sem logo")
-        logo_button = QPushButton("Escolher")
-        logo_button.clicked.connect(self.pick_logo)
-        logo_layout.addWidget(self.logo_label, 1); logo_layout.addWidget(logo_button)
-        self.logo_position = QComboBox()
-        self.logo_position.addItems(["Canto superior direito", "Canto superior esquerdo", "Canto inferior direito", "Canto inferior esquerdo"])
-        self.logo_position.setCurrentIndex(3)
-        self.logo_size = QSpinBox(); self.logo_size.setRange(40, 600); self.logo_size.setValue(250); self.logo_size.setSuffix(" px")
         self.text_input = QLineEdit("Glauber Fugiu do Mamãe Falei!")
         self.subtitle_input = QLineEdit("")
         self.subtitle_input.setPlaceholderText("Chapéu/subtítulo (ex: ELEIÇÕES 2026)")
-        overlay_form.addRow("Logo", logo_row)
-        overlay_form.addRow("Posição", self.logo_position)
-        overlay_form.addRow("Largura", self.logo_size)
         overlay_form.addRow("Título", self.text_input)
         overlay_form.addRow("Subtítulo", self.subtitle_input)
         self.use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")
@@ -515,12 +501,6 @@ class MainWindow(QMainWindow):
             self.vlc_player.set_hwnd(int(self.video_widget.winId()))
         self.play_button.setText("▶")
         self.vlc_media.parse_with_options(vlc.MediaParseFlag.local, -1)
-
-    def pick_logo(self) -> None:
-        filename, _ = QFileDialog.getOpenFileName(self, "Selecionar logo", "", "Imagens (*.png *.jpg *.jpeg *.webp)")
-        if filename:
-            self.logo_path = Path(filename)
-            self.logo_label.setText(self.logo_path.name)
 
     def pick_fixed_image(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "Selecionar imagem do topo", "", "Imagens (*.png *.jpg *.jpeg *.webp)")
@@ -948,29 +928,25 @@ class MainWindow(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(self, "Salvar vídeo final", str(default), "MP4 (*.mp4)")
         if not filename: return
         start, length = self.cut_values()
-        # Gera o lower-third (se ativado). Com ele, o logo do canto some
-        # (usa-se um ou outro), pois o lower-third já traz o logo à esquerda.
+        # Gera o lower-third (se ativado); ele já traz o logo do canal à esquerda.
         self._cg_path = None
         if self.use_cg.isChecked() and self.cg_icon_path:
             self._cg_path = create_lower_third(
                 self.text_input.text(), self.subtitle_input.text(),
                 self.work_dir, self.cg_icon_path,
             )
-        self._draw_logo = bool(self.logo_path) and not self._cg_path
-        # Logo (se desenhado) é a entrada 1; a imagem fixa vem logo depois.
-        self._image_input_index = 2 if self._draw_logo else 1
+        # A imagem fixa é a entrada 1; o lower-third vem depois dela.
+        self._image_input_index = 1
         if self._cg_path:
-            self._cg_input_index = 1 + (1 if self._draw_logo else 0) + (1 if mode == "vertical_image" else 0)
+            self._cg_input_index = 1 + (1 if mode == "vertical_image" else 0)
         inputs = ["-i", str(self.video_path)]
         n_inputs = 1
-        if self._draw_logo:
-            inputs += ["-loop", "1", "-i", str(self.logo_path)]; n_inputs += 1
         if mode == "vertical_image":
             inputs += ["-loop", "1", "-i", str(self.fixed_image_path)]; n_inputs += 1
         if self._cg_path:
             inputs += ["-loop", "1", "-i", str(self._cg_path)]; n_inputs += 1
 
-        # 1) Frame de post: mesmo visual (GC/logo), sem legenda escrita.
+        # 1) Frame de post: mesmo visual (GC), sem legenda escrita.
         thumb = thumbnail_path(Path(filename))
         self._post_frame = render_thumbnail(
             ["ffmpeg", "-y", "-ss", str(start)] + inputs
@@ -993,18 +969,10 @@ class MainWindow(QMainWindow):
 
     def video_filters(self, captions: bool = True, post_input: int | None = None) -> str:
         mode = self.ratio.currentData()
-        locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
-        logo_applied = False
         if mode == "vertical_crop":
             chain, label = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920", "base"
         elif mode == "vertical_blur":
-            chain = "[0:v]split=2[bg][fg];[bg]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,boxblur=10:2,scale=1080:1920[blur];[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fit]"
-            if self._draw_logo:
-                x, y = locations[self.logo_position.currentIndex()]
-                chain += f";[1:v]scale={self.logo_size.value()}:-1[logo];[fit][logo]overlay={x}:{y}[fit_with_logo];[blur][fit_with_logo]overlay=(W-w)/2:(H-h)/2"
-                logo_applied = True
-            else:
-                chain += ";[blur][fit]overlay=(W-w)/2:(H-h)/2"
+            chain = "[0:v]split=2[bg][fg];[bg]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,boxblur=10:2,scale=1080:1920[blur];[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fit];[blur][fit]overlay=(W-w)/2:(H-h)/2"
             label = "base"
         elif mode == "vertical_image":
             # Imagem fixa (16:9) no topo e o vídeo (16:9) embaixo, empilhados no 9:16.
@@ -1020,10 +988,6 @@ class MainWindow(QMainWindow):
             chain, label = "[0:v]null", "base"
         chain += f"[{label}]"
         current = label
-        if self._draw_logo and not logo_applied:
-            x, y = locations[self.logo_position.currentIndex()]
-            chain += f";[1:v]scale={self.logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
-            current = "with_logo"
         use_lt = bool(getattr(self, "_cg_path", None))
         if use_lt:
             # Lower-third "Informativo Nacional", acima da faixa que o YouTube
@@ -1233,22 +1197,9 @@ class MainWindow(QMainWindow):
         csv_box_layout.addWidget(csv_hint)
         panel.addWidget(csv_box)
 
-        # Logo e texto
-        overlay_box = QGroupBox("Logo e Texto")
+        # Texto
+        overlay_box = QGroupBox("Texto")
         overlay_form = QFormLayout(overlay_box)
-        logo_row = QWidget()
-        logo_layout = QHBoxLayout(logo_row); logo_layout.setContentsMargins(0, 0, 0, 0)
-        self.csv_logo_label = QLabel(self.logo_path.name if self.logo_path else "Sem logo")
-        logo_button = QPushButton("Escolher")
-        logo_button.clicked.connect(self.pick_logo)
-        logo_layout.addWidget(self.csv_logo_label, 1); logo_layout.addWidget(logo_button)
-        self.csv_logo_position = QComboBox()
-        self.csv_logo_position.addItems(["Canto superior direito", "Canto superior esquerdo", "Canto inferior direito", "Canto inferior esquerdo"])
-        self.csv_logo_position.setCurrentIndex(3)
-        self.csv_logo_size = QSpinBox(); self.csv_logo_size.setRange(40, 600); self.csv_logo_size.setValue(250); self.csv_logo_size.setSuffix(" px")
-        overlay_form.addRow("Logo", logo_row)
-        overlay_form.addRow("Posição", self.csv_logo_position)
-        overlay_form.addRow("Largura", self.csv_logo_size)
         text_hint = QLabel("O título de cada corte aparecerá na tela automaticamente")
         text_hint.setObjectName("muted")
         overlay_form.addRow(text_hint)
@@ -1683,31 +1634,20 @@ class MainWindow(QMainWindow):
 
         has_image = mode == "imagem"
 
-        # Gera o lower-third (se ativado) antes de tudo, para saber se afasta a
-        # legenda e se o logo do canto deve sumir (usa-se um ou outro).
+        # Gera o lower-third (se ativado) antes de tudo, para saber se afasta a legenda.
         cg_path = None
         if self.csv_use_cg.isChecked() and self.cg_icon_path:
             cg_path = create_lower_third(titulo, m.get("subtitulo", ""), self.work_dir, self.cg_icon_path)
             if not cg_path:
                 self.csv_log.appendPlainText("   ⚠️ Erro ao gerar lower-third; continuando sem overlay.")
 
-        # Com lower-third ativo, o logo do canto não é desenhado.
-        has_logo = bool(self.logo_path and self.logo_path.exists()) and not cg_path
-
         # Calcula o índice de entrada do FFmpeg
-        image_input = 2 if has_logo else 1
+        image_input = 1
         cg_input = image_input + (1 if has_image else 0)
 
         def build_chain(captions: bool, post_input: int | None = None) -> str:
             chain = build_clip_filter(mode, has_image, image_input=image_input)
             current = "base"
-
-            # Aplicar logo se existir
-            if has_logo:
-                locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
-                x, y = locations[self.csv_logo_position.currentIndex()]
-                chain += f";[1:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
-                current = "with_logo"
 
             # Aplicar legendas se existir (afastadas do rodapé quando há lower-third)
             if captions and srt_has_content(self._csv_clip_srt):
@@ -1736,8 +1676,6 @@ class MainWindow(QMainWindow):
 
         inputs = ["-i", str(self.video_path)]
         n_inputs = 1
-        if has_logo:
-            inputs += ["-loop", "1", "-i", str(self.logo_path)]; n_inputs += 1
         if has_image:
             inputs += ["-loop", "1", "-i", str(m["image_path"])]; n_inputs += 1
         if cg_path:
@@ -2451,22 +2389,14 @@ class MainWindow(QMainWindow):
         video, audio, output = d["video"], d["audio"], d["output"]
         length = end - start
 
-        has_logo = bool(self.logo_path and self.logo_path.exists())
         has_image = mode == "imagem"
         audio_idx = 1 if audio is not None else None
         next_idx = 2 if audio is not None else 1
-        logo_idx = next_idx if has_logo else None
-        next_idx += 1 if has_logo else 0
         image_idx = next_idx if has_image else None
 
         def build_chain(captions: bool, post_input: int | None = None) -> str:
             chain = build_clip_filter(mode, has_image, image_input=image_idx or 1)
             current = "base"
-            if has_logo:
-                locations = [("W-w-42", "42"), ("42", "42"), ("W-w-42", "H-h-42"), ("42", "H-h-42")]
-                x, y = locations[self.csv_logo_position.currentIndex()]
-                chain += f";[{logo_idx}:v]scale={self.csv_logo_size.value()}:-1[logo];[{current}][logo]overlay={x}:{y}[with_logo]"
-                current = "with_logo"
             if captions and srt_path is not None and srt_path.exists():
                 style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
                          "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
@@ -2486,8 +2416,6 @@ class MainWindow(QMainWindow):
         if audio is not None:
             seek += ["-ss", str(start), "-t", str(length), "-i", str(audio)]
         extra = []
-        if has_logo:
-            extra += ["-loop", "1", "-i", str(self.logo_path)]
         if has_image:
             extra += ["-loop", "1", "-i", str(self._live_fixed_image_path)]
 

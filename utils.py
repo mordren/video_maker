@@ -21,7 +21,6 @@ PROJECT_DIR = Path(__file__).resolve().parent
 YTDLP_BUNDLED = PROJECT_DIR / "tools" / "yt-dlp.exe"
 YTDLP_SYSTEM = Path(r"C:\Program Files (x86)\ytdlp\yt-dlp.exe")
 FONT_DIR = PROJECT_DIR / "assets" / "fonts"
-DEFAULT_LOGO = PROJECT_DIR / "assets" / "default-logo.png"
 DOWNLOAD_DIR = OUTPUT_DIR / "Downloads"
 
 # ---------------------------------------------------------------------------
