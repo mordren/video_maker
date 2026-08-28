@@ -16,10 +16,11 @@ from datetime import datetime
 from pathlib import Path
 
 import vlc
-from PySide6.QtCore import QProcess, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
+    QAbstractScrollArea, QAbstractSpinBox, QApplication, QCheckBox, QComboBox,
+    QFileDialog, QFormLayout, QFrame,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSlider, QSpinBox, QTabWidget, QTableWidget,
@@ -50,6 +51,27 @@ from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 # deixa a legenda encostando no CG.
 LT_CAPTION_GAP = 140
 LT_CAPTION_MARGIN_V = round((LT_HEIGHT + LT_BOTTOM_MARGIN + LT_CAPTION_GAP) * 288 / 1920)
+
+
+class WheelGuard(QObject):
+    """Impede que combo/spin mudem de valor quando a roda do mouse passa por
+    cima sem eles estarem em foco.
+
+    Por padrão o Qt deixa esses controles capturarem a roda mesmo sem foco, o
+    que rouba o scroll da página e ainda altera o valor. Aqui, se o controle
+    não está em foco, a roda é repassada para a área rolável (a página desce) e
+    o controle fica quieto. Para mexer no valor, basta clicar nele antes.
+    """
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.Wheel and not obj.hasFocus():
+            area = obj.parent()
+            while area is not None and not isinstance(area, QAbstractScrollArea):
+                area = area.parent()
+            if area is not None:
+                QApplication.sendEvent(area.viewport(), event)
+            return True                      # não deixa o controle processar
+        return False
 
 
 class SrtReviewWorker(QThread):
@@ -407,6 +429,13 @@ class MainWindow(QMainWindow):
 
         # ── Aba 3: Live ────────────────────────────────────────────
         self._build_live_tab()
+
+        # A roda do mouse rola a página, não altera combos/spins de passagem.
+        self._wheel_guard = WheelGuard(self)
+        for kind in (QComboBox, QAbstractSpinBox):
+            for widget in self.findChildren(kind):
+                widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                widget.installEventFilter(self._wheel_guard)
 
         self.apply_style()
 
