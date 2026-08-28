@@ -71,7 +71,11 @@ def load_config() -> dict:
     if str(config.get("api_key", "")).startswith("xai-"):
         config["api_key_xai"] = config["api_key"]
         config["api_key"] = ""
-    if str(config.get("model", "")).startswith("grok"):
+    # Volta ao padrão (deepseek-chat) quem tiver ficado com um modelo antigo da
+    # xAI ou com um variante que "raciocina" (flash/reasoner) — esses geram muito
+    # token à toa nesta tarefa e foram o que estourou a conta.
+    model = str(config.get("model", "")).lower()
+    if model.startswith("grok") or "flash" in model or "reasoner" in model:
         config["model"] = ""
     return config
 

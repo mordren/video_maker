@@ -922,7 +922,11 @@ class MainWindow(QMainWindow):
             self.ai_button.setText("Revisar a legenda atual com IA")
             self.log.appendPlainText(("✅ " if ok else "⚠️ ") + message)
             self.caption_status.setText(message)
-            if not ok:
+            # Avisa sempre que terminou — sucesso ou erro — para não ficar a
+            # dúvida se a revisão rodou (a mensagem já traz blocos e tokens).
+            if ok:
+                QMessageBox.information(self, APP_NAME, message)
+            else:
                 QMessageBox.warning(self, APP_NAME, message)
 
         self._start_ai_review(self.caption_path, self.text_input.text().strip(), finished)
