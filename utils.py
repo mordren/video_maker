@@ -420,6 +420,35 @@ def build_srt_for_clip(start_s: float, end_s: float, text: str, output_path: Pat
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def review_srt_with_ai(path: Path, api_key: str, model: str = "",
+                       context: str = "", progress=None) -> tuple[int, int]:
+    """Manda as falas do SRT para a IA e regrava o arquivo já corrigido.
+
+    Os tempos são os do arquivo original — a IA só devolve texto, e o SRT é
+    remontado aqui. Assim, mesmo que o modelo responda algo estranho, a legenda
+    não sai do lugar em relação ao áudio.
+
+    Devolve (linhas alteradas, total de linhas).
+    """
+    import ai_srt
+
+    segments = parse_srt_segments(path)
+    if not segments:
+        return 0, 0
+
+    originals = [text for _, _, text in segments]
+    fixed = ai_srt.correct_lines(originals, api_key, model, context, progress)
+
+    lines: list[str] = []
+    changed = 0
+    for i, ((start, end, old), new) in enumerate(zip(segments, fixed), start=1):
+        if new != old:
+            changed += 1
+        lines.extend([str(i), f"{srt_timestamp(start)} --> {srt_timestamp(end)}", new, ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return changed, len(segments)
+
+
 def thumbnail_path(video_path: Path) -> Path:
     """Caminho do PNG de post que acompanha o vídeo exportado."""
     return video_path.with_suffix(".png")

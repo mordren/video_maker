@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 import vlc
-from PySide6.QtCore import QProcess, Qt, QTimer
+from PySide6.QtCore import QProcess, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
@@ -31,12 +31,13 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
-    render_thumbnail, thumbnail_path,
+    render_thumbnail, review_srt_with_ai, thumbnail_path,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
 )
 
+import ai_srt
 from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
@@ -49,6 +50,37 @@ from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 # deixa a legenda encostando no CG.
 LT_CAPTION_GAP = 140
 LT_CAPTION_MARGIN_V = round((LT_HEIGHT + LT_BOTTOM_MARGIN + LT_CAPTION_GAP) * 288 / 1920)
+
+
+class SrtReviewWorker(QThread):
+    """Revisa um SRT com a IA fora da thread da interface.
+
+    A chamada à API leva de alguns segundos a mais de um minuto; feita direto no
+    clique, congelaria a janela. Cada fluxo (edição, CSV, live) conecta `done` e
+    segue de onde parou quando a revisão termina.
+    """
+
+    progress = Signal(int, int)      # linhas prontas, total
+    done = Signal(bool, str)         # deu certo?, mensagem para o log
+
+    def __init__(self, path: Path, api_key: str, model: str,
+                 context: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._path, self._api_key = path, api_key
+        self._model, self._context = model, context
+
+    def run(self) -> None:
+        try:
+            changed, total = review_srt_with_ai(
+                self._path, self._api_key, self._model, self._context,
+                progress=lambda ready, all_: self.progress.emit(ready, all_),
+            )
+        except ai_srt.AiError as error:
+            self.done.emit(False, f"Revisão com IA falhou: {error}")
+        except Exception as error:                     # noqa: BLE001
+            self.done.emit(False, f"Revisão com IA falhou: {error}")
+        else:
+            self.done.emit(True, f"Legenda revisada pela IA: {changed}/{total} blocos alterados.")
 
 
 class MainWindow(QMainWindow):
@@ -354,6 +386,8 @@ class MainWindow(QMainWindow):
         caption_layout.addWidget(caption_style)
         caption_layout.addWidget(self.caption_button)
         panel.addWidget(caption_box)
+
+        panel.addWidget(self._build_ai_box())
 
         self.export_button = QPushButton("Exportar vídeo")
         self.export_button.setObjectName("primary")
@@ -668,8 +702,25 @@ class MainWindow(QMainWindow):
                 srt_files = sorted(self.work_dir.glob("*.srt"), key=lambda p: p.stat().st_mtime)
                 if srt_files and srt_has_content(srt_files[-1]):
                     self.caption_path = srt_files[-1]
-                    shorten_srt_captions(self.caption_path)
-                    self.caption_status.setText(f"Legendas prontas: {self.caption_path.name}")
+
+                    def ready(note: str = "") -> None:
+                        # Encurtar depois da revisão: a IA trabalha melhor com as
+                        # frases inteiras do Whisper do que com blocos picados.
+                        shorten_srt_captions(self.caption_path)
+                        self.caption_status.setText(
+                            f"Legendas prontas: {self.caption_path.name}{note}")
+
+                    if self.ai_review_enabled():
+                        self.caption_status.setText("Revisando as legendas com IA…")
+                        started = self._start_ai_review(
+                            self.caption_path, self.text_input.text().strip(),
+                            lambda ok, msg: (self.log.appendPlainText(("✅ " if ok else "⚠️ ") + msg),
+                                             ready(" (revisada pela IA)" if ok else "")),
+                        )
+                        if not started:
+                            ready()
+                    else:
+                        ready()
                 else:
                     self.caption_path = None
                     self.caption_status.setText("Nenhuma fala detectada no trecho; sem legendas.")
@@ -725,6 +776,122 @@ class MainWindow(QMainWindow):
             return
         command = [whisper, str(audio_path), "--model", "base", "--language", "Portuguese", "--task", "transcribe", "--output_format", "srt", "--output_dir", str(self.work_dir)]
         self.run_process(command, "Legendas geradas. Elas serão aplicadas na exportação.", caption=True)
+
+    # ──────────────────────────────────────────────────────────────
+    #  Revisão da legenda com IA (Grok) — vale para os 3 tipos de corte
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_ai_box(self) -> QGroupBox:
+        """Caixa de configuração da revisão com IA, na aba Edição.
+
+        A configuração é única e vale para os três fluxos (edição, CSV e live).
+        """
+        config = ai_srt.load_config()
+        box = QGroupBox("5. Revisão da legenda com IA (Grok)")
+        layout = QVBoxLayout(box)
+
+        self.ai_enabled = QCheckBox("Revisar as legendas com IA antes de queimar no vídeo")
+        self.ai_enabled.setChecked(bool(config.get("ai_enabled")))
+        self.ai_enabled.toggled.connect(self._save_ai_config)
+        layout.addWidget(self.ai_enabled)
+
+        form = QFormLayout()
+        self.ai_key = QLineEdit(config.get("api_key", ""))
+        self.ai_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ai_key.setPlaceholderText("xai-… (ou defina XAI_API_KEY no sistema)")
+        self.ai_key.editingFinished.connect(self._save_ai_config)
+        form.addRow("Chave da API", self.ai_key)
+
+        self.ai_model = QComboBox()
+        self.ai_model.setEditable(True)
+        self.ai_model.addItem(config.get("model") or ai_srt.DEFAULT_MODEL)
+        self.ai_model.currentTextChanged.connect(lambda _: self._save_ai_config())
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.ai_model, 1)
+        fetch = QPushButton("Buscar")
+        fetch.setToolTip("Lista os modelos que a sua chave pode usar.")
+        fetch.clicked.connect(self._fetch_ai_models)
+        model_row.addWidget(fetch)
+        model_widget = QWidget(); model_widget.setLayout(model_row)
+        form.addRow("Modelo", model_widget)
+        layout.addLayout(form)
+
+        note = QLabel("O texto das legendas é enviado para a API da xAI. Os tempos "
+                      "nunca saem daqui — só as falas vão, e o SRT é remontado "
+                      "com os tempos originais.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.ai_button = QPushButton("Revisar a legenda atual com IA")
+        self.ai_button.clicked.connect(self._review_current_caption)
+        layout.addWidget(self.ai_button)
+        return box
+
+    def _save_ai_config(self) -> None:
+        ai_srt.save_config({
+            "ai_enabled": self.ai_enabled.isChecked(),
+            "api_key": self.ai_key.text().strip(),
+            "model": self.ai_model.currentText().strip(),
+        })
+
+    def _ai_key(self) -> str:
+        """Chave digitada na interface; se vazia, a do ambiente."""
+        return self.ai_key.text().strip() or ai_srt.api_key_from_env()
+
+    def ai_review_enabled(self) -> bool:
+        """A revisão automática está ligada e configurada?"""
+        return bool(self.ai_enabled.isChecked() and self._ai_key())
+
+    def _fetch_ai_models(self) -> None:
+        try:
+            models = ai_srt.list_models(self._ai_key())
+        except ai_srt.AiError as error:
+            QMessageBox.warning(self, APP_NAME, f"Não deu para listar os modelos:\n\n{error}")
+            return
+        if not models:
+            QMessageBox.information(self, APP_NAME, "A API não devolveu nenhum modelo.")
+            return
+        current = self.ai_model.currentText().strip()
+        self.ai_model.clear()
+        self.ai_model.addItems(models)
+        self.ai_model.setCurrentText(current if current in models else models[0])
+
+    def _start_ai_review(self, path: Path, context: str, on_done) -> bool:
+        """Dispara a revisão em segundo plano. False se não deu para começar."""
+        if not srt_has_content(path):
+            return False
+        key = self._ai_key()
+        if not key:
+            return False
+        worker = SrtReviewWorker(path, key, self.ai_model.currentText().strip(), context, self)
+        worker.done.connect(on_done)
+        worker.finished.connect(worker.deleteLater)
+        self._ai_worker = worker           # segura a referência enquanto roda
+        worker.start()
+        return True
+
+    def _review_current_caption(self) -> None:
+        """Botão da aba Edição: revisa a legenda já gerada, sob demanda."""
+        if not srt_has_content(self.caption_path):
+            QMessageBox.warning(self, APP_NAME, "Gere as legendas do recorte antes de revisar.")
+            return
+        if not self._ai_key():
+            QMessageBox.warning(self, APP_NAME,
+                                "Informe a chave da API da xAI (ou defina XAI_API_KEY).")
+            return
+        self.ai_button.setEnabled(False)
+        self.ai_button.setText("Revisando com IA…")
+
+        def finished(ok: bool, message: str) -> None:
+            self.ai_button.setEnabled(True)
+            self.ai_button.setText("Revisar a legenda atual com IA")
+            self.log.appendPlainText(("✅ " if ok else "⚠️ ") + message)
+            self.caption_status.setText(message)
+            if not ok:
+                QMessageBox.warning(self, APP_NAME, message)
+
+        self._start_ai_review(self.caption_path, self.text_input.text().strip(), finished)
 
     def download_video(self) -> None:
         url = self.url_input.text().strip()
@@ -1485,10 +1652,26 @@ class MainWindow(QMainWindow):
     def _csv_after_whisper(self, code: int, status: QProcess.ExitStatus, idx: int) -> None:
         srt_path = self.work_dir / f"_csv_audio_{idx}.srt"
         if code == 0 and status == QProcess.ExitStatus.NormalExit and srt_has_content(srt_path):
-            shorten_srt_captions(srt_path)
-            self._csv_clip_srt = srt_path
-        else:
-            self.csv_log.appendPlainText("   ⚠️ Sem fala detectada (ou Whisper falhou); seguindo sem legenda.")
+            def ready() -> None:
+                # Encurtar depois da revisão: a IA lida melhor com frases inteiras.
+                shorten_srt_captions(srt_path)
+                self._csv_clip_srt = srt_path
+                self._csv_export_clip()
+
+            if self.ai_review_enabled():
+                self.csv_log.appendPlainText("   🤖 Revisando a legenda com IA…")
+                titulo = self._csv_moments[self._csv_batch_index].get("label", "")
+                started = self._start_ai_review(
+                    srt_path, titulo,
+                    lambda ok, msg: (self.csv_log.appendPlainText(f"   {'✅' if ok else '⚠️'} {msg}"),
+                                     ready()),
+                )
+                if not started:
+                    ready()
+            else:
+                ready()
+            return
+        self.csv_log.appendPlainText("   ⚠️ Sem fala detectada (ou Whisper falhou); seguindo sem legenda.")
         self._csv_export_clip()
 
     def _csv_export_clip(self) -> None:
@@ -2237,8 +2420,22 @@ class MainWindow(QMainWindow):
         wav = self._live_pending.get("wav")
         srt = wav.with_suffix(".srt") if wav else None
         if code == 0 and srt and srt.exists():
-            shorten_srt_captions(srt)
-            self._live_run_cut(srt)
+            def ready() -> None:
+                # Encurtar depois da revisão: a IA lida melhor com frases inteiras.
+                shorten_srt_captions(srt)
+                self._live_run_cut(srt)
+
+            if self.ai_review_enabled():
+                self.live_cut_log.appendPlainText("🤖 Revisando a legenda com IA…")
+                started = self._start_ai_review(
+                    srt, self._live_pending.get("titulo", ""),
+                    lambda ok, msg: (self.live_cut_log.appendPlainText(("✅ " if ok else "⚠️ ") + msg),
+                                     ready()),
+                )
+                if not started:
+                    ready()
+            else:
+                ready()
         elif code != 0:
             self.live_cut_log.appendPlainText(
                 f"⚠️ Whisper terminou com erro (código {code}); exportando sem legendas.")
