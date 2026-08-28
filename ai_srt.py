@@ -155,20 +155,34 @@ def _unwrap_json(content: str) -> dict:
     raise AiError("A IA respondeu num formato inesperado.")
 
 
-def _correct_chunk(lines: list[str], api_key: str, model: str, context: str) -> list[str]:
-    """Corrige um lote de linhas. Devolve as originais se a resposta não bater."""
+def _correct_chunk(lines: list[str], api_key: str, model: str,
+                   context: str) -> tuple[list[str], dict]:
+    """Corrige um lote de linhas. Devolve (linhas, uso de tokens).
+
+    Devolve as originais se a resposta não bater. `uso` é o bloco `usage` da
+    resposta (prompt/completion tokens), para a interface poder mostrar quanto
+    custou de verdade.
+    """
     prompt = _PROMPT
     if context:
         prompt += f"\n\nContexto do vídeo (ajuda com nomes próprios): {context}"
+    user = json.dumps({"linhas": lines}, ensure_ascii=False)
+    # Teto de saída: a resposta é do tamanho da entrada (mesmas linhas,
+    # corrigidas). Sem este limite, o modelo pode disparar milhares de tokens
+    # à toa — foi o que estourou a conta. Dou folga generosa (para não cortar
+    # uma resposta legítima, o que viraria erro de JSON) e um teto rígido.
+    max_tokens = min(4096, max(512, len(user) // 2 + 512))
     payload = {
         "model": model,
         "temperature": 0.2,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps({"linhas": lines}, ensure_ascii=False)},
+            {"role": "user", "content": user},
         ],
     }
     data = _request("/chat/completions", api_key, payload)
+    usage = data.get("usage") or {}
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as error:
@@ -178,25 +192,29 @@ def _correct_chunk(lines: list[str], api_key: str, model: str, context: str) -> 
     # Só aceita se vier a mesma quantidade de linhas: uma resposta com mais ou
     # menos blocos desalinharia a legenda do áudio. Na dúvida, fica o original.
     if not isinstance(fixed, list) or len(fixed) != len(lines):
-        return lines
-    return [str(new).strip() or old for new, old in zip(fixed, lines)]
+        return lines, usage
+    return [str(new).strip() or old for new, old in zip(fixed, lines)], usage
 
 
 def correct_lines(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
-                  context: str = "", progress=None) -> list[str]:
+                  context: str = "", progress=None) -> tuple[list[str], dict]:
     """Corrige as falas em lotes, preservando a quantidade e a ordem.
 
-    `progress` é chamado com (linhas_prontas, total) a cada lote, para a
-    interface conseguir mostrar andamento.
+    Devolve (linhas corrigidas, uso somado de tokens). `progress` é chamado com
+    (linhas_prontas, total) a cada lote, para a interface mostrar andamento.
     """
     if not api_key:
         raise AiError("Informe a chave da API do DeepSeek.")
     if not lines:
-        return []
+        return [], {}
     result: list[str] = []
+    totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     for start in range(0, len(lines), CHUNK):
         batch = lines[start:start + CHUNK]
-        result.extend(_correct_chunk(batch, api_key, model or DEFAULT_MODEL, context))
+        fixed, usage = _correct_chunk(batch, api_key, model or DEFAULT_MODEL, context)
+        result.extend(fixed)
+        for key in totals:
+            totals[key] += int(usage.get(key) or 0)
         if progress:
             progress(len(result), len(lines))
-    return result
+    return result, totals

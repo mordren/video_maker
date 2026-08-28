@@ -420,23 +420,23 @@ def build_srt_for_clip(start_s: float, end_s: float, text: str, output_path: Pat
 
 
 def review_srt_with_ai(path: Path, api_key: str, model: str = "",
-                       context: str = "", progress=None) -> tuple[int, int]:
+                       context: str = "", progress=None) -> tuple[int, int, dict]:
     """Manda as falas do SRT para a IA e regrava o arquivo já corrigido.
 
     Os tempos são os do arquivo original — a IA só devolve texto, e o SRT é
     remontado aqui. Assim, mesmo que o modelo responda algo estranho, a legenda
     não sai do lugar em relação ao áudio.
 
-    Devolve (linhas alteradas, total de linhas).
+    Devolve (linhas alteradas, total de linhas, uso de tokens).
     """
     import ai_srt
 
     segments = parse_srt_segments(path)
     if not segments:
-        return 0, 0
+        return 0, 0, {}
 
     originals = [text for _, _, text in segments]
-    fixed = ai_srt.correct_lines(originals, api_key, model, context, progress)
+    fixed, usage = ai_srt.correct_lines(originals, api_key, model, context, progress)
 
     lines: list[str] = []
     changed = 0
@@ -445,7 +445,7 @@ def review_srt_with_ai(path: Path, api_key: str, model: str = "",
             changed += 1
         lines.extend([str(i), f"{srt_timestamp(start)} --> {srt_timestamp(end)}", new, ""])
     path.write_text("\n".join(lines), encoding="utf-8")
-    return changed, len(segments)
+    return changed, len(segments), usage
 
 
 def thumbnail_path(video_path: Path) -> Path:

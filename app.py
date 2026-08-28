@@ -93,7 +93,7 @@ class SrtReviewWorker(QThread):
 
     def run(self) -> None:
         try:
-            changed, total = review_srt_with_ai(
+            changed, total, usage = review_srt_with_ai(
                 self._path, self._api_key, self._model, self._context,
                 progress=lambda ready, all_: self.progress.emit(ready, all_),
             )
@@ -102,7 +102,13 @@ class SrtReviewWorker(QThread):
         except Exception as error:                     # noqa: BLE001
             self.done.emit(False, f"Revisão com IA falhou: {error}")
         else:
-            self.done.emit(True, f"Legenda revisada pela IA: {changed}/{total} blocos alterados.")
+            enviados = int(usage.get("prompt_tokens") or 0)
+            recebidos = int(usage.get("completion_tokens") or 0)
+            tok = ""
+            if enviados or recebidos:
+                tok = f" — {enviados} tokens enviados, {recebidos} recebidos"
+            self.done.emit(
+                True, f"Legenda revisada pela IA: {changed}/{total} blocos alterados{tok}.")
 
 
 class MainWindow(QMainWindow):
@@ -830,7 +836,8 @@ class MainWindow(QMainWindow):
 
         note = QLabel("O texto das legendas é enviado para a API do DeepSeek. Os tempos "
                       "nunca saem daqui — só as falas vão, e o SRT é remontado "
-                      "com os tempos originais.")
+                      "com os tempos originais. Use 'deepseek-chat' (barato e sem "
+                      "raciocínio); o log mostra quantos tokens cada revisão gastou.")
         note.setObjectName("muted")
         note.setWordWrap(True)
         layout.addWidget(note)
