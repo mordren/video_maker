@@ -778,7 +778,7 @@ class MainWindow(QMainWindow):
         self.run_process(command, "Legendas geradas. Elas serão aplicadas na exportação.", caption=True)
 
     # ──────────────────────────────────────────────────────────────
-    #  Revisão da legenda com IA (Grok) — vale para os 3 tipos de corte
+    #  Revisão da legenda com IA (DeepSeek) — vale para os 3 tipos de corte
     # ──────────────────────────────────────────────────────────────
 
     def _build_ai_box(self) -> QGroupBox:
@@ -787,7 +787,7 @@ class MainWindow(QMainWindow):
         A configuração é única e vale para os três fluxos (edição, CSV e live).
         """
         config = ai_srt.load_config()
-        box = QGroupBox("5. Revisão da legenda com IA (Grok)")
+        box = QGroupBox("5. Revisão da legenda com IA (DeepSeek)")
         layout = QVBoxLayout(box)
 
         self.ai_enabled = QCheckBox("Revisar as legendas com IA antes de queimar no vídeo")
@@ -798,7 +798,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         self.ai_key = QLineEdit(config.get("api_key", ""))
         self.ai_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.ai_key.setPlaceholderText("xai-… (ou defina XAI_API_KEY no sistema)")
+        self.ai_key.setPlaceholderText("sk-… (ou defina DEEPSEEK_API_KEY no sistema)")
         self.ai_key.editingFinished.connect(self._save_ai_config)
         form.addRow("Chave da API", self.ai_key)
 
@@ -816,7 +816,7 @@ class MainWindow(QMainWindow):
         form.addRow("Modelo", model_widget)
         layout.addLayout(form)
 
-        note = QLabel("O texto das legendas é enviado para a API da xAI. Os tempos "
+        note = QLabel("O texto das legendas é enviado para a API do DeepSeek. Os tempos "
                       "nunca saem daqui — só as falas vão, e o SRT é remontado "
                       "com os tempos originais.")
         note.setObjectName("muted")
@@ -878,7 +878,7 @@ class MainWindow(QMainWindow):
             return
         if not self._ai_key():
             QMessageBox.warning(self, APP_NAME,
-                                "Informe a chave da API da xAI (ou defina XAI_API_KEY).")
+                                "Informe a chave da API do DeepSeek (ou defina DEEPSEEK_API_KEY).")
             return
         self.ai_button.setEnabled(False)
         self.ai_button.setText("Revisando com IA…")

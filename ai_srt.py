@@ -1,4 +1,4 @@
-"""Revisão das legendas com IA (API da xAI / Grok).
+"""Revisão das legendas com IA (API do DeepSeek).
 
 O Whisper erra bastante em português — acentuação, pontuação, concordância e,
 principalmente, nomes próprios. Este módulo manda **só as falas** para o modelo
@@ -18,8 +18,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-API_BASE = "https://api.x.ai/v1"
-DEFAULT_MODEL = "grok-4-fast"
+API_BASE = "https://api.deepseek.com/v1"
+DEFAULT_MODEL = "deepseek-chat"
 
 # Quantos blocos de legenda vão por requisição. Blocos demais numa tacada só
 # aumentam a chance de o modelo devolver uma quantidade diferente de linhas.
@@ -62,17 +62,31 @@ def load_config() -> dict:
     """Lê a configuração salva; devolve dict vazio se não houver nenhuma."""
     path = config_path()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        config = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    # Antes isto usava a API da xAI. Chave e modelo de lá não servem aqui e só
+    # dariam um erro confuso na primeira chamada, então saem de campo — mas a
+    # chave antiga fica guardada de lado, para não sumir sem o usuário mandar.
+    if str(config.get("api_key", "")).startswith("xai-"):
+        config["api_key_xai"] = config["api_key"]
+        config["api_key"] = ""
+    if str(config.get("model", "")).startswith("grok"):
+        config["model"] = ""
+    return config
 
 
 def save_config(config: dict) -> bool:
-    """Grava a configuração. Devolve False se não deu para escrever."""
+    """Grava a configuração, preservando o que já estava no arquivo.
+
+    A interface só conhece alguns campos; o resto do arquivo é mantido como
+    está para não apagar nada que ela não saiba escrever de volta.
+    """
     path = config_path()
+    merged = load_config() | config
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(config, indent=2, ensure_ascii=False),
+        path.write_text(json.dumps(merged, indent=2, ensure_ascii=False),
                         encoding="utf-8")
         return True
     except OSError:
@@ -81,7 +95,7 @@ def save_config(config: dict) -> bool:
 
 def api_key_from_env() -> str:
     """Chave da variável de ambiente, para quem prefere não salvar em arquivo."""
-    return (os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY") or "").strip()
+    return (os.getenv("DEEPSEEK_API_KEY") or "").strip()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -176,7 +190,7 @@ def correct_lines(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
     interface conseguir mostrar andamento.
     """
     if not api_key:
-        raise AiError("Informe a chave da API da xAI.")
+        raise AiError("Informe a chave da API do DeepSeek.")
     if not lines:
         return []
     result: list[str] = []
