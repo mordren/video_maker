@@ -32,7 +32,7 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
-    render_thumbnail, review_srt_with_ai, thumbnail_path,
+    render_thumbnail, review_srt_with_ai, thumbnail_path, write_reels_prompt,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
@@ -771,6 +771,10 @@ class MainWindow(QMainWindow):
                         message += f"\n\nTranscrição salva em:\n{srt_dst}"
                     except OSError:
                         pass
+                    # Prompt de legenda para Reels (.txt ao lado do vídeo).
+                    prompt_txt = write_reels_prompt(srt_dst, srt_dst)
+                    if prompt_txt:
+                        message += f"\n\nPrompt de legenda salvo em:\n{prompt_txt}"
                 post = getattr(self, "_post_frame", None)
                 if post:
                     message += f"\n\nFrame de post (também é a capa do vídeo):\n{post}"
@@ -1829,6 +1833,9 @@ class MainWindow(QMainWindow):
                     shutil.copyfile(self._csv_clip_srt, output.with_suffix(".srt"))
                 except OSError:
                     pass
+                # Prompt de legenda para Reels (.txt ao lado do vídeo).
+                if write_reels_prompt(self._csv_clip_srt, output):
+                    self.csv_log.appendPlainText("   📝 Prompt de legenda salvo (.txt).")
             post = getattr(self, "_csv_post_frame", None)
             if post:
                 self.csv_log.appendPlainText(f"   🖼️ Post/capa → {post.name}")
@@ -2477,6 +2484,7 @@ class MainWindow(QMainWindow):
 
     def _live_run_cut(self, srt_path: Path | None) -> None:
         d = self._live_pending
+        d["srt"] = srt_path             # guardado p/ gerar o prompt .txt no fim
         start, end, mode, titulo = d["start"], d["end"], d["mode"], d["titulo"]
         video, audio, output = d["video"], d["audio"], d["output"]
         length = end - start
@@ -2553,6 +2561,10 @@ class MainWindow(QMainWindow):
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
             self.live_cut_log.appendPlainText(f"✅ Corte exportado → {output}")
             self.live_log.appendPlainText(f"✅ Corte exportado → {output.name}")
+            # Prompt de legenda para Reels (.txt ao lado do vídeo).
+            srt = self._live_pending.get("srt")
+            if srt and write_reels_prompt(srt, output):
+                self.live_cut_log.appendPlainText("📝 Prompt de legenda salvo (.txt).")
             post = getattr(self, "_live_post_frame", None)
             if post:
                 self.live_cut_log.appendPlainText(f"🖼️ Post/capa → {post.name}")

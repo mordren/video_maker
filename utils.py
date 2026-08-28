@@ -460,6 +460,65 @@ def review_srt_with_ai(path: Path, api_key: str, model: str = "", context: str =
     return changed, len(segments), usage, titulo, subtitulo
 
 
+# Modelo do prompt (fornecido pelo usuário) para gerar a legenda de Reels a
+# partir do SRT. O app NÃO executa este prompt — apenas grava o .txt pronto ao
+# lado do vídeo, com a legenda (SRT) já encaixada, para o usuário colar numa IA.
+REELS_PROMPT_TEMPLATE = """Atue como um especialista em marketing digital e produção de conteúdo para redes sociais, focado em vídeos políticos e de debate.
+
+Recebi um arquivo de legenda no formato SRT (com timestamps e falas) de um trecho de uma entrevista ou debate. Com base APENAS no conteúdo desse arquivo, crie uma legenda completa e pronta para um Reels do Instagram.
+
+Siga as seguintes instruções rigorosamente:
+
+1. **Idioma e Tom**: Escreva tudo em português do Brasil, com tom direto, reflexivo e engajador, típico de conteúdo político que viraliza. Use perguntas retóricas para engajar o público.
+
+2. **Estrutura da Legenda (obrigatória)**:
+   - **Título/Hook**: Comece com uma frase de impacto extraída diretamente da fala do candidato (entre aspas), seguida de uma pergunta ou provocação sobre o tema central.
+   - **Desenvolvimento (2 parágrafos)**: Resuma o conflito principal do debate (ex: educação vs. punição/censura). Apresente os dois lados do argumento de forma equilibrada, mas instigante.
+   - **Call to Action (CTA)**: Termine com uma pergunta direta ao público, convidando-o a comentar com a sua opinião. Use um emoji de seta ou interrogação.
+
+3. **Extração de Frases-Chave**: Identifique os 3 melhores momentos de impacto no arquivo (pelos timestamps) e liste-os separadamente como sugestão de "destaque do vídeo" para edição.
+
+4. **Hashtags Obrigatórias**: Inclua obrigatoriamente as hashtags #eleicao2026 e #renansantos no final. Adicione outras 5 a 8 hashtags relevantes sobre o tema (ex: educação, política, liberdade, violência).
+
+5. **Bônus - Produção**: Sugira um gênero musical de fundo (ex: trilha reflexiva, lo-fi, tensa) e confirme que o formato deve ser vertical (9:16) com legendas em caixa alta nos trechos destacados.
+
+---
+**Agora, aqui está o arquivo de legenda para você analisar:**
+
+{legenda}
+
+---
+Aguardo a legenda pronta para postagem.
+"""
+
+
+def reels_prompt_path(dest: Path) -> Path:
+    """Caminho do .txt com o prompt de legenda, ao lado do vídeo/legenda."""
+    return dest.with_name(f"{dest.stem} - prompt legenda.txt")
+
+
+def write_reels_prompt(srt_path: Path, dest: Path) -> Path | None:
+    """Grava, ao lado de `dest`, um .txt com o prompt de legenda já preenchido.
+
+    O conteúdo do SRT (com timestamps) entra no lugar do marcador do modelo. É
+    só um arquivo de texto para o usuário levar a uma IA — nada é enviado aqui.
+    Devolve o caminho do .txt, ou None se o SRT estiver vazio/ausente.
+    """
+    if not srt_has_content(srt_path):
+        return None
+    try:
+        legenda = Path(srt_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    txt_path = reels_prompt_path(dest)
+    try:
+        txt_path.write_text(
+            REELS_PROMPT_TEMPLATE.format(legenda=legenda), encoding="utf-8")
+    except OSError:
+        return None
+    return txt_path
+
+
 def thumbnail_path(video_path: Path) -> Path:
     """Caminho do PNG de post que acompanha o vídeo exportado."""
     return video_path.with_suffix(".png")
