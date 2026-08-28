@@ -38,16 +38,24 @@ corrige a grafia, não a fala.
 - Se a linha já estiver certa, devolva ela igual.
 - Responda apenas com JSON no formato {"linhas": ["...", "..."]}"""
 
-_TITLE_PROMPT = """Você recebe a transcrição de um vídeo político curto do Brasil — \
-em geral a fala ou a opinião de um político sobre algum tema. A partir dela, crie um \
-título e um subtítulo para o vídeo, em português do Brasil.
+_REVIEW_TITLE_PROMPT = """Você trabalha a legenda de um vídeo político curto do Brasil \
+— em geral a fala ou a opinião de um político sobre algum tema. Faça as duas coisas \
+abaixo e devolva TUDO num único JSON.
 
-Regras:
-- Título: chamativo, mas fiel ao que foi dito; no máximo ~60 caracteres; sem ponto final.
-- Subtítulo: um chapéu curto de tema/categoria; no máximo ~30 caracteres; em caixa alta \
+1) Revise a legenda: corrija ortografia, acentuação, pontuação, concordância e nomes \
+próprios mal transcritos pelo reconhecimento de fala. Mantenha o jeito falado (gírias, \
+repetições, frases cortadas no meio). Não traduza, não resuma, não reescreva o estilo.
+2) Crie um título e um subtítulo para o vídeo, com base só no que é dito na fala.
+
+Responda apenas com JSON, exatamente neste formato:
+{"titulo": "...", "subtitulo": "...", "linhas": ["...", "..."]}
+
+- titulo: chamativo mas fiel à fala; no máximo ~60 caracteres; sem ponto final.
+- subtitulo: um chapéu curto de tema/categoria; no máximo ~30 caracteres; em CAIXA ALTA \
 (ex.: ECONOMIA, ELEIÇÕES 2026, STF, SEGURANÇA).
-- Baseie-se só no que a fala diz. Não invente fatos nem dê opinião própria.
-- Responda apenas com JSON no formato {"titulo": "...", "subtitulo": "..."}"""
+- linhas: exatamente a mesma quantidade de linhas que você recebeu, na mesma ordem; \
+nunca junte nem separe linhas; se uma já estiver certa, devolva-a igual.
+- Não invente fatos que não estão na fala."""
 
 
 class AiError(RuntimeError):
@@ -235,30 +243,31 @@ def correct_lines(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
     return result, totals
 
 
-def suggest_title_subtitle(transcript: str, api_key: str, model: str = DEFAULT_MODEL,
-                           context: str = "") -> tuple[str, str, dict]:
-    """Sugere (título, subtítulo, uso de tokens) a partir da transcrição.
+def review_lines_with_title(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
+                            context: str = "") -> tuple[str, str, list[str], dict]:
+    """Numa só requisição: corrige as falas e cria título e subtítulo.
 
-    Manda a fala inteira com o prompt político e pede o título e o subtítulo em
-    JSON. Só o texto sai daqui; quem grava nos campos é a interface.
+    Devolve (título, subtítulo, linhas corrigidas, uso de tokens). A resposta é
+    um único JSON com as três chaves. Se a chave `linhas` não vier com a mesma
+    quantidade, ficam as originais (o título/subtítulo ainda são aproveitados).
     """
     if not api_key:
         raise AiError("Informe a chave da API do DeepSeek.")
-    text = transcript.strip()
-    if not text:
-        return "", "", {}
-    # Transcrição bem longa é desnecessária para titular e só encarece; corto.
-    text = text[:12000]
-    prompt = _TITLE_PROMPT
+    if not lines:
+        return "", "", [], {}
+    user = json.dumps({"linhas": lines}, ensure_ascii=False)
+    # Saída ≈ entrada (mesmas linhas) + um punhado para título/subtítulo.
+    max_tokens = min(4096, max(512, len(user) // 2 + 512))
+    prompt = _REVIEW_TITLE_PROMPT
     if context:
         prompt += f"\n\nDica de contexto (tema/pessoa): {context}"
     payload = {
         "model": model or DEFAULT_MODEL,
-        "temperature": 0.4,
-        "max_tokens": 200,
+        "temperature": 0.3,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": text},
+            {"role": "user", "content": user},
         ],
     }
     data = _request("/chat/completions", api_key, payload)
@@ -270,4 +279,9 @@ def suggest_title_subtitle(transcript: str, api_key: str, model: str = DEFAULT_M
     obj = _unwrap_json(content)
     titulo = str(obj.get("titulo") or obj.get("title") or "").strip()
     subtitulo = str(obj.get("subtitulo") or obj.get("subtitle") or "").strip()
-    return titulo, subtitulo, usage
+    fixed = obj.get("linhas")
+    if not isinstance(fixed, list) or len(fixed) != len(lines):
+        fixed = lines
+    else:
+        fixed = [str(new).strip() or old for new, old in zip(fixed, lines)]
+    return titulo, subtitulo, fixed, usage

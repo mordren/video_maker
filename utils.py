@@ -419,24 +419,36 @@ def build_srt_for_clip(start_s: float, end_s: float, text: str, output_path: Pat
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def review_srt_with_ai(path: Path, api_key: str, model: str = "",
-                       context: str = "", progress=None) -> tuple[int, int, dict]:
+def review_srt_with_ai(path: Path, api_key: str, model: str = "", context: str = "",
+                       progress=None, with_title: bool = False
+                       ) -> tuple[int, int, dict, str, str]:
     """Manda as falas do SRT para a IA e regrava o arquivo já corrigido.
 
     Os tempos são os do arquivo original — a IA só devolve texto, e o SRT é
     remontado aqui. Assim, mesmo que o modelo responda algo estranho, a legenda
     não sai do lugar em relação ao áudio.
 
-    Devolve (linhas alteradas, total de linhas, uso de tokens).
+    Com `with_title`, a mesma requisição também devolve um título e um subtítulo
+    (um único JSON com as chaves titulo/subtitulo/linhas) — usado só na Edição.
+
+    Devolve (linhas alteradas, total de linhas, uso de tokens, título, subtítulo).
+    Título e subtítulo vêm vazios quando `with_title` é False.
     """
     import ai_srt
 
     segments = parse_srt_segments(path)
     if not segments:
-        return 0, 0, {}
+        return 0, 0, {}, "", ""
 
     originals = [text for _, _, text in segments]
-    fixed, usage = ai_srt.correct_lines(originals, api_key, model, context, progress)
+    if with_title:
+        titulo, subtitulo, fixed, usage = ai_srt.review_lines_with_title(
+            originals, api_key, model, context)
+        if progress:
+            progress(len(fixed), len(fixed))
+    else:
+        fixed, usage = ai_srt.correct_lines(originals, api_key, model, context, progress)
+        titulo, subtitulo = "", ""
 
     lines: list[str] = []
     changed = 0
@@ -445,21 +457,7 @@ def review_srt_with_ai(path: Path, api_key: str, model: str = "",
             changed += 1
         lines.extend([str(i), f"{srt_timestamp(start)} --> {srt_timestamp(end)}", new, ""])
     path.write_text("\n".join(lines), encoding="utf-8")
-    return changed, len(segments), usage
-
-
-def suggest_title_with_ai(path: Path, api_key: str, model: str = "",
-                          context: str = "") -> tuple[str, str, dict]:
-    """Lê a transcrição do SRT e pede à IA um título e um subtítulo.
-
-    Devolve (título, subtítulo, uso de tokens). O arquivo não é alterado — só a
-    interface decide o que fazer com as sugestões.
-    """
-    import ai_srt
-
-    segments = parse_srt_segments(path)
-    transcript = " ".join(text for _, _, text in segments)
-    return ai_srt.suggest_title_subtitle(transcript, api_key, model, context)
+    return changed, len(segments), usage, titulo, subtitulo
 
 
 def thumbnail_path(video_path: Path) -> Path:
