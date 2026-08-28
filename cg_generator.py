@@ -127,32 +127,32 @@ def _fit_kicker(text: str, avail_w: int, max_size: int = 22) -> tuple[list[str],
     return [text], max(size, _MIN_SIZE)
 
 
-def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
+def _lower_third_chain(titulo: str, subtitulo: str, logo_w: int) -> str:
     """Monta a cadeia de filtros do lower-third de fundo branco.
 
     Layout: logo à esquerda, faixa de acento verde/amarelo, e à direita o
-    subtítulo (chapéu verde, pequeno) em cima e o título (preto, grande)
-    embaixo — a manchete é o título, como num GC de telejornal.
+    título (chapéu verde, pequeno) em cima e o subtítulo (preto, grande)
+    embaixo — a manchete em destaque é o subtítulo, como num GC de telejornal.
 
     As duas fontes saem de uma medição real do texto (largura glifo a glifo e
     altura do bloco), então nada é cortado nem sobra espaço vazio à toa. O
-    título quebra em duas linhas quando isso rende uma fonte maior. O bloco
+    subtítulo quebra em duas linhas quando isso rende uma fonte maior. O bloco
     inteiro é centralizado na vertical.
     """
-    title = title.upper().strip()
-    subtitle = subtitle.upper().strip()
+    titulo = titulo.upper().strip()
+    subtitulo = subtitulo.upper().strip()
 
     text_x = logo_w + 34            # início do texto, depois do logo + acento
     avail = CG_WIDTH - text_x - 30  # largura disponível até a margem direita
     avail_h = LT_HEIGHT - 24        # respiro em cima e embaixo
 
-    # Chapéu: linha verde pequena, no topo.
-    kicker_lines, kicker_size = _fit_kicker(subtitle, avail)
+    # Chapéu (título): linha verde pequena, no topo.
+    kicker_lines, kicker_size = _fit_kicker(titulo, avail)
     kicker_h = int(kicker_size * _LINE_RATIO) if kicker_lines else 0
     accent_gap = 14 if kicker_lines else 0   # espaço p/ o detalhe amarelo
 
-    # Manchete: linha preta grande, embaixo, no espaço que sobrou.
-    head_lines, head_size = _fit_headline(title, avail, avail_h - kicker_h - accent_gap)
+    # Manchete (subtítulo): linha preta grande, embaixo, no espaço que sobrou.
+    head_lines, head_size = _fit_headline(subtitulo, avail, avail_h - kicker_h - accent_gap)
     head_line_h = int(head_size * _LINE_RATIO) if head_lines else 0
 
     block_h = kicker_h + accent_gap + head_line_h * len(head_lines)
@@ -186,13 +186,13 @@ def _lower_third_chain(title: str, subtitle: str, logo_w: int) -> str:
     return ",".join(parts)
 
 
-def create_lower_third(title: str, subtitle: str, output_dir: Path,
+def create_lower_third(titulo: str, subtitulo: str, output_dir: Path,
                        logo_path: Path | None = None) -> Path | None:
     """Gera um PNG do lower-third (fundo branco, logo à esquerda, título+subtítulo).
 
     Args:
-        title: Título principal (linha grande, preta).
-        subtitle: Subtítulo/chapéu (linha pequena verde acima do título).
+        titulo: Chapéu curto (linha pequena verde, no topo).
+        subtitulo: Manchete em destaque (linha grande, preta, embaixo).
         output_dir: Diretório para salvar o PNG.
         logo_path: Caminho opcional do PNG do logo (fica à esquerda).
 
@@ -203,7 +203,7 @@ def create_lower_third(title: str, subtitle: str, output_dir: Path,
     lt_path = output_dir / "lower_third.png"
     logo_w = 210 if (logo_path and logo_path.exists()) else 40
 
-    chain = _lower_third_chain(title, subtitle, logo_w)
+    chain = _lower_third_chain(titulo, subtitulo, logo_w)
 
     command = [
         "ffmpeg", "-y",

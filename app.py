@@ -397,9 +397,11 @@ class MainWindow(QMainWindow):
 
         overlay_box = QGroupBox("5. Texto")
         overlay_form = QFormLayout(overlay_box)
-        self.text_input = QLineEdit("Glauber Fugiu do Mamãe Falei!")
+        # Título = chapéu pequeno no topo do GC; Subtítulo = manchete grande embaixo.
+        self.text_input = QLineEdit("POLÍTICA")
+        self.text_input.setPlaceholderText("Chapéu/tema, no topo (ex.: ECONOMIA)")
         self.subtitle_input = QLineEdit("")
-        self.subtitle_input.setPlaceholderText("Chapéu/subtítulo (ex: ELEIÇÕES 2026)")
+        self.subtitle_input.setPlaceholderText("Manchete em destaque, embaixo (linha grande)")
         overlay_form.addRow("Título", self.text_input)
         overlay_form.addRow("Subtítulo", self.subtitle_input)
         self.use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")

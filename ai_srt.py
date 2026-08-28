@@ -50,9 +50,10 @@ repetições, frases cortadas no meio). Não traduza, não resuma, não reescrev
 Responda apenas com JSON, exatamente neste formato:
 {"titulo": "...", "subtitulo": "...", "linhas": ["...", "..."]}
 
-- titulo: chamativo mas fiel à fala; no máximo ~60 caracteres; sem ponto final.
-- subtitulo: um chapéu curto de tema/categoria; no máximo ~30 caracteres; em CAIXA ALTA \
-(ex.: ECONOMIA, ELEIÇÕES 2026, STF, SEGURANÇA).
+- titulo: um chapéu curto de tema/categoria; no máximo ~30 caracteres; em CAIXA ALTA \
+(ex.: ECONOMIA, ELEIÇÕES 2026, STF, SEGURANÇA). É a linha pequena, no topo.
+- subtitulo: a manchete em destaque, chamativa mas fiel à fala; no máximo ~60 \
+caracteres; sem ponto final. É a linha grande, embaixo.
 - linhas: exatamente a mesma quantidade de linhas que você recebeu, na mesma ordem; \
 nunca junte nem separe linhas; se uma já estiver certa, devolva-a igual.
 - Não invente fatos que não estão na fala."""
