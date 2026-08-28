@@ -38,6 +38,17 @@ corrige a grafia, não a fala.
 - Se a linha já estiver certa, devolva ela igual.
 - Responda apenas com JSON no formato {"linhas": ["...", "..."]}"""
 
+_TITLE_PROMPT = """Você recebe a transcrição de um vídeo político curto do Brasil — \
+em geral a fala ou a opinião de um político sobre algum tema. A partir dela, crie um \
+título e um subtítulo para o vídeo, em português do Brasil.
+
+Regras:
+- Título: chamativo, mas fiel ao que foi dito; no máximo ~60 caracteres; sem ponto final.
+- Subtítulo: um chapéu curto de tema/categoria; no máximo ~30 caracteres; em caixa alta \
+(ex.: ECONOMIA, ELEIÇÕES 2026, STF, SEGURANÇA).
+- Baseie-se só no que a fala diz. Não invente fatos nem dê opinião própria.
+- Responda apenas com JSON no formato {"titulo": "...", "subtitulo": "..."}"""
+
 
 class AiError(RuntimeError):
     """Falha ao falar com a API (chave, rede, cota, modelo inexistente...)."""
@@ -222,3 +233,41 @@ def correct_lines(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
         if progress:
             progress(len(result), len(lines))
     return result, totals
+
+
+def suggest_title_subtitle(transcript: str, api_key: str, model: str = DEFAULT_MODEL,
+                           context: str = "") -> tuple[str, str, dict]:
+    """Sugere (título, subtítulo, uso de tokens) a partir da transcrição.
+
+    Manda a fala inteira com o prompt político e pede o título e o subtítulo em
+    JSON. Só o texto sai daqui; quem grava nos campos é a interface.
+    """
+    if not api_key:
+        raise AiError("Informe a chave da API do DeepSeek.")
+    text = transcript.strip()
+    if not text:
+        return "", "", {}
+    # Transcrição bem longa é desnecessária para titular e só encarece; corto.
+    text = text[:12000]
+    prompt = _TITLE_PROMPT
+    if context:
+        prompt += f"\n\nDica de contexto (tema/pessoa): {context}"
+    payload = {
+        "model": model or DEFAULT_MODEL,
+        "temperature": 0.4,
+        "max_tokens": 200,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ],
+    }
+    data = _request("/chat/completions", api_key, payload)
+    usage = data.get("usage") or {}
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as error:
+        raise AiError("Resposta da API sem conteúdo.") from error
+    obj = _unwrap_json(content)
+    titulo = str(obj.get("titulo") or obj.get("title") or "").strip()
+    subtitulo = str(obj.get("subtitulo") or obj.get("subtitle") or "").strip()
+    return titulo, subtitulo, usage

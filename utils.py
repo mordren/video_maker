@@ -448,6 +448,20 @@ def review_srt_with_ai(path: Path, api_key: str, model: str = "",
     return changed, len(segments), usage
 
 
+def suggest_title_with_ai(path: Path, api_key: str, model: str = "",
+                          context: str = "") -> tuple[str, str, dict]:
+    """Lê a transcrição do SRT e pede à IA um título e um subtítulo.
+
+    Devolve (título, subtítulo, uso de tokens). O arquivo não é alterado — só a
+    interface decide o que fazer com as sugestões.
+    """
+    import ai_srt
+
+    segments = parse_srt_segments(path)
+    transcript = " ".join(text for _, _, text in segments)
+    return ai_srt.suggest_title_subtitle(transcript, api_key, model, context)
+
+
 def thumbnail_path(video_path: Path) -> Path:
     """Caminho do PNG de post que acompanha o vídeo exportado."""
     return video_path.with_suffix(".png")

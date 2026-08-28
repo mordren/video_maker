@@ -32,7 +32,7 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
-    render_thumbnail, review_srt_with_ai, thumbnail_path,
+    render_thumbnail, review_srt_with_ai, suggest_title_with_ai, thumbnail_path,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
@@ -109,6 +109,33 @@ class SrtReviewWorker(QThread):
                 tok = f" — {enviados} tokens enviados, {recebidos} recebidos"
             self.done.emit(
                 True, f"Legenda revisada pela IA: {changed}/{total} blocos alterados{tok}.")
+
+
+class TitleSuggestWorker(QThread):
+    """Sugere título e subtítulo a partir da legenda, fora da thread da interface."""
+
+    done = Signal(bool, str, str, str)   # ok?, título, subtítulo, mensagem p/ o log
+
+    def __init__(self, path: Path, api_key: str, model: str, parent=None) -> None:
+        super().__init__(parent)
+        self._path, self._api_key, self._model = path, api_key, model
+
+    def run(self) -> None:
+        try:
+            titulo, subtitulo, usage = suggest_title_with_ai(
+                self._path, self._api_key, self._model)
+        except ai_srt.AiError as error:
+            self.done.emit(False, "", "", f"Sugestão de título falhou: {error}")
+        except Exception as error:                     # noqa: BLE001
+            self.done.emit(False, "", "", f"Sugestão de título falhou: {error}")
+        else:
+            enviados = int(usage.get("prompt_tokens") or 0)
+            recebidos = int(usage.get("completion_tokens") or 0)
+            tok = ""
+            if enviados or recebidos:
+                tok = f" — {enviados} tokens enviados, {recebidos} recebidos"
+            self.done.emit(True, titulo, subtitulo,
+                           f"Título e subtítulo sugeridos pela IA{tok}.")
 
 
 class MainWindow(QMainWindow):
@@ -375,20 +402,9 @@ class MainWindow(QMainWindow):
         self.fixed_image_row.setVisible(False)
         panel.addWidget(format_box)
 
-        overlay_box = QGroupBox("3. Texto")
-        overlay_form = QFormLayout(overlay_box)
-        self.text_input = QLineEdit("Glauber Fugiu do Mamãe Falei!")
-        self.subtitle_input = QLineEdit("")
-        self.subtitle_input.setPlaceholderText("Chapéu/subtítulo (ex: ELEIÇÕES 2026)")
-        overlay_form.addRow("Título", self.text_input)
-        overlay_form.addRow("Subtítulo", self.subtitle_input)
-        self.use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")
-        self.use_cg.setChecked(bool(self.cg_icon_path))
-        self.use_cg.setEnabled(bool(self.cg_icon_path))
-        overlay_form.addRow(self.use_cg)
-        panel.addWidget(overlay_box)
-
-        caption_box = QGroupBox("4. Legendas")
+        # Ordem lógica: primeiro as legendas (3), depois a IA que as revisa e
+        # sugere o texto (4), e por fim os campos de texto que a IA preenche (5).
+        caption_box = QGroupBox("3. Legendas")
         caption_layout = QVBoxLayout(caption_box)
         self.caption_status = QLabel("As legendas serão geradas somente para o recorte.")
         self.caption_status.setWordWrap(True)
@@ -402,6 +418,19 @@ class MainWindow(QMainWindow):
         panel.addWidget(caption_box)
 
         panel.addWidget(self._build_ai_box())
+
+        overlay_box = QGroupBox("5. Texto")
+        overlay_form = QFormLayout(overlay_box)
+        self.text_input = QLineEdit("Glauber Fugiu do Mamãe Falei!")
+        self.subtitle_input = QLineEdit("")
+        self.subtitle_input.setPlaceholderText("Chapéu/subtítulo (ex: ELEIÇÕES 2026)")
+        overlay_form.addRow("Título", self.text_input)
+        overlay_form.addRow("Subtítulo", self.subtitle_input)
+        self.use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")
+        self.use_cg.setChecked(bool(self.cg_icon_path))
+        self.use_cg.setEnabled(bool(self.cg_icon_path))
+        overlay_form.addRow(self.use_cg)
+        panel.addWidget(overlay_box)
 
         self.export_button = QPushButton("Exportar vídeo")
         self.export_button.setObjectName("primary")
@@ -805,7 +834,7 @@ class MainWindow(QMainWindow):
         A configuração é única e vale para os três fluxos (edição, CSV e live).
         """
         config = ai_srt.load_config()
-        box = QGroupBox("5. Revisão da legenda com IA (DeepSeek)")
+        box = QGroupBox("4. Revisão da legenda com IA (DeepSeek)")
         layout = QVBoxLayout(box)
 
         self.ai_enabled = QCheckBox("Revisar as legendas com IA antes de queimar no vídeo")
@@ -845,6 +874,12 @@ class MainWindow(QMainWindow):
         self.ai_button = QPushButton("Revisar a legenda atual com IA")
         self.ai_button.clicked.connect(self._review_current_caption)
         layout.addWidget(self.ai_button)
+
+        self.ai_title_button = QPushButton("Sugerir título e subtítulo com IA")
+        self.ai_title_button.setToolTip(
+            "Lê a legenda do recorte e preenche os campos Título e Subtítulo (seção 5).")
+        self.ai_title_button.clicked.connect(self._suggest_title_subtitle)
+        layout.addWidget(self.ai_title_button)
         return box
 
     def _save_ai_config(self) -> None:
@@ -930,6 +965,45 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, APP_NAME, message)
 
         self._start_ai_review(self.caption_path, self.text_input.text().strip(), finished)
+
+    def _suggest_title_subtitle(self) -> None:
+        """Botão da seção 4: a IA lê a legenda e preenche Título e Subtítulo.
+
+        Só na aba Edição. Manda a transcrição do recorte com um prompt que
+        explica ser um vídeo político (opinião de um político) e pede, em JSON,
+        um título e um subtítulo já no padrão do canal.
+        """
+        if not srt_has_content(self.caption_path):
+            QMessageBox.warning(self, APP_NAME, "Gere as legendas do recorte antes de sugerir o título.")
+            return
+        if not self._ai_key():
+            QMessageBox.warning(self, APP_NAME,
+                                "Informe a chave da API do DeepSeek (ou defina DEEPSEEK_API_KEY).")
+            return
+        self.ai_title_button.setEnabled(False)
+        self.ai_title_button.setText("Sugerindo com IA…")
+
+        def finished(ok: bool, titulo: str, subtitulo: str, message: str) -> None:
+            self.ai_title_button.setEnabled(True)
+            self.ai_title_button.setText("Sugerir título e subtítulo com IA")
+            self.log.appendPlainText(("✅ " if ok else "⚠️ ") + message)
+            if ok:
+                if titulo:
+                    self.text_input.setText(titulo)
+                if subtitulo:
+                    self.subtitle_input.setText(subtitulo)
+                QMessageBox.information(
+                    self, APP_NAME,
+                    f"{message}\n\nTítulo: {titulo or '(vazio)'}\nSubtítulo: {subtitulo or '(vazio)'}")
+            else:
+                QMessageBox.warning(self, APP_NAME, message)
+
+        worker = TitleSuggestWorker(
+            self.caption_path, self._ai_key(), self.ai_model.currentText().strip(), self)
+        worker.done.connect(finished)
+        worker.finished.connect(worker.deleteLater)
+        self._ai_title_worker = worker         # segura a referência enquanto roda
+        worker.start()
 
     def download_video(self) -> None:
         url = self.url_input.text().strip()
