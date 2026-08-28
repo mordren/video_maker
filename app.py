@@ -690,7 +690,10 @@ class MainWindow(QMainWindow):
                         self.caption_status.setText(
                             f"Legendas prontas: {self.caption_path.name}{note}")
 
-                    if self.ai_review_enabled():
+                    skip = self.ai_review_skip_reason(self.caption_path)
+                    if skip:
+                        self.log.appendPlainText("⚠️ " + skip)
+                    if self.ai_review_enabled() and not skip:
                         self.caption_status.setText("Revisando as legendas com IA…")
                         started = self._start_ai_review(
                             self.caption_path, self.text_input.text().strip(),
@@ -822,6 +825,21 @@ class MainWindow(QMainWindow):
     def ai_review_enabled(self) -> bool:
         """A revisão automática está ligada e configurada?"""
         return bool(self.ai_enabled.isChecked() and self._ai_key())
+
+    def ai_review_skip_reason(self, path: Path) -> str:
+        """Por que a revisão automática não vai rodar? '' se for rodar.
+
+        Evita o pior caso: o usuário marca a revisão, mas ela é pulada em
+        silêncio (sem chave, ou sem legenda), e ele acha que a IA rodou.
+        """
+        if not self.ai_enabled.isChecked():
+            return ""                       # o usuário não pediu revisão
+        if not self._ai_key():
+            return ("revisão com IA ligada, mas sem chave da API do DeepSeek — "
+                    "informe a chave na seção 5 (ou desmarque a revisão).")
+        if not srt_has_content(path):
+            return "revisão com IA ligada, mas não há legenda para revisar."
+        return ""
 
     def _fetch_ai_models(self) -> None:
         try:
@@ -1609,7 +1627,10 @@ class MainWindow(QMainWindow):
                 self._csv_clip_srt = srt_path
                 self._csv_export_clip()
 
-            if self.ai_review_enabled():
+            skip = self.ai_review_skip_reason(srt_path)
+            if skip:
+                self.csv_log.appendPlainText("   ⚠️ " + skip)
+            if self.ai_review_enabled() and not skip:
                 self.csv_log.appendPlainText("   🤖 Revisando a legenda com IA…")
                 titulo = self._csv_moments[self._csv_batch_index].get("label", "")
                 started = self._start_ai_review(
@@ -2363,7 +2384,10 @@ class MainWindow(QMainWindow):
                 shorten_srt_captions(srt)
                 self._live_run_cut(srt)
 
-            if self.ai_review_enabled():
+            skip = self.ai_review_skip_reason(srt)
+            if skip:
+                self.live_cut_log.appendPlainText("⚠️ " + skip)
+            if self.ai_review_enabled() and not skip:
                 self.live_cut_log.appendPlainText("🤖 Revisando a legenda com IA…")
                 started = self._start_ai_review(
                     srt, self._live_pending.get("titulo", ""),
