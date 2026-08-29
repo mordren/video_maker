@@ -39,6 +39,7 @@ from utils import (
 )
 
 import ai_srt
+import censor
 from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
@@ -410,6 +411,8 @@ class MainWindow(QMainWindow):
         overlay_form.addRow(self.use_cg)
         panel.addWidget(overlay_box)
 
+        panel.addWidget(self._build_censor_box())
+
         self.export_button = QPushButton("Exportar vídeo")
         self.export_button.setObjectName("primary")
         self.export_button.clicked.connect(self.export_video)
@@ -729,6 +732,8 @@ class MainWindow(QMainWindow):
                         # Encurtar depois da revisão: a IA trabalha melhor com as
                         # frases inteiras do Whisper do que com blocos picados.
                         shorten_srt_captions(self.caption_path)
+                        self._censor_af = self.apply_censorship(
+                            self.caption_path, self.log.appendPlainText)
                         self.caption_status.setText(
                             f"Legendas prontas: {self.caption_path.name}{note}")
 
@@ -794,6 +799,7 @@ class MainWindow(QMainWindow):
             if segments_to_srt(parse_srt_segments(existing), start, start + length, out):
                 shorten_srt_captions(out)
                 self.caption_path = out
+                self._censor_af = self.apply_censorship(out, self.log.appendPlainText)
                 self.caption_status.setText(f"Legenda do vídeo reaproveitada: {existing.name}")
                 QMessageBox.information(self, APP_NAME, f"Legenda do vídeo reaproveitada ({existing.name}).\nSerá aplicada na exportação.")
                 return
@@ -809,7 +815,7 @@ class MainWindow(QMainWindow):
         except subprocess.CalledProcessError:
             QMessageBox.critical(self, APP_NAME, "Não foi possível extrair o áudio do trecho.")
             return
-        command = [whisper, str(audio_path), "--model", "base", "--language", "Portuguese", "--task", "transcribe", "--output_format", "srt", "--output_dir", str(self.work_dir)]
+        command = self.whisper_command(whisper, audio_path, self.work_dir)
         self.run_process(command, "Legendas geradas. Elas serão aplicadas na exportação.", caption=True)
 
     # ──────────────────────────────────────────────────────────────
@@ -963,6 +969,118 @@ class MainWindow(QMainWindow):
         self._start_ai_review(
             self.caption_path, self.text_input.text().strip(), finished, with_title=True)
 
+    # ──────────────────────────────────────────────────────────────
+    #  Censura de palavrões / palavras bloqueáveis — vale para os 3 fluxos
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_censor_box(self) -> QGroupBox:
+        """Lista de palavras a censurar, na aba Edição.
+
+        Como a caixa da IA, a configuração é única e vale para os três fluxos
+        (edição, CSV e live).
+        """
+        config = ai_srt.load_config()
+        box = QGroupBox("6. Palavrões e palavras bloqueadas")
+        layout = QVBoxLayout(box)
+
+        self.censor_enabled = QCheckBox("Censurar as palavras da lista abaixo")
+        self.censor_enabled.setChecked(bool(config.get("censor_enabled")))
+        layout.addWidget(self.censor_enabled)
+
+        self.censor_mute = QCheckBox("Silenciar no áudio (só o instante da palavra)")
+        self.censor_mute.setChecked(bool(config.get("censor_mute", True)))
+        self.censor_caption = QCheckBox("Disfarçar na legenda (matar → m4tar)")
+        self.censor_caption.setChecked(bool(config.get("censor_caption", True)))
+        layout.addWidget(self.censor_mute)
+        layout.addWidget(self.censor_caption)
+
+        saved = config.get("censor_words")
+        self.censor_words = QPlainTextEdit(
+            saved if isinstance(saved, str) else ", ".join(censor.DEFAULT_WORDS))
+        self.censor_words.setMaximumHeight(90)
+        self.censor_words.setPlaceholderText("uma por linha, ou separadas por vírgula")
+        layout.addWidget(self.censor_words)
+
+        hint = QLabel(
+            "Uma por linha ou separadas por vírgula. Termine com * para pegar as "
+            "variações (put* → puta, putas, putaria). Só funciona onde há legenda: "
+            "é ela que diz em que segundo a palavra foi dita.")
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        restore = QPushButton("Restaurar lista padrão")
+        restore.clicked.connect(
+            lambda: self.censor_words.setPlainText(", ".join(censor.DEFAULT_WORDS)))
+        layout.addWidget(restore)
+
+        # Salva sozinho, mas sem gravar o arquivo a cada tecla digitada.
+        self._censor_save_timer = QTimer(self)
+        self._censor_save_timer.setSingleShot(True)
+        self._censor_save_timer.setInterval(600)
+        self._censor_save_timer.timeout.connect(self._save_censor_config)
+        self.censor_words.textChanged.connect(self._censor_save_timer.start)
+        for check in (self.censor_enabled, self.censor_mute, self.censor_caption):
+            check.toggled.connect(self._save_censor_config)
+        return box
+
+    def _save_censor_config(self) -> None:
+        ai_srt.save_config({
+            "censor_enabled": self.censor_enabled.isChecked(),
+            "censor_mute": self.censor_mute.isChecked(),
+            "censor_caption": self.censor_caption.isChecked(),
+            "censor_words": self.censor_words.toPlainText(),
+        })
+
+    def censor_word_list(self) -> list[str]:
+        """Palavras a censurar; vazio quando a censura está desligada."""
+        if not self.censor_enabled.isChecked():
+            return []
+        return censor.parse_words(self.censor_words.toPlainText())
+
+    def censor_wants_mute(self) -> bool:
+        """O Whisper precisa marcar palavra a palavra nesta exportação?"""
+        return bool(self.censor_word_list()) and self.censor_mute.isChecked()
+
+    def whisper_command(self, binary: str, wav: Path, out_dir: Path) -> list[str]:
+        """Comando do Whisper para o trecho, já ajustado à censura.
+
+        Marcar palavra por palavra (`--word_timestamps`) deixa a transcrição
+        mais lenta, então só entra quando a censura vai silenciar o áudio — é o
+        único caso em que precisamos do segundo exato de cada palavra. O formato
+        'all' é o que também grava o .json, onde ficam esses tempos.
+        """
+        command = [binary, str(wav), "--model", "base", "--language", "Portuguese",
+                   "--task", "transcribe", "--output_dir", str(out_dir)]
+        if self.censor_wants_mute():
+            return command + ["--word_timestamps", "True", "--output_format", "all"]
+        return command + ["--output_format", "srt"]
+
+    @staticmethod
+    def _audio_censor_args(audio_filter: str) -> list[str]:
+        """Argumentos do FFmpeg que silenciam as palavras, ou nada a acrescentar."""
+        return ["-af", audio_filter] if audio_filter else []
+
+    def apply_censorship(self, srt_path: Path, log) -> str:
+        """Censura a legenda e devolve o filtro de áudio (-af) do trecho.
+
+        A ordem importa: os tempos saem primeiro, porque logo depois o texto do
+        SRT muda ('porra' vira 'p0rra') e deixaria de casar com a lista.
+        Devolve "" quando não há nada a silenciar.
+        """
+        words = self.censor_word_list()
+        if not words or not srt_has_content(srt_path):
+            return ""
+        spans = censor.mute_spans(srt_path, words) if self.censor_mute.isChecked() else []
+        trocadas = censor.censor_srt(srt_path, words) if self.censor_caption.isChecked() else 0
+        if spans:
+            log(f"🔇 {len(spans)} trecho(s) silenciado(s) no áudio.")
+        if trocadas:
+            log(f"✏️ {trocadas} palavra(s) disfarçada(s) na legenda.")
+        if not spans and not trocadas:
+            log("ℹ️ Nenhuma palavra da lista apareceu neste trecho.")
+        return censor.mute_filter(spans)
+
     def download_video(self) -> None:
         url = self.url_input.text().strip()
         if not url:
@@ -1051,7 +1169,12 @@ class MainWindow(QMainWindow):
             post_input = n_inputs
 
         command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length)] + inputs
-        command += ["-filter_complex", self.video_filters(post_input=post_input), "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
+        command += ["-filter_complex", self.video_filters(post_input=post_input), "-map", "[outv]", "-map", "0:a?"]
+        # Entre gerar a legenda e exportar, o usuário pode ter desligado a
+        # censura — nesse caso o filtro guardado não vale mais.
+        command += self._audio_censor_args(
+            getattr(self, "_censor_af", "") if self.censor_wants_mute() else "")
+        command += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
         # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
         self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
         self._srt_export_target = Path(filename).with_suffix(".srt")
@@ -1643,6 +1766,7 @@ class MainWindow(QMainWindow):
             f"[{self._csv_batch_index + 1}/{self._csv_total}] {m['label']} ({self._csv_clip_mode})"
         )
         self._csv_clip_srt = None
+        self._csv_censor_af = ""        # zerado a cada corte do lote
 
         # Fase 1a: reaproveita a legenda do vídeo (sem Whisper), se existir.
         if self._csv_captions_on and getattr(self, "_csv_source_srt", None):
@@ -1650,6 +1774,7 @@ class MainWindow(QMainWindow):
             out = self.work_dir / f"_csv_clip_{self._csv_batch_index}.srt"
             if segments_to_srt(parse_srt_segments(self._csv_source_srt), start, end, out):
                 shorten_srt_captions(out)
+                self._csv_censor_af = self.apply_censorship(out, self._csv_log_indent)
                 self._csv_clip_srt = out
                 self.csv_log.appendPlainText("   📄 Legenda do vídeo reaproveitada (sem Whisper).")
                 self._csv_export_clip()
@@ -1671,9 +1796,7 @@ class MainWindow(QMainWindow):
                 self._csv_export_clip()
                 return
             self.csv_log.appendPlainText("   🎙️ Transcrevendo com Whisper (modelo base)…")
-            command = [self._whisper_bin, str(audio_path), "--model", "base", "--language",
-                       "Portuguese", "--task", "transcribe", "--output_format", "srt",
-                       "--output_dir", str(self.work_dir)]
+            command = self.whisper_command(self._whisper_bin, audio_path, self.work_dir)
             self._csv_process = QProcess(self)
             self._csv_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
             self._csv_process.finished.connect(
@@ -1687,6 +1810,7 @@ class MainWindow(QMainWindow):
         if legenda:
             srt_path = self.work_dir / f"_csv_clip_{self._csv_batch_index}.srt"
             build_srt_for_clip(0.0, m["end_s"] - m["start_s"], legenda, srt_path)
+            self._csv_censor_af = self.apply_censorship(srt_path, self._csv_log_indent)
             self._csv_clip_srt = srt_path
         self._csv_export_clip()
 
@@ -1696,6 +1820,7 @@ class MainWindow(QMainWindow):
             def ready() -> None:
                 # Encurtar depois da revisão: a IA lida melhor com frases inteiras.
                 shorten_srt_captions(srt_path)
+                self._csv_censor_af = self.apply_censorship(srt_path, self._csv_log_indent)
                 self._csv_clip_srt = srt_path
                 self._csv_export_clip()
 
@@ -1792,6 +1917,9 @@ class MainWindow(QMainWindow):
         command += [
             "-filter_complex", build_chain(captions=True, post_input=post_input),
             "-map", "[outv]", "-map", "0:a?",
+        ]
+        command += self._audio_censor_args(getattr(self, "_csv_censor_af", ""))
+        command += [
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
             str(output),
@@ -1803,6 +1931,10 @@ class MainWindow(QMainWindow):
         self._csv_process.finished.connect(lambda code, status: self._csv_on_finished(code, status, output, titulo))
         self._csv_process_output = ""
         self._csv_process.start(command[0], command[1:])
+
+    def _csv_log_indent(self, message: str) -> None:
+        """Log do lote, alinhado com as demais mensagens do corte."""
+        self.csv_log.appendPlainText(f"   {message}")
 
     def _csv_read_process_output(self) -> None:
         """Captura saída do FFmpeg durante o processamento."""
@@ -2441,8 +2573,7 @@ class MainWindow(QMainWindow):
             self._live_run_cut(None)
             return
         self.live_cut_log.appendPlainText("2/3 🎙️ Transcrevendo com Whisper (modelo base)…")
-        command = [self._whisper_bin, str(wav), "--model", "base", "--language", "Portuguese",
-                   "--task", "transcribe", "--output_format", "srt", "--output_dir", str(self._live_dir)]
+        command = self.whisper_command(self._whisper_bin, wav, self._live_dir)
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
@@ -2457,6 +2588,8 @@ class MainWindow(QMainWindow):
             def ready() -> None:
                 # Encurtar depois da revisão: a IA lida melhor com frases inteiras.
                 shorten_srt_captions(srt)
+                self._live_pending["af"] = self.apply_censorship(
+                    srt, self.live_cut_log.appendPlainText)
                 self._live_run_cut(srt)
 
             skip = self.ai_review_skip_reason(srt)
@@ -2540,6 +2673,7 @@ class MainWindow(QMainWindow):
         command = ["ffmpeg", "-y"] + seek + extra + [
             "-filter_complex", build_chain(captions=True, post_input=post_input),
             "-map", "[outv]", "-map", audio_map,
+        ] + self._audio_censor_args(d.get("af", "")) + [
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
             str(output),
