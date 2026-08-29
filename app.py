@@ -32,7 +32,8 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
-    render_thumbnail, review_srt_with_ai, thumbnail_path, write_reels_prompt,
+    build_reels_prompt, render_thumbnail, review_srt_with_ai, thumbnail_path,
+    write_reels_prompt, write_reels_text,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
@@ -117,6 +118,43 @@ class SrtReviewWorker(QThread):
                 titulo, subtitulo)
 
 
+class ReelsCaptionWorker(QThread):
+    """Pede ao DeepSeek a legenda de Instagram do corte, fora da thread da interface.
+
+    Roda depois que o vídeo já está pronto, então uma falha aqui não estraga a
+    exportação — no pior caso o .txt sai com o prompt, para o usuário colar
+    numa IA por conta própria.
+    """
+
+    done = Signal(bool, str, object)     # ok?, mensagem, caminho do .txt
+
+    def __init__(self, prompt: str, dest: Path, api_key: str, model: str,
+                 parent=None) -> None:
+        super().__init__(parent)
+        self._prompt, self._dest = prompt, dest
+        self._api_key, self._model = api_key, model
+
+    def run(self) -> None:
+        try:
+            texto, usage = ai_srt.ask(self._prompt, self._api_key, self._model)
+        except Exception as error:                     # noqa: BLE001
+            caminho = write_reels_text(self._dest, self._prompt)
+            self.done.emit(
+                False,
+                f"Não deu para gerar a legenda do Reels ({error}). "
+                "O .txt saiu com o prompt, para você colar numa IA.",
+                caminho)
+            return
+        caminho = write_reels_text(self._dest, texto)
+        recebidos = int(usage.get("completion_tokens") or 0)
+        enviados = int(usage.get("prompt_tokens") or 0)
+        self.done.emit(
+            True,
+            f"Legenda do Reels gerada pela IA ({enviados} tokens enviados, "
+            f"{recebidos} recebidos).",
+            caminho)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -127,6 +165,9 @@ class MainWindow(QMainWindow):
         self.caption_path: Path | None = None
         self.cg_icon_path: Path | None = Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png") if Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png").exists() else None
         self.duration = 0.0
+        self._reels_queue: list[tuple] = []      # legendas de Reels a pedir à IA
+        self._reels_worker: ReelsCaptionWorker | None = None
+        self._ai_flagged: list[dict] = []        # trechos sensíveis da última revisão
         self.work_dir = Path(tempfile.mkdtemp(prefix="corta_legenda_"))
         self.process: QProcess | None = None
         self.playback_speed = 1.0
@@ -794,10 +835,9 @@ class MainWindow(QMainWindow):
                         message += f"\n\nTranscrição salva em:\n{srt_dst}"
                     except OSError:
                         pass
-                    # Prompt de legenda para Reels (.txt ao lado do vídeo).
-                    prompt_txt = write_reels_prompt(srt_dst, srt_dst)
-                    if prompt_txt:
-                        message += f"\n\nPrompt de legenda salvo em:\n{prompt_txt}"
+                    # Legenda de Instagram (.txt ao lado do vídeo). A IA responde
+                    # em segundo plano; o arquivo aparece alguns segundos depois.
+                    self.deliver_reels_caption(srt_dst, srt_dst, self.log.appendPlainText)
                 post = getattr(self, "_post_frame", None)
                 if post:
                     message += f"\n\nFrame de post (também é a capa do vídeo):\n{post}"
@@ -853,6 +893,13 @@ class MainWindow(QMainWindow):
         self.ai_enabled.toggled.connect(self._save_ai_config)
         layout.addWidget(self.ai_enabled)
 
+        # Uma requisição a mais por corte, depois que o vídeo já está pronto.
+        self.ai_reels = QCheckBox(
+            "Gerar a legenda do Instagram com IA e salvar o .txt ao lado do vídeo")
+        self.ai_reels.setChecked(bool(config.get("ai_reels", True)))
+        self.ai_reels.toggled.connect(self._save_ai_config)
+        layout.addWidget(self.ai_reels)
+
         form = QFormLayout()
         self.ai_key = QLineEdit(config.get("api_key", ""))
         self.ai_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -891,6 +938,7 @@ class MainWindow(QMainWindow):
     def _save_ai_config(self) -> None:
         ai_srt.save_config({
             "ai_enabled": self.ai_enabled.isChecked(),
+            "ai_reels": self.ai_reels.isChecked(),
             "api_key": self.ai_key.text().strip(),
             "model": self.ai_model.currentText().strip(),
         })
@@ -1050,6 +1098,50 @@ class MainWindow(QMainWindow):
             "censor_caption": self.censor_caption.isChecked(),
             "censor_words": self.censor_words.toPlainText(),
         })
+
+    def deliver_reels_caption(self, srt_path: Path | None, dest: Path, log) -> None:
+        """Entrega o .txt de legenda do Reels ao lado do vídeo.
+
+        Com chave da API e a opção ligada, o prompt vai para o DeepSeek e o
+        arquivo sai com a legenda pronta para postar. Sem isso, sai com o
+        próprio prompt — o comportamento antigo, para colar numa IA à mão.
+        """
+        prompt = build_reels_prompt(srt_path)
+        if not prompt:
+            return
+        if not (self.ai_reels.isChecked() and self._ai_key()):
+            caminho = write_reels_text(dest, prompt)
+            if caminho:
+                log(f"📝 Prompt de legenda salvo em {caminho.name} "
+                    "(ligue a legenda com IA na seção 4 para vir pronta).")
+            return
+        self._reels_queue.append((prompt, dest, log))
+        self._next_reels_caption()
+
+    def _next_reels_caption(self) -> None:
+        """Roda a fila de legendas do Reels, uma por vez.
+
+        Um lote de CSV enfileira uma por corte; dispará-las juntas seria um
+        punhado de requisições simultâneas à mesma API, sem ganho nenhum.
+        """
+        if self._reels_worker is not None or not self._reels_queue:
+            return
+        prompt, dest, log = self._reels_queue.pop(0)
+        log("🤖 Gerando a legenda do Reels com IA…")
+        worker = ReelsCaptionWorker(
+            prompt, dest, self._ai_key(), self.ai_model.currentText().strip(), self)
+
+        def finished(ok: bool, message: str, caminho) -> None:
+            log(("✅ " if ok else "⚠️ ") + message)
+            if caminho:
+                log(f"   → {caminho.name}")
+            self._reels_worker = None
+            self._next_reels_caption()
+
+        worker.done.connect(finished)
+        worker.finished.connect(worker.deleteLater)
+        self._reels_worker = worker
+        worker.start()
 
     def _on_ai_flagged(self, sensiveis: list) -> None:
         """Mostra onde a IA viu conteúdo sensível e guarda para a censura.
@@ -2018,9 +2110,9 @@ class MainWindow(QMainWindow):
                     shutil.copyfile(self._csv_clip_srt, output.with_suffix(".srt"))
                 except OSError:
                     pass
-                # Prompt de legenda para Reels (.txt ao lado do vídeo).
-                if write_reels_prompt(self._csv_clip_srt, output):
-                    self.csv_log.appendPlainText("   📝 Prompt de legenda salvo (.txt).")
+                # Legenda de Instagram (.txt ao lado do vídeo), gerada pela IA.
+                self.deliver_reels_caption(
+                    self._csv_clip_srt, output, self._csv_log_indent)
             post = getattr(self, "_csv_post_frame", None)
             if post:
                 self.csv_log.appendPlainText(f"   🖼️ Post/capa → {post.name}")
@@ -2748,10 +2840,10 @@ class MainWindow(QMainWindow):
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
             self.live_cut_log.appendPlainText(f"✅ Corte exportado → {output}")
             self.live_log.appendPlainText(f"✅ Corte exportado → {output.name}")
-            # Prompt de legenda para Reels (.txt ao lado do vídeo).
-            srt = self._live_pending.get("srt")
-            if srt and write_reels_prompt(srt, output):
-                self.live_cut_log.appendPlainText("📝 Prompt de legenda salvo (.txt).")
+            # Legenda de Instagram (.txt ao lado do vídeo), gerada pela IA.
+            self.deliver_reels_caption(
+                self._live_pending.get("srt"), output,
+                self.live_cut_log.appendPlainText)
             post = getattr(self, "_live_post_frame", None)
             if post:
                 self.live_cut_log.appendPlainText(f"🖼️ Post/capa → {post.name}")

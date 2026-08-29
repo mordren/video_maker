@@ -500,30 +500,46 @@ Aguardo a legenda pronta para postagem.
 
 
 def reels_prompt_path(dest: Path) -> Path:
-    """Caminho do .txt com o prompt de legenda, ao lado do vídeo/legenda."""
-    return dest.with_name(f"{dest.stem} - prompt legenda.txt")
+    """Caminho do .txt de legenda para o Reels, ao lado do vídeo."""
+    return dest.with_name(f"{dest.stem} - legenda instagram.txt")
 
 
-def write_reels_prompt(srt_path: Path, dest: Path) -> Path | None:
-    """Grava, ao lado de `dest`, um .txt com o prompt de legenda já preenchido.
+def build_reels_prompt(srt_path: Path) -> str:
+    """Monta o prompt de legenda com o SRT do corte encaixado.
 
-    O conteúdo do SRT (com timestamps) entra no lugar do marcador do modelo. É
-    só um arquivo de texto para o usuário levar a uma IA — nada é enviado aqui.
-    Devolve o caminho do .txt, ou None se o SRT estiver vazio/ausente.
+    Devolve "" quando não há legenda — sem a fala não há o que resumir.
     """
     if not srt_has_content(srt_path):
-        return None
+        return ""
     try:
         legenda = Path(srt_path).read_text(encoding="utf-8").strip()
     except OSError:
+        return ""
+    return REELS_PROMPT_TEMPLATE.format(legenda=legenda)
+
+
+def write_reels_text(dest: Path, content: str) -> Path | None:
+    """Grava o .txt de legenda ao lado do vídeo. Devolve o caminho, ou None."""
+    if not content:
         return None
     txt_path = reels_prompt_path(dest)
     try:
-        txt_path.write_text(
-            REELS_PROMPT_TEMPLATE.format(legenda=legenda), encoding="utf-8")
+        txt_path.write_text(content, encoding="utf-8")
     except OSError:
         return None
     return txt_path
+
+
+def write_reels_prompt(srt_path: Path, dest: Path) -> Path | None:
+    """Grava o prompt sem preencher — a saída para quando a IA não está à mão.
+
+    Sem chave da API (ou com a chamada falhando), o usuário ainda leva o texto
+    pronto para colar numa IA por conta própria, em vez de ficar sem nada.
+    """
+    prompt = build_reels_prompt(srt_path)
+    if not prompt:
+        return None
+    return write_reels_text(dest, prompt)
 
 
 def thumbnail_path(video_path: Path) -> Path:

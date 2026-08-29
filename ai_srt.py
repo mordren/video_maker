@@ -202,6 +202,31 @@ def _request(path: str, api_key: str, payload: dict | None = None,
         raise AiError(f"Falha de rede: {error}") from error
 
 
+def ask(prompt: str, api_key: str, model: str = DEFAULT_MODEL,
+        max_tokens: int = 1400) -> tuple[str, dict]:
+    """Uma pergunta solta ao modelo; devolve (resposta em texto, uso de tokens).
+
+    Diferente do resto do módulo, aqui a resposta é texto livre, não JSON — é
+    usada para redigir a legenda do Reels, que vai inteira para um arquivo.
+    O teto de saída existe para uma resposta desgovernada não virar conta alta.
+    """
+    if not api_key:
+        raise AiError("Informe a chave da API do DeepSeek.")
+    payload = {
+        "model": model or DEFAULT_MODEL,
+        "temperature": 0.8,          # texto de marketing pede mais soltura
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    data = _request("/chat/completions", api_key, payload)
+    usage = data.get("usage") or {}
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as error:
+        raise AiError("Resposta da API sem conteúdo.") from error
+    return str(content).strip(), usage
+
+
 def list_models(api_key: str) -> list[str]:
     """Modelos disponíveis para essa chave, para preencher a lista na interface."""
     if not api_key:
