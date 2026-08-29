@@ -420,8 +420,9 @@ def build_srt_for_clip(start_s: float, end_s: float, text: str, output_path: Pat
 
 
 def review_srt_with_ai(path: Path, api_key: str, model: str = "", context: str = "",
-                       progress=None, with_title: bool = False
-                       ) -> tuple[int, int, dict, str, str, list[dict]]:
+                       progress=None, with_title: bool = False,
+                       musicas: list[str] | None = None
+                       ) -> tuple[int, int, dict, str, str, list[dict], str]:
     """Manda as falas do SRT para a IA e regrava o arquivo já corrigido.
 
     Os tempos são os do arquivo original — a IA só devolve texto, e o SRT é
@@ -432,25 +433,25 @@ def review_srt_with_ai(path: Path, api_key: str, model: str = "", context: str =
     (um único JSON com as chaves titulo/subtitulo/linhas) — usado só na Edição.
 
     Devolve (linhas alteradas, total de linhas, uso de tokens, título, subtítulo,
-    trechos sensíveis). Título e subtítulo vêm vazios quando `with_title` é
-    False; os trechos sensíveis vêm nos dois casos.
+    trechos sensíveis, trilha escolhida). Título, subtítulo e trilha vêm vazios
+    quando `with_title` é False; os trechos sensíveis vêm nos dois casos.
     """
     import ai_srt
 
     segments = parse_srt_segments(path)
     if not segments:
-        return 0, 0, {}, "", "", []
+        return 0, 0, {}, "", "", [], ""
 
     originals = [text for _, _, text in segments]
     if with_title:
-        titulo, subtitulo, fixed, sensiveis, usage = ai_srt.review_lines_with_title(
-            originals, api_key, model, context)
+        titulo, subtitulo, musica, fixed, sensiveis, usage = ai_srt.review_lines_with_title(
+            originals, api_key, model, context, musicas)
         if progress:
             progress(len(fixed), len(fixed))
     else:
         fixed, sensiveis, usage = ai_srt.correct_lines(
             originals, api_key, model, context, progress)
-        titulo, subtitulo = "", ""
+        titulo, subtitulo, musica = "", "", ""
 
     lines: list[str] = []
     changed = 0
@@ -464,7 +465,7 @@ def review_srt_with_ai(path: Path, api_key: str, model: str = "", context: str =
     for item in sensiveis:
         index = item["linha"] - 1
         item["inicio"] = segments[index][0] if 0 <= index < len(segments) else 0.0
-    return changed, len(segments), usage, titulo, subtitulo, sensiveis
+    return changed, len(segments), usage, titulo, subtitulo, sensiveis, musica
 
 
 # Prompt da legenda de Instagram, mandado ao DeepSeek com a fala do corte.

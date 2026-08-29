@@ -68,7 +68,7 @@ repetições, frases cortadas no meio). Não traduza, não resuma, não reescrev
 2) Crie um título e um subtítulo para o vídeo, com base só no que é dito na fala.
 
 Responda apenas com JSON, exatamente neste formato:
-{"titulo": "...", "subtitulo": "...", "linhas": ["...", "..."], "sensiveis": [...]}
+{"titulo": "...", "subtitulo": "...", "musica": "...", "linhas": ["...", "..."], "sensiveis": [...]}
 
 - titulo: um chapéu curto de tema/categoria; no máximo ~30 caracteres; em CAIXA ALTA \
 (ex.: ECONOMIA, ELEIÇÕES 2026, STF, SEGURANÇA). É a linha pequena, no topo.
@@ -76,7 +76,15 @@ Responda apenas com JSON, exatamente neste formato:
 caracteres; sem ponto final. É a linha grande, embaixo.
 - linhas: exatamente a mesma quantidade de linhas que você recebeu, na mesma ordem; \
 nunca junte nem separe linhas; se uma já estiver certa, devolva-a igual.
+- musica: o clima da trilha de fundo, escolhido da lista que vem no fim deste texto. Responda com o rótulo exatamente como aparece na lista, sem inventar outro. Pense no tom da fala: um bate-boca pede confronto, uma denúncia pede algo grave, uma reflexão pede algo contido. Na dúvida, prefira a opção mais neutra.
 - Não invente fatos que não estão na fala.""" + _SENSITIVE_RULE
+
+
+# Catálogo de trilhas, colado no fim do prompt. Os rótulos saem dos nomes dos
+# arquivos da pasta, então a lista muda sozinha quando o usuário acrescenta ou
+# tira uma música — o prompt não precisa saber quais são.
+_MUSIC_LIST_HEADER = '\n\nTrilhas disponíveis (escolha uma para "musica"):\n- '
+_NO_MUSIC_NOTE = '\n\nNão há trilhas disponíveis: devolva "musica": "".'
 
 
 def _parse_sensitive(obj: dict, total_lines: int, offset: int = 0) -> list[dict]:
@@ -327,21 +335,30 @@ def correct_lines(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
 
 
 def review_lines_with_title(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
-                            context: str = "") -> tuple[str, str, list[str], list[dict], dict]:
-    """Numa só requisição: corrige as falas, cria título/subtítulo e sinaliza risco.
+                            context: str = "", musicas: list[str] | None = None
+                            ) -> tuple[str, str, str, list[str], list[dict], dict]:
+    """Numa só requisição: corrige as falas, cria título/subtítulo, sinaliza risco
+    e escolhe a trilha.
 
-    Devolve (título, subtítulo, linhas corrigidas, trechos sensíveis, uso de
-    tokens). A resposta é um único JSON. Se a chave `linhas` não vier com a
-    mesma quantidade, ficam as originais (o resto ainda é aproveitado).
+    Devolve (título, subtítulo, trilha escolhida, linhas corrigidas, trechos
+    sensíveis, uso de tokens). A resposta é um único JSON. Se a chave `linhas`
+    não vier com a mesma quantidade, ficam as originais (o resto é aproveitado).
+
+    `musicas` são os rótulos de clima disponíveis; sem eles a chave `musica` não
+    é nem pedida, porque não haveria de onde escolher.
     """
     if not api_key:
         raise AiError("Informe a chave da API do DeepSeek.")
     if not lines:
-        return "", "", [], [], {}
+        return "", "", "", [], [], {}
     user = json.dumps({"linhas": lines}, ensure_ascii=False)
     # Saída ≈ entrada (mesmas linhas) + um punhado para título/subtítulo.
     max_tokens = min(4096, max(512, len(user) // 2 + 512))
     prompt = _REVIEW_TITLE_PROMPT
+    if musicas:
+        prompt += _MUSIC_LIST_HEADER + "\n- ".join(musicas)
+    else:
+        prompt += _NO_MUSIC_NOTE
     if context:
         prompt += f"\n\nDica de contexto (tema/pessoa): {context}"
     payload = {
@@ -363,9 +380,14 @@ def review_lines_with_title(lines: list[str], api_key: str, model: str = DEFAULT
     titulo = str(obj.get("titulo") or obj.get("title") or "").strip()
     subtitulo = str(obj.get("subtitulo") or obj.get("subtitle") or "").strip()
     sensiveis = _parse_sensitive(obj, len(lines))
+    # Só vale um rótulo que exista de fato: a IA às vezes inventa um clima que
+    # não está na pasta, e aí é melhor ficar sem trilha do que com a errada.
+    musica = str(obj.get("musica") or "").strip()
+    if musicas and musica.lower() not in {m.lower() for m in musicas}:
+        musica = ""
     fixed = obj.get("linhas")
     if not isinstance(fixed, list) or len(fixed) != len(lines):
         fixed = lines
     else:
         fixed = [str(new).strip() or old for new, old in zip(fixed, lines)]
-    return titulo, subtitulo, fixed, sensiveis, usage
+    return titulo, subtitulo, musica, fixed, sensiveis, usage

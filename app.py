@@ -41,6 +41,7 @@ from utils import (
 
 import ai_srt
 import censor
+import trilhas
 from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
@@ -87,20 +88,23 @@ class SrtReviewWorker(QThread):
     progress = Signal(int, int)          # linhas prontas, total
     done = Signal(bool, str, str, str)   # ok?, mensagem, título, subtítulo
     flagged = Signal(list)               # trechos sensíveis apontados pela IA
+    music = Signal(str)                  # clima da trilha escolhido pela IA
 
     def __init__(self, path: Path, api_key: str, model: str, context: str = "",
-                 with_title: bool = False, parent=None) -> None:
+                 with_title: bool = False, musicas: list[str] | None = None,
+                 parent=None) -> None:
         super().__init__(parent)
         self._path, self._api_key = path, api_key
         self._model, self._context = model, context
         self._with_title = with_title
+        self._musicas = musicas or []
 
     def run(self) -> None:
         try:
-            changed, total, usage, titulo, subtitulo, sensiveis = review_srt_with_ai(
+            changed, total, usage, titulo, subtitulo, sensiveis, musica = review_srt_with_ai(
                 self._path, self._api_key, self._model, self._context,
                 progress=lambda ready, all_: self.progress.emit(ready, all_),
-                with_title=self._with_title,
+                with_title=self._with_title, musicas=self._musicas,
             )
         except ai_srt.AiError as error:
             self.done.emit(False, f"Revisão com IA falhou: {error}", "", "")
@@ -108,6 +112,7 @@ class SrtReviewWorker(QThread):
             self.done.emit(False, f"Revisão com IA falhou: {error}", "", "")
         else:
             self.flagged.emit(sensiveis)
+            self.music.emit(musica)
             enviados = int(usage.get("prompt_tokens") or 0)
             recebidos = int(usage.get("completion_tokens") or 0)
             tok = ""
@@ -168,6 +173,7 @@ class MainWindow(QMainWindow):
         self._reels_queue: list[tuple] = []      # legendas de Reels a pedir à IA
         self._reels_worker: ReelsCaptionWorker | None = None
         self._ai_flagged: list[dict] = []        # trechos sensíveis da última revisão
+        self._music_track: Path | None = None    # trilha escolhida pela IA
         self.work_dir = Path(tempfile.mkdtemp(prefix="corta_legenda_"))
         self.process: QProcess | None = None
         self.playback_speed = 1.0
@@ -176,6 +182,9 @@ class MainWindow(QMainWindow):
         self.vlc_instance = vlc.Instance("--avcodec-hw=none")  # Desabilita hardware decoding
         self.vlc_player = self.vlc_instance.media_player_new()
         self.vlc_media: vlc.Media | None = None
+        # Player só da trilha: separado dos de vídeo, para ouvir a música sem
+        # mexer no que estiver tocando na pré-visualização.
+        self._music_player = self.vlc_instance.media_player_new()
         self.csv_vlc_player = self.vlc_instance.media_player_new()
         self.csv_vlc_media: vlc.Media | None = None
         self._csv_selected_index = -1
@@ -473,6 +482,7 @@ class MainWindow(QMainWindow):
         panel.addWidget(overlay_box)
 
         panel.addWidget(self._build_censor_box())
+        panel.addWidget(self._build_music_box())
 
         self.export_button = QPushButton("Exportar vídeo")
         self.export_button.setObjectName("primary")
@@ -993,9 +1003,14 @@ class MainWindow(QMainWindow):
         if not key:
             return False
         self._ai_flagged = []              # achados da revisão anterior não valem mais
+        # Só faz sentido pedir trilha quando há título a pedir também (Edição):
+        # é lá que existe o botão de ouvir e a aprovação.
+        climas = [rotulo for rotulo, _ in trilhas.list_tracks(self.music_dir())] if with_title else []
         worker = SrtReviewWorker(
-            path, key, self.ai_model.currentText().strip(), context, with_title, self)
+            path, key, self.ai_model.currentText().strip(), context, with_title,
+            climas, self)
         worker.flagged.connect(self._on_ai_flagged)
+        worker.music.connect(self._on_ai_music)
         worker.done.connect(on_done)
         worker.finished.connect(worker.deleteLater)
         self._ai_worker = worker           # segura a referência enquanto roda
@@ -1143,6 +1158,120 @@ class MainWindow(QMainWindow):
         self._reels_worker = worker
         worker.start()
 
+    def _build_music_box(self) -> QGroupBox:
+        """Trilha de fundo: a IA escolhe, você ouve e aprova.
+
+        A pasta é o catálogo — o nome do arquivo vira o rótulo do clima e é
+        isso que a IA recebe para escolher. Acrescentar música é só soltar o
+        mp3 na pasta.
+        """
+        config = ai_srt.load_config()
+        box = QGroupBox("7. Trilha de fundo")
+        layout = QVBoxLayout(box)
+
+        self.music_enabled = QCheckBox("Misturar a trilha escolhida na exportação")
+        self.music_enabled.setChecked(bool(config.get("music_enabled")))
+        self.music_enabled.toggled.connect(self._save_music_config)
+        layout.addWidget(self.music_enabled)
+
+        pasta = QHBoxLayout()
+        self.music_dir_input = QLineEdit(
+            str(config.get("music_dir") or trilhas.DEFAULT_MUSIC_DIR))
+        self.music_dir_input.editingFinished.connect(self._save_music_config)
+        escolher = QPushButton("Pasta…")
+        escolher.clicked.connect(self._pick_music_dir)
+        pasta.addWidget(QLabel("Pasta"))
+        pasta.addWidget(self.music_dir_input, 1)
+        pasta.addWidget(escolher)
+        layout.addLayout(pasta)
+
+        self.music_status = QLabel("A IA escolhe a trilha ao revisar a legenda.")
+        self.music_status.setWordWrap(True)
+        layout.addWidget(self.music_status)
+
+        linha = QHBoxLayout()
+        self.music_choice = QComboBox()
+        self.music_choice.currentIndexChanged.connect(self._on_music_picked)
+        self.music_play_btn = QPushButton("▶ Ouvir")
+        self.music_play_btn.clicked.connect(self._toggle_music_preview)
+        self.music_play_btn.setEnabled(False)
+        linha.addWidget(self.music_choice, 1)
+        linha.addWidget(self.music_play_btn)
+        layout.addLayout(linha)
+
+        self._reload_music_choices()
+        return box
+
+    def _save_music_config(self) -> None:
+        ai_srt.save_config({
+            "music_enabled": self.music_enabled.isChecked(),
+            "music_dir": self.music_dir_input.text().strip(),
+        })
+
+    def music_dir(self) -> Path:
+        """Pasta das trilhas, do campo da interface."""
+        texto = self.music_dir_input.text().strip() if hasattr(self, "music_dir_input") else ""
+        return Path(texto) if texto else trilhas.DEFAULT_MUSIC_DIR
+
+    def _pick_music_dir(self) -> None:
+        pasta = QFileDialog.getExistingDirectory(
+            self, "Pasta das trilhas", str(self.music_dir()))
+        if pasta:
+            self.music_dir_input.setText(pasta)
+            self._save_music_config()
+            self._reload_music_choices()
+
+    def _reload_music_choices(self) -> None:
+        """Recarrega a lista de trilhas a partir da pasta."""
+        faixas = trilhas.list_tracks(self.music_dir())
+        self.music_choice.blockSignals(True)
+        self.music_choice.clear()
+        self.music_choice.addItem("(sem trilha)", None)
+        for rotulo, caminho in faixas:
+            self.music_choice.addItem(rotulo, str(caminho))
+        self.music_choice.blockSignals(False)
+        if not faixas:
+            self.music_status.setText(
+                f"Nenhuma trilha em {self.music_dir()} — solte arquivos .mp3 lá.")
+
+    def _on_music_picked(self) -> None:
+        """Troca manual no combo: vale sobre o que a IA escolheu."""
+        dado = self.music_choice.currentData()
+        self._stop_music_preview()
+        self._music_track = Path(dado) if dado else None
+        self.music_play_btn.setEnabled(self._music_track is not None)
+
+    def _on_ai_music(self, clima: str) -> None:
+        """Aplica a trilha que a IA escolheu, deixando-a pronta para ouvir."""
+        if not clima:
+            self.music_status.setText("A IA não escolheu trilha para este corte.")
+            return
+        caminho = trilhas.find_track(clima, self.music_dir())
+        if not caminho:
+            self.music_status.setText(
+                f"A IA pediu '{clima}', mas não há essa trilha na pasta.")
+            return
+        indice = self.music_choice.findData(str(caminho))
+        if indice >= 0:
+            self.music_choice.setCurrentIndex(indice)     # dispara _on_music_picked
+        self.music_status.setText(f"🎵 A IA escolheu: {clima} ({caminho.name})")
+        self.log.appendPlainText(f"🎵 Trilha escolhida pela IA: {clima} → {caminho.name}")
+
+    def _toggle_music_preview(self) -> None:
+        """Toca ou para a trilha selecionada, só para você aprovar."""
+        if self._music_player.is_playing():
+            self._stop_music_preview()
+            return
+        if not self._music_track or not self._music_track.exists():
+            return
+        self._music_player.set_media(self.vlc_instance.media_new(str(self._music_track)))
+        self._music_player.play()
+        self.music_play_btn.setText("■ Parar")
+
+    def _stop_music_preview(self) -> None:
+        self._music_player.stop()
+        self.music_play_btn.setText("▶ Ouvir")
+
     def _on_ai_flagged(self, sensiveis: list) -> None:
         """Mostra onde a IA viu conteúdo sensível e guarda para a censura.
 
@@ -1192,6 +1321,32 @@ class MainWindow(QMainWindow):
         if self.censor_wants_mute():
             return command + ["--word_timestamps", "True", "--output_format", "all"]
         return command + ["--output_format", "srt"]
+
+    def music_export_track(self) -> Path | None:
+        """Trilha a misturar na exportação, ou None se a opção estiver desligada."""
+        if not (hasattr(self, "music_enabled") and self.music_enabled.isChecked()):
+            return None
+        faixa = self._music_track
+        return faixa if faixa and faixa.exists() else None
+
+    def _audio_chain(self, video_chain: str, speech: str, censor_af: str,
+                     music_in: int | None, duration: float) -> tuple[str, str]:
+        """Junta censura e trilha numa cadeia só, e diz o que mapear.
+
+        Sem trilha, a censura continua indo pelo caminho simples (`-af`), que
+        já estava testado. Com trilha, tudo tem de viver dentro do
+        filter_complex, porque a mixagem precisa da fala como sidechain.
+        Devolve (cadeia de filtros, rótulo a mapear no áudio).
+        """
+        if music_in is None:
+            return video_chain, "0:a?"
+        fala = speech
+        chain = video_chain
+        if censor_af:
+            chain += f";[{speech}]{censor_af}[sp]"
+            fala = "sp"
+        chain += ";" + trilhas.mix_chain(fala, music_in, "aout", duration=duration)
+        return chain, "[aout]"
 
     @staticmethod
     def _audio_censor_args(audio_filter: str) -> list[str]:
@@ -1317,10 +1472,20 @@ class MainWindow(QMainWindow):
             inputs += ["-loop", "1", "-i", str(thumb)]
             post_input = n_inputs
 
+        censor_af = self.apply_censorship(self.caption_path, self.log.appendPlainText)
+        video_chain = self.video_filters(post_input=post_input)
+        # A trilha entra por último; o índice livre é n_inputs, mais um se o
+        # frame de post já ocupou essa vaga.
+        proxima_entrada = n_inputs + (1 if post_input is not None else 0)
+        music_in = proxima_entrada if self.music_export_track() else None
+        if music_in is not None:
+            inputs += ["-i", str(self.music_export_track())]
+
         command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length)] + inputs
-        command += ["-filter_complex", self.video_filters(post_input=post_input), "-map", "[outv]", "-map", "0:a?"]
-        command += self._audio_censor_args(
-            self.apply_censorship(self.caption_path, self.log.appendPlainText))
+        chain, amap = self._audio_chain(video_chain, "0:a", censor_af, music_in, length)
+        command += ["-filter_complex", chain, "-map", "[outv]", "-map", amap]
+        if amap == "0:a?":
+            command += self._audio_censor_args(censor_af)
         command += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
         # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
         self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
