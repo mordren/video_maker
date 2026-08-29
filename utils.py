@@ -467,36 +467,44 @@ def review_srt_with_ai(path: Path, api_key: str, model: str = "", context: str =
     return changed, len(segments), usage, titulo, subtitulo, sensiveis
 
 
-# Modelo do prompt (fornecido pelo usuário) para gerar a legenda de Reels a
-# partir do SRT. O app NÃO executa este prompt — apenas grava o .txt pronto ao
-# lado do vídeo, com a legenda (SRT) já encaixada, para o usuário colar numa IA.
-REELS_PROMPT_TEMPLATE = """Atue como um especialista em marketing digital e produção de conteúdo para redes sociais, focado em vídeos políticos e de debate.
+# Prompt da legenda de Instagram, mandado ao DeepSeek com a fala do corte.
+#
+# A resposta vai inteira para um .txt que o usuário cola no Instagram, e é isso
+# que dita as regras aqui: nada de markdown (o Instagram mostra os asteriscos
+# como estão e o post fica sujo), nada de títulos de seção, e nada de sugestão
+# de cortes — o vídeo já é um short pronto. Só o texto que vai no post.
+REELS_PROMPT_TEMPLATE = """Você escreve legendas de Instagram para Reels de vídeos \
+políticos curtos.
 
-Recebi um arquivo de legenda no formato SRT (com timestamps e falas) de um trecho de uma entrevista ou debate. Com base APENAS no conteúdo desse arquivo, crie uma legenda completa e pronta para um Reels do Instagram.
+Abaixo está a transcrição da fala de um trecho de entrevista ou debate. Com base \
+APENAS no que é dito nela, escreva a legenda do post.
 
-Siga as seguintes instruções rigorosamente:
+Formato da resposta — siga à risca:
+- Responda SOMENTE com o texto da legenda, exatamente como ele vai ser colado no \
+Instagram. Nada de título, cabeçalho de seção, numeração, introdução, explicação \
+ou comentário seu.
+- Texto puro. Nada de asteriscos, markdown, negrito, itálico ou marcadores: o \
+Instagram exibe esses símbolos literalmente e o post fica sujo.
+- Emojis pode, com parcimônia.
+- Não sugira cortes nem trilha sonora: o vídeo já está pronto.
 
-1. **Idioma e Tom**: Escreva tudo em português do Brasil, com tom direto, reflexivo e engajador, típico de conteúdo político que viraliza. Use perguntas retóricas para engajar o público.
+Escreva nesta ordem, separando cada parte com uma linha em branco:
+1. Uma frase de impacto tirada da fala, entre aspas, seguida de uma pergunta que \
+provoque o leitor.
+2. Dois parágrafos curtos sobre o embate, apresentando os dois lados sem tomar \
+partido.
+3. Uma pergunta direta ao leitor, chamando o comentário.
+4. Uma última linha só com as hashtags.
 
-2. **Estrutura da Legenda (obrigatória)**:
-   - **Título/Hook**: Comece com uma frase de impacto extraída diretamente da fala do candidato (entre aspas), seguida de uma pergunta ou provocação sobre o tema central.
-   - **Desenvolvimento (2 parágrafos)**: Resuma o conflito principal do debate (ex: educação vs. punição/censura). Apresente os dois lados do argumento de forma equilibrada, mas instigante.
-   - **Call to Action (CTA)**: Termine com uma pergunta direta ao público, convidando-o a comentar com a sua opinião. Use um emoji de seta ou interrogação.
+Hashtags: comece por #eleicao2026 e #renansantos e acrescente de 5 a 8 sobre o \
+tema. Cada hashtag é uma palavra só — sem espaço no meio, sem acento, em \
+minúsculas.
 
-3. **Extração de Frases-Chave**: Identifique os 3 melhores momentos de impacto no arquivo (pelos timestamps) e liste-os separadamente como sugestão de "destaque do vídeo" para edição.
+Escreva em português do Brasil, com tom direto e engajador. Não invente fatos que \
+não estão na fala.
 
-4. **Hashtags Obrigatórias**: Inclua obrigatoriamente as hashtags #eleicao2026 e #renansantos no final. Adicione outras 5 a 8 hashtags relevantes sobre o tema (ex: educação, política, liberdade, violência).
-
-5. **Bônus - Produção**: Sugira um gênero musical de fundo (ex: trilha reflexiva, lo-fi, tensa) e confirme que o formato deve ser vertical (9:16) com legendas em caixa alta nos trechos destacados.
-
----
-**Agora, aqui está o arquivo de legenda para você analisar:**
-
-{legenda}
-
----
-Aguardo a legenda pronta para postagem.
-"""
+Transcrição:
+{legenda}"""
 
 
 def reels_prompt_path(dest: Path) -> Path:
@@ -505,17 +513,46 @@ def reels_prompt_path(dest: Path) -> Path:
 
 
 def build_reels_prompt(srt_path: Path) -> str:
-    """Monta o prompt de legenda com o SRT do corte encaixado.
+    """Monta o prompt de legenda com a fala do corte.
 
+    Vai só o texto, sem os tempos: o modelo escreve a legenda do post, não
+    sugestões de corte, e mandar os timestamps só gastaria tokens à toa.
     Devolve "" quando não há legenda — sem a fala não há o que resumir.
     """
     if not srt_has_content(srt_path):
         return ""
-    try:
-        legenda = Path(srt_path).read_text(encoding="utf-8").strip()
-    except OSError:
+    fala = " ".join(text for _, _, text in parse_srt_segments(srt_path) if text)
+    if not fala.strip():
         return ""
-    return REELS_PROMPT_TEMPLATE.format(legenda=legenda)
+    return REELS_PROMPT_TEMPLATE.format(legenda=fala.strip())
+
+
+# Asteriscos, títulos e marcadores viram lixo visível na caixa do Instagram.
+# O prompt já pede texto puro, mas pedir não garante — isto é a rede de baixo.
+_MD_EMPHASIS = re.compile(r"\*{1,3}(.+?)\*{1,3}")
+
+
+def strip_markdown(text: str) -> str:
+    """Tira a formatação que o Instagram não entende, deixando o texto limpo."""
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if len(line) >= 3 and set(line) <= set("-—_=*#"):
+            continue                                  # linha separadora
+        # O espaço depois dos # é o que separa um título markdown ("## Bloco")
+        # de uma hashtag ("#eleicao2026") — sem ele, a primeira hashtag da
+        # última linha perderia o #.
+        line = re.sub(r"^#{1,6}\s+", "", line)         # ### título
+        line = re.sub(r"^\d+\.\s+", "", line)          # 1. numeração
+        line = re.sub(r"^[-*•]\s+", "", line)          # - marcador
+        line = _MD_EMPHASIS.sub(r"\1", line)           # **negrito**, *itálico*
+        lines.append(line.replace("`", ""))
+    # Uma linha em branco basta para separar parágrafos; sobras viram espaço morto.
+    clean: list[str] = []
+    for line in lines:
+        if line or (clean and clean[-1]):
+            clean.append(line)
+    return "\n".join(clean).strip()
 
 
 def write_reels_text(dest: Path, content: str) -> Path | None:

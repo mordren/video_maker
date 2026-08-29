@@ -32,8 +32,8 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
-    build_reels_prompt, render_thumbnail, review_srt_with_ai, thumbnail_path,
-    write_reels_prompt, write_reels_text,
+    build_reels_prompt, render_thumbnail, review_srt_with_ai, strip_markdown,
+    thumbnail_path, write_reels_prompt, write_reels_text,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
     TimestampInput,
@@ -145,7 +145,7 @@ class ReelsCaptionWorker(QThread):
                 "O .txt saiu com o prompt, para você colar numa IA.",
                 caminho)
             return
-        caminho = write_reels_text(self._dest, texto)
+        caminho = write_reels_text(self._dest, strip_markdown(texto))
         recebidos = int(usage.get("completion_tokens") or 0)
         enviados = int(usage.get("prompt_tokens") or 0)
         self.done.emit(
