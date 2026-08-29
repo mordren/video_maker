@@ -22,12 +22,26 @@ import unicodedata
 from pathlib import Path
 
 # Lista inicial, editável na interface. São os palavrões mais comuns; o usuário
-# acrescenta as "palavras bloqueáveis" do nicho dele (matar, arma, droga...).
+# acrescenta as "palavras bloqueáveis" do nicho dele (estupro, chacina, droga...).
+#
+# O `*` no fim pega a família toda de uma vez — 'estupr*' cobre estupro,
+# estupros, estuprador, estupradores, estuprou, estuprada. Vale a pena em tudo
+# que tem verbo junto do substantivo; sem isso só a forma exata é censurada.
+# Onde o começo da palavra é ambíguo, a forma exata é mais segura: 'mat*'
+# pegaria 'matéria' e 'mato', por isso famílias assim ficam listadas à mão.
 DEFAULT_WORDS = [
+    # Palavrões
     "buceta", "caralho", "cacete", "foda", "foder", "fodido", "merda",
-    "porra", "puta", "puto", "putaria", "viado", "corno", "cu", "babaca",
-    "arrombado", "desgraça", "filho da puta", "fdp", "piroca", "escroto",
-    "otário", "imbecil", "vagabundo", "safado", "bosta", "pqp",
+    "porra", "put*", "viado", "corno", "cu", "arrombado", "desgraça",
+    "filho da puta", "fdp", "piroca", "escroto", "bosta", "pqp",
+    # Violência e crime — costumam derrubar o alcance
+    "estupr*", "assassin*", "chacina", "mutila*", "pedofil*", "tortur*",
+    # Automutilação — as plataformas são especialmente severas aqui
+    "suicid*", "desviver", "autoflagela*",
+    # Drogas
+    "overdose", "cocain*", "crack", "maconha", "traficante",
+    # Termos pejorativos
+    "traveco", "sapatão",
 ]
 
 # Trocas que mantêm a palavra legível mas quebram o casamento exato do filtro.
@@ -274,12 +288,14 @@ def mute_spans(srt_path: Path, patterns: list[str]) -> list[tuple[float, float]]
     if not patterns:
         return []
     srt_path = Path(srt_path)
+    spans = spans_from_srt(srt_path, patterns)
     json_path = srt_path.with_suffix(".json")
     if json_path.exists():
-        spans = spans_from_whisper_json(json_path, patterns)
-        if spans:
-            return spans
-    return spans_from_srt(srt_path, patterns)
+        # As duas fontes se somam em vez de uma anular a outra: a revisão com
+        # IA corrige a legenda, mas o JSON guarda o que o Whisper ouviu de
+        # fato. Uma palavra pode aparecer só num dos dois, e as duas contam.
+        spans = merge_ranges(spans + spans_from_whisper_json(json_path, patterns))
+    return spans
 
 
 def mute_filter(spans: list[tuple[float, float]]) -> str:
