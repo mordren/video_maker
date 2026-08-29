@@ -25,6 +25,26 @@ DEFAULT_MODEL = "deepseek-chat"
 # aumentam a chance de o modelo devolver uma quantidade diferente de linhas.
 CHUNK = 40
 
+# Pedido extra, colado nos dois prompts: além de corrigir, a IA aponta onde há
+# palavra sensível. Isso resolve o furo do casamento por texto — o Whisper erra
+# justamente nessas palavras, por serem incomuns, e escreve algo que não existe
+# ("escuprida" no lugar de "estupro"). Quem lê a frase inteira entende; uma
+# lista de palavras, não.
+_SENSITIVE_RULE = """
+
+Aponte também onde há palavrão ou conteúdo que costuma derrubar o alcance nas \
+redes (violência, crime, sexo, drogas, automutilação, termos pejorativos). Use a \
+chave "sensiveis", com uma entrada por ocorrência:
+{"linha": 3, "trecho": "estupro", "motivo": "violência sexual"}
+- linha: o número da linha em que aparece; a primeira linha é 1.
+- trecho: a palavra exatamente como ela ficou na SUA linha corrigida.
+- motivo: duas ou três palavras dizendo por quê.
+- O reconhecimento de fala erra muito nessas palavras justamente por serem \
+incomuns. Se a linha tiver algo sem sentido que claramente era uma delas \
+(por exemplo "escuprida" onde se disse "estupro"), corrija na linha e aponte \
+aqui assim mesmo.
+- Se não houver nenhuma, devolva "sensiveis": []."""
+
 _PROMPT = """Você revisa legendas em português do Brasil geradas por reconhecimento \
 de fala (Whisper). Corrija ortografia, acentuação, pontuação, concordância e nomes \
 próprios mal transcritos.
@@ -36,7 +56,7 @@ Regras:
 - Mantenha o jeito falado (gírias, repetições, frases cortadas no meio). Você \
 corrige a grafia, não a fala.
 - Se a linha já estiver certa, devolva ela igual.
-- Responda apenas com JSON no formato {"linhas": ["...", "..."]}"""
+- Responda apenas com JSON no formato {"linhas": ["...", "..."], "sensiveis": [...]}""" + _SENSITIVE_RULE
 
 _REVIEW_TITLE_PROMPT = """Você trabalha a legenda de um vídeo político curto do Brasil \
 — em geral a fala ou a opinião de um político sobre algum tema. Faça as duas coisas \
@@ -48,7 +68,7 @@ repetições, frases cortadas no meio). Não traduza, não resuma, não reescrev
 2) Crie um título e um subtítulo para o vídeo, com base só no que é dito na fala.
 
 Responda apenas com JSON, exatamente neste formato:
-{"titulo": "...", "subtitulo": "...", "linhas": ["...", "..."]}
+{"titulo": "...", "subtitulo": "...", "linhas": ["...", "..."], "sensiveis": [...]}
 
 - titulo: um chapéu curto de tema/categoria; no máximo ~30 caracteres; em CAIXA ALTA \
 (ex.: ECONOMIA, ELEIÇÕES 2026, STF, SEGURANÇA). É a linha pequena, no topo.
@@ -56,7 +76,36 @@ Responda apenas com JSON, exatamente neste formato:
 caracteres; sem ponto final. É a linha grande, embaixo.
 - linhas: exatamente a mesma quantidade de linhas que você recebeu, na mesma ordem; \
 nunca junte nem separe linhas; se uma já estiver certa, devolva-a igual.
-- Não invente fatos que não estão na fala."""
+- Não invente fatos que não estão na fala.""" + _SENSITIVE_RULE
+
+
+def _parse_sensitive(obj: dict, total_lines: int, offset: int = 0) -> list[dict]:
+    """Lê a chave `sensiveis` da resposta, descartando o que vier torto.
+
+    A resposta do modelo é texto livre: qualquer campo pode faltar ou vir com o
+    tipo errado. Só passam entradas com uma linha existente e um trecho não
+    vazio; `offset` desloca a numeração quando as linhas foram enviadas em lotes.
+    """
+    items = obj.get("sensiveis")
+    if not isinstance(items, list):
+        return []
+    found: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            line = int(item.get("linha"))
+        except (TypeError, ValueError):
+            continue
+        trecho = str(item.get("trecho") or "").strip()
+        if not trecho or not 1 <= line <= total_lines:
+            continue
+        found.append({
+            "linha": line + offset,
+            "trecho": trecho,
+            "motivo": str(item.get("motivo") or "").strip(),
+        })
+    return found
 
 
 class AiError(RuntimeError):
@@ -212,50 +261,58 @@ def _correct_chunk(lines: list[str], api_key: str, model: str,
     except (KeyError, IndexError) as error:
         raise AiError("Resposta da API sem conteúdo.") from error
 
-    fixed = _unwrap_json(content).get("linhas")
+    obj = _unwrap_json(content)
+    sensiveis = _parse_sensitive(obj, len(lines))
+    fixed = obj.get("linhas")
     # Só aceita se vier a mesma quantidade de linhas: uma resposta com mais ou
     # menos blocos desalinharia a legenda do áudio. Na dúvida, fica o original.
     if not isinstance(fixed, list) or len(fixed) != len(lines):
-        return lines, usage
-    return [str(new).strip() or old for new, old in zip(fixed, lines)], usage
+        return lines, sensiveis, usage
+    return ([str(new).strip() or old for new, old in zip(fixed, lines)],
+            sensiveis, usage)
 
 
 def correct_lines(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
-                  context: str = "", progress=None) -> tuple[list[str], dict]:
+                  context: str = "", progress=None) -> tuple[list[str], list[dict], dict]:
     """Corrige as falas em lotes, preservando a quantidade e a ordem.
 
-    Devolve (linhas corrigidas, uso somado de tokens). `progress` é chamado com
-    (linhas_prontas, total) a cada lote, para a interface mostrar andamento.
+    Devolve (linhas corrigidas, trechos sensíveis, uso somado de tokens).
+    `progress` é chamado com (linhas_prontas, total) a cada lote, para a
+    interface mostrar andamento.
     """
     if not api_key:
         raise AiError("Informe a chave da API do DeepSeek.")
     if not lines:
-        return [], {}
+        return [], [], {}
     result: list[str] = []
+    sensiveis: list[dict] = []
     totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     for start in range(0, len(lines), CHUNK):
         batch = lines[start:start + CHUNK]
-        fixed, usage = _correct_chunk(batch, api_key, model or DEFAULT_MODEL, context)
+        fixed, achados, usage = _correct_chunk(
+            batch, api_key, model or DEFAULT_MODEL, context)
         result.extend(fixed)
+        # A IA numera dentro do lote; aqui vira o número da linha no SRT todo.
+        sensiveis.extend(dict(item, linha=item["linha"] + start) for item in achados)
         for key in totals:
             totals[key] += int(usage.get(key) or 0)
         if progress:
             progress(len(result), len(lines))
-    return result, totals
+    return result, sensiveis, totals
 
 
 def review_lines_with_title(lines: list[str], api_key: str, model: str = DEFAULT_MODEL,
-                            context: str = "") -> tuple[str, str, list[str], dict]:
-    """Numa só requisição: corrige as falas e cria título e subtítulo.
+                            context: str = "") -> tuple[str, str, list[str], list[dict], dict]:
+    """Numa só requisição: corrige as falas, cria título/subtítulo e sinaliza risco.
 
-    Devolve (título, subtítulo, linhas corrigidas, uso de tokens). A resposta é
-    um único JSON com as três chaves. Se a chave `linhas` não vier com a mesma
-    quantidade, ficam as originais (o título/subtítulo ainda são aproveitados).
+    Devolve (título, subtítulo, linhas corrigidas, trechos sensíveis, uso de
+    tokens). A resposta é um único JSON. Se a chave `linhas` não vier com a
+    mesma quantidade, ficam as originais (o resto ainda é aproveitado).
     """
     if not api_key:
         raise AiError("Informe a chave da API do DeepSeek.")
     if not lines:
-        return "", "", [], {}
+        return "", "", [], [], {}
     user = json.dumps({"linhas": lines}, ensure_ascii=False)
     # Saída ≈ entrada (mesmas linhas) + um punhado para título/subtítulo.
     max_tokens = min(4096, max(512, len(user) // 2 + 512))
@@ -280,9 +337,10 @@ def review_lines_with_title(lines: list[str], api_key: str, model: str = DEFAULT
     obj = _unwrap_json(content)
     titulo = str(obj.get("titulo") or obj.get("title") or "").strip()
     subtitulo = str(obj.get("subtitulo") or obj.get("subtitle") or "").strip()
+    sensiveis = _parse_sensitive(obj, len(lines))
     fixed = obj.get("linhas")
     if not isinstance(fixed, list) or len(fixed) != len(lines):
         fixed = lines
     else:
         fixed = [str(new).strip() or old for new, old in zip(fixed, lines)]
-    return titulo, subtitulo, fixed, usage
+    return titulo, subtitulo, fixed, sensiveis, usage

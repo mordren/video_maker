@@ -85,6 +85,7 @@ class SrtReviewWorker(QThread):
 
     progress = Signal(int, int)          # linhas prontas, total
     done = Signal(bool, str, str, str)   # ok?, mensagem, título, subtítulo
+    flagged = Signal(list)               # trechos sensíveis apontados pela IA
 
     def __init__(self, path: Path, api_key: str, model: str, context: str = "",
                  with_title: bool = False, parent=None) -> None:
@@ -95,7 +96,7 @@ class SrtReviewWorker(QThread):
 
     def run(self) -> None:
         try:
-            changed, total, usage, titulo, subtitulo = review_srt_with_ai(
+            changed, total, usage, titulo, subtitulo, sensiveis = review_srt_with_ai(
                 self._path, self._api_key, self._model, self._context,
                 progress=lambda ready, all_: self.progress.emit(ready, all_),
                 with_title=self._with_title,
@@ -105,6 +106,7 @@ class SrtReviewWorker(QThread):
         except Exception as error:                     # noqa: BLE001
             self.done.emit(False, f"Revisão com IA falhou: {error}", "", "")
         else:
+            self.flagged.emit(sensiveis)
             enviados = int(usage.get("prompt_tokens") or 0)
             recebidos = int(usage.get("completion_tokens") or 0)
             tok = ""
@@ -942,8 +944,10 @@ class MainWindow(QMainWindow):
         key = self._ai_key()
         if not key:
             return False
+        self._ai_flagged = []              # achados da revisão anterior não valem mais
         worker = SrtReviewWorker(
             path, key, self.ai_model.currentText().strip(), context, with_title, self)
+        worker.flagged.connect(self._on_ai_flagged)
         worker.done.connect(on_done)
         worker.finished.connect(worker.deleteLater)
         self._ai_worker = worker           # segura a referência enquanto roda
@@ -1047,11 +1051,36 @@ class MainWindow(QMainWindow):
             "censor_words": self.censor_words.toPlainText(),
         })
 
+    def _on_ai_flagged(self, sensiveis: list) -> None:
+        """Mostra onde a IA viu conteúdo sensível e guarda para a censura.
+
+        É o que a lista de palavras não alcança: o reconhecimento de fala erra
+        justamente nessas palavras (escreveu "escuprida" onde se disse
+        "estupro"), e só quem lê a frase inteira percebe.
+        """
+        self._ai_flagged = sensiveis or []
+        if not self._ai_flagged:
+            return
+        self.log.appendPlainText(f"🚩 A IA apontou {len(self._ai_flagged)} trecho(s) sensível(is):")
+        for item in self._ai_flagged:
+            motivo = f" — {item['motivo']}" if item.get("motivo") else ""
+            self.log.appendPlainText(
+                f"    {as_time(item.get('inicio', 0.0))}  “{item['trecho']}”{motivo}")
+
     def censor_word_list(self) -> list[str]:
-        """Palavras a censurar; vazio quando a censura está desligada."""
+        """Palavras a censurar; vazio quando a censura está desligada.
+
+        Junta a lista escrita à mão com o que a IA apontou na revisão — assim a
+        censura pega também o que o usuário não previu.
+        """
         if not self.censor_enabled.isChecked():
             return []
-        return censor.parse_words(self.censor_words.toPlainText())
+        words = censor.parse_words(self.censor_words.toPlainText())
+        for item in getattr(self, "_ai_flagged", []):
+            trecho = str(item.get("trecho", "")).strip()
+            if trecho and trecho.lower() not in (w.lower() for w in words):
+                words.append(trecho)
+        return words
 
     def censor_wants_mute(self) -> bool:
         """O Whisper precisa marcar palavra a palavra nesta exportação?"""
