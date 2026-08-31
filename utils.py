@@ -173,16 +173,31 @@ def parse_time_string(raw: str) -> float:
         return 0.0
 
 
+# Legenda em uma linha só, poucas palavras por vez (o desenho original). Num
+# vídeo 9:16, com a fonte da legenda, uma linha comporta ~18 caracteres antes de
+# quebrar em duas — medido com render real. O teto de caracteres é o que garante
+# a linha única; o de palavras mantém o ritmo picado mesmo com palavras curtas.
+CAPTION_MAX_WORDS = 3
+CAPTION_MAX_CHARS = 18
+
+
 def caption_groups(text: str, duration: float) -> list[str]:
-    """Divide uma fala longa em blocos curtos, adequados a vídeo vertical."""
+    """Divide a fala em blocos de uma linha (poucas palavras), para vídeo vertical.
+
+    Fecha o bloco ao chegar no limite de palavras OU de caracteres — o de
+    caracteres é o que impede a legenda de quebrar em duas linhas na tela. Uma
+    palavra sozinha maior que o limite vira um bloco só (não dá para partir uma
+    palavra); é raro e é o único caso em que a linha pode passar do teto.
+    """
     words = text.split()
-    if len(words) <= 4:
-        return [text]
+    if not words:
+        return [text] if text else []
     groups: list[str] = []
     current: list[str] = []
     for word in words:
         candidate = " ".join([*current, word])
-        if current and (len(current) >= 4 or len(candidate) > 25):
+        if current and (len(current) >= CAPTION_MAX_WORDS
+                        or len(candidate) > CAPTION_MAX_CHARS):
             groups.append(" ".join(current))
             current = [word]
         else:
