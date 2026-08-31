@@ -51,6 +51,10 @@ from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 # 2s abaixo de 90 para não descartar um corte que a IA arredondou por baixo.
 MIN_CUT_SECONDS = 88
 
+# Marca d'água fixa no topo de todo vídeo exportado (Edição, CSV e Live). Deixe
+# "" para desligar. O tamanho é calculado para preencher a largura do 9:16.
+WATERMARK_TEXT = "@RENANSANTOSMBL SIGA"
+
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
 # em pixels: 1 unidade ≈ 6,67 px num vídeo 9:16 (1920 px de altura). Converte a
 # faixa ocupada pelo lower-third + uma folga para essas unidades, de modo que a
@@ -1586,8 +1590,27 @@ class MainWindow(QMainWindow):
             style = f"FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}"
             chain += f";[{current}]subtitles=filename='{filter_path(self.caption_path)}':fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]"
             current = "captioned"
+        chain, current = self._watermark_chain(chain, current)
         chain, current = self._with_post_frame(chain, current, post_input)
         return chain + f";[{current}]format=yuv420p[outv]"
+
+    @staticmethod
+    def _watermark_chain(chain: str, current: str, label: str = "wm") -> tuple[str, str]:
+        """Carimba a marca d'água no topo (branca, 80%), preenchendo a largura.
+
+        O tamanho da fonte sai de uma medição do texto (métricas do cg_generator),
+        para a frase ocupar quase toda a largura do 9:16 sem estourar. Como entra
+        antes do frame de post, aparece também na capa do vídeo.
+        """
+        if not WATERMARK_TEXT:
+            return chain, current
+        from cg_generator import _text_width, _FONT
+        size = int((1080 - 60) * 1000 / _text_width(WATERMARK_TEXT, 1000))
+        esc = escape_drawtext(WATERMARK_TEXT)
+        chain += (f";[{current}]drawtext=fontfile='{_FONT}':text='{esc}':"
+                  f"x=(w-text_w)/2:y=70:fontsize={size}:fontcolor=white@0.8:"
+                  f"borderw=2:bordercolor=black@0.4[{label}]")
+        return chain, label
 
     @staticmethod
     def _with_post_frame(chain: str, current: str, post_input: int | None) -> tuple[str, str]:
@@ -2399,6 +2422,7 @@ class MainWindow(QMainWindow):
                 chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
                 current = "text"
 
+            chain, current = self._watermark_chain(chain, current)
             chain, current = self._with_post_frame(chain, current, post_input)
             return chain + f";[{current}]format=yuv420p[outv]"
 
@@ -3152,6 +3176,7 @@ class MainWindow(QMainWindow):
                 chain += (f";[{current}]drawtext=fontfile='{font}':text='{escape_drawtext(titulo)}':"
                           f"x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]")
                 current = "text"
+            chain, current = self._watermark_chain(chain, current)
             chain, current = self._with_post_frame(chain, current, post_input)
             return chain + f";[{current}]format=yuv420p[outv]"
 
