@@ -32,7 +32,8 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
-    build_reels_prompt, cuts_to_moments, render_thumbnail, review_srt_with_ai,
+    build_reels_prompt, cuts_to_moments, looks_like_auto_caption,
+    render_thumbnail, review_srt_with_ai,
     strip_markdown, transcript_with_timestamps,
     thumbnail_path, write_reels_prompt, write_reels_text,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
@@ -893,16 +894,33 @@ class MainWindow(QMainWindow):
         if not self.validate_video(): return
         start, length = self.cut_values()
         # 1) Reaproveita a legenda do vídeo (ex.: baixada pelo yt-dlp), sem Whisper.
+        #    Mas não quando ela é auto-gerada (YouTube): essas vêm com ">>",
+        #    repetições e micro-blocos que nem a limpeza nem a IA deixam boas.
+        #    Aí vale mais transcrever de novo, se o Whisper estiver disponível.
         existing = find_video_subtitle(self.video_path)
         if existing:
-            out = self.work_dir / "trecho_para_legendar.srt"
-            if segments_to_srt(parse_srt_segments(existing), start, start + length, out):
-                shorten_srt_captions(out)
-                self.caption_path = out
-                self.caption_status.setText(f"Legenda do vídeo reaproveitada: {existing.name}")
-                QMessageBox.information(self, APP_NAME, f"Legenda do vídeo reaproveitada ({existing.name}).\nSerá aplicada na exportação.")
-                return
-            self.log.appendPlainText(f"ℹ️ {existing.name} não cobre este trecho; usando Whisper.")
+            source = parse_srt_segments(existing)
+            auto = looks_like_auto_caption(source)
+            if auto and whisper_path():
+                self.log.appendPlainText(
+                    f"ℹ️ {existing.name} parece uma legenda automática (marcadores "
+                    ">>, repetições). Transcrevendo com Whisper para sair limpa.")
+            else:
+                out = self.work_dir / "trecho_para_legendar.srt"
+                if segments_to_srt(source, start, start + length, out):
+                    removidos = shorten_srt_captions(out)
+                    self.caption_path = out
+                    if removidos:
+                        self.log.appendPlainText(
+                            f"🧹 Limpeza da legenda: {removidos} bloco(s) "
+                            "repetido(s) ou curto(s) removido(s).")
+                    aviso = ("\n\n⚠️ Era uma legenda automática (>>, repetições). "
+                             "Limpei o que deu, mas para ficar impecável instale o "
+                             "Whisper — aí ela é transcrita de novo.") if auto else ""
+                    self.caption_status.setText(f"Legenda do vídeo reaproveitada: {existing.name}")
+                    QMessageBox.information(self, APP_NAME, f"Legenda do vídeo reaproveitada ({existing.name}).{aviso}\nSerá aplicada na exportação.")
+                    return
+                self.log.appendPlainText(f"ℹ️ {existing.name} não cobre este trecho; usando Whisper.")
         # 2) Sem legenda pronta: transcreve com Whisper.
         whisper = whisper_path()
         if not whisper:

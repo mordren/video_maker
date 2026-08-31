@@ -192,22 +192,96 @@ def caption_groups(text: str, duration: float) -> list[str]:
     return groups
 
 
-def shorten_srt_captions(path: Path) -> None:
-    """Reescreve o SRT com até quatro palavras por legenda e tempos proporcionais."""
-    content = path.read_text(encoding="utf-8-sig")
-    entries = re.split(r"\r?\n\s*\r?\n", content.strip())
+# Marcadores de troca de locutor das legendas automáticas do YouTube (">>",
+# "»"). Não são fala, e ficam visíveis na tela se não forem tirados.
+_SPEAKER_MARKERS = re.compile(r"\s*(?:>>+|»+)\s*")
+
+
+def strip_speaker_markers(text: str) -> str:
+    """Tira os ">>"/"»" de troca de locutor e normaliza os espaços."""
+    text = _SPEAKER_MARKERS.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _norm_caption(text: str) -> str:
+    """Forma para comparar duas legendas (sem caixa, sem pontuação nas pontas)."""
+    return re.sub(r"\s+", " ", text).strip().strip(".,!?;:…").lower()
+
+
+def clean_caption_segments(segments: list[tuple[float, float, str]]
+                           ) -> list[tuple[float, float, str]]:
+    """Limpa uma legenda de fonte automática (YouTube), sem depender da IA.
+
+    Faz três coisas que a revisão com IA não faz (ela é obrigada a manter o
+    mesmo número de linhas): tira os marcadores ">>", remove os blocos repetidos
+    das legendas "rolantes" (a mesma frase reaparece várias vezes enquanto sobe
+    na tela) e descarta os fragmentos de milissegundos que sobram do processo.
+
+    Nunca remove texto inédito: um bloco só cai quando o seu texto já apareceu
+    num bloco recente. Duplicata some estendendo o bloco original, para a legenda
+    continuar na tela pelo tempo em que foi falada.
+    """
+    limpos: list[list] = []
+    for start, end, text in segments:
+        t = strip_speaker_markers(text)
+        if not t:
+            continue
+        norm = _norm_caption(t)
+        # Já apareceu num bloco dos últimos ~6s? Então é a legenda rolando de
+        # novo: estende o bloco original em vez de repetir.
+        dup = None
+        for i in range(len(limpos) - 1, -1, -1):
+            if limpos[i][1] < start - 6.0:
+                break
+            if _norm_caption(limpos[i][2]) == norm:
+                dup = i
+                break
+        if dup is not None:
+            limpos[dup][1] = max(limpos[dup][1], end)
+        else:
+            limpos.append([start, end, t])
+    # Corrige as sobreposições que a extensão pode criar (dois locutores que se
+    # alternam) prendendo o fim de cada bloco no início do seguinte.
+    for i in range(len(limpos) - 1):
+        if limpos[i][1] > limpos[i + 1][0]:
+            limpos[i][1] = limpos[i + 1][0]
+    # Fora os fragmentos curtos demais para ler (sobra de bloco de milissegundos).
+    return [(s, e, t) for s, e, t in limpos if e - s >= 0.12]
+
+
+def looks_like_auto_caption(segments: list[tuple[float, float, str]]) -> bool:
+    """A legenda parece auto-gerada (YouTube): com ">>", duplicatas ou micro-blocos.
+
+    É o sinal para preferir o Whisper a reaproveitar essa legenda — reconstruir
+    uma legenda rolante nunca fica tão limpo quanto transcrever de novo.
+    """
+    if not segments:
+        return False
+    total = len(segments)
+    marcadores = sum(1 for _, _, t in segments if ">>" in t or "»" in t)
+    micro = sum(1 for s, e, _ in segments if e - s < 0.15)
+    dups = 0
+    vistos: dict[str, float] = {}
+    for start, end, text in segments:
+        norm = _norm_caption(strip_speaker_markers(text))
+        if norm and vistos.get(norm, -99) >= start - 6.0:
+            dups += 1
+        vistos[norm] = end
+    return bool(marcadores) or micro > total * 0.2 or dups > total * 0.2
+
+
+def shorten_srt_captions(path: Path) -> int:
+    """Reescreve o SRT: limpa a legenda e reparte em blocos de até quatro palavras.
+
+    Devolve quantos blocos a limpeza removeu (duplicatas e fragmentos), para a
+    interface poder avisar o usuário. Os tempos saem proporcionais ao texto.
+    """
+    segments = parse_srt_segments(path)
+    limpos = clean_caption_segments(segments)
+    removidos = len(segments) - len(limpos)
     output: list[str] = []
     number = 1
-    time_pattern = re.compile(r"(\d\d:\d\d:\d\d[,.]\d\d\d)\s+-->\s+(\d\d:\d\d:\d\d[,.]\d\d\d)")
-    for entry in entries:
-        lines = [line.strip() for line in entry.splitlines() if line.strip()]
-        time_index = next((index for index, line in enumerate(lines) if time_pattern.fullmatch(line)), None)
-        if time_index is None:
-            continue
-        match = time_pattern.fullmatch(lines[time_index])
-        assert match is not None
-        start, end = srt_seconds(match.group(1)), srt_seconds(match.group(2))
-        text = " ".join(lines[time_index + 1:])
+    for start, end, text in limpos:
         groups = caption_groups(text, end - start)
         weights = [max(1, len(group)) for group in groups]
         total_weight = sum(weights)
@@ -218,6 +292,7 @@ def shorten_srt_captions(path: Path) -> None:
             number += 1
             current = next_time
     path.write_text("\n".join(output), encoding="utf-8")
+    return removidos
 
 
 # Formatos de saída reconhecidos e seus apelidos na coluna "formato" do CSV.
