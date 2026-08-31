@@ -330,6 +330,48 @@ def parse_csv_moments(csv_path: Path) -> list[dict]:
     return rows
 
 
+def transcript_with_timestamps(srt_path: Path) -> str:
+    """Monta a transcrição que vai para a IA escolher os cortes.
+
+    Uma linha por bloco, com o tempo de início na frente (`[m:ss] fala`), para o
+    modelo ancorar as janelas nos tempos reais em vez de chutar.
+    """
+    linhas = []
+    for start, _end, text in parse_srt_segments(srt_path):
+        if text.strip():
+            linhas.append(f"[{as_time(start)}] {text.strip()}")
+    return "\n".join(linhas)
+
+
+def cuts_to_moments(cuts: list[dict], max_duration: float = 0.0) -> list[dict]:
+    """Converte os cortes que a IA devolveu em 'moments' para a tabela do CSV.
+
+    Os tempos vêm como texto (m:ss ou segundos) e são lidos com tolerância. Um
+    corte com fim antes do início, ou fora do vídeo, é descartado — melhor faltar
+    um corte do que exportar um trecho quebrado. Devolve a lista já limpa.
+    """
+    moments: list[dict] = []
+    for c in cuts:
+        start_s = parse_time_string(str(c.get("inicio", "")))
+        end_s = parse_time_string(str(c.get("fim", "")))
+        if max_duration:
+            end_s = min(end_s, max_duration)
+        if end_s <= start_s:
+            continue
+        titulo = str(c.get("titulo", "")).strip("'\" ") or f"Corte {len(moments) + 1}"
+        moments.append({
+            "start_s": start_s,
+            "end_s": end_s,
+            "label": titulo,
+            "subtitulo": str(c.get("subtitulo", "")).strip("'\" "),
+            "legenda": str(c.get("legenda", "")).strip(),
+            "comentario": str(c.get("comentario", "")).strip(),
+            "formato": "",
+            "image_path": None,
+        })
+    return moments
+
+
 def build_clip_filter(mode: str, has_image: bool, image_input: int = 1) -> str:
     """
     Monta a cadeia filter_complex que converte o vídeo (entrada 0) para 9:16,

@@ -32,7 +32,8 @@ from utils import (
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
     as_time, build_clip_filter, build_srt_for_clip, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
-    build_reels_prompt, render_thumbnail, review_srt_with_ai, strip_markdown,
+    build_reels_prompt, cuts_to_moments, render_thumbnail, review_srt_with_ai,
+    strip_markdown, transcript_with_timestamps,
     thumbnail_path, write_reels_prompt, write_reels_text,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
@@ -121,6 +122,37 @@ class SrtReviewWorker(QThread):
             self.done.emit(
                 True, f"Legenda revisada pela IA: {changed}/{total} blocos alterados{tok}.",
                 titulo, subtitulo)
+
+
+class CutsSuggestWorker(QThread):
+    """Pede ao DeepSeek a lista de cortes de um vídeo, fora da thread da interface.
+
+    Recebe a transcrição inteira (com tempos) e devolve os cortes que a IA
+    escolheu. A chamada pode levar bastante numa live longa, daí a thread.
+    """
+
+    done = Signal(bool, str, list)       # ok?, mensagem, cortes
+
+    def __init__(self, transcript: str, api_key: str, model: str, parent=None) -> None:
+        super().__init__(parent)
+        self._transcript, self._api_key, self._model = transcript, api_key, model
+
+    def run(self) -> None:
+        try:
+            cortes, usage = ai_srt.suggest_cuts(self._transcript, self._api_key, self._model)
+        except ai_srt.AiError as error:
+            self.done.emit(False, f"A IA não conseguiu escolher os cortes: {error}", [])
+            return
+        except Exception as error:                     # noqa: BLE001
+            self.done.emit(False, f"A IA não conseguiu escolher os cortes: {error}", [])
+            return
+        enviados = int(usage.get("prompt_tokens") or 0)
+        recebidos = int(usage.get("completion_tokens") or 0)
+        self.done.emit(
+            True,
+            f"IA sugeriu {len(cortes)} corte(s) "
+            f"({enviados} tokens enviados, {recebidos} recebidos).",
+            cortes)
 
 
 class ReelsCaptionWorker(QThread):
@@ -1722,6 +1754,23 @@ class MainWindow(QMainWindow):
         csv_box_layout.addWidget(csv_hint)
         panel.addWidget(csv_box)
 
+        # Cortes por IA: em vez de um CSV pronto, a IA lê a transcrição do vídeo
+        # e devolve os cortes. Preenche a mesma tabela do CSV manual.
+        ai_box = QGroupBox("Cortes automáticos com IA (DeepSeek)")
+        ai_box_layout = QVBoxLayout(ai_box)
+        self.csv_ai_btn = QPushButton("🤖 Gerar cortes do vídeo com IA")
+        self.csv_ai_btn.clicked.connect(self._csv_generate_cuts)
+        ai_box_layout.addWidget(self.csv_ai_btn)
+        ai_hint = QLabel(
+            "Usa a legenda .srt ao lado do vídeo; se não houver, transcreve com "
+            "Whisper primeiro. A IA escolhe os trechos mais fortes e preenche a "
+            "tabela abaixo — revise antes de cortar. Precisa da chave do DeepSeek "
+            "(seção 4 da aba Edição).")
+        ai_hint.setObjectName("muted")
+        ai_hint.setWordWrap(True)
+        ai_box_layout.addWidget(ai_hint)
+        panel.addWidget(ai_box)
+
         # Texto
         overlay_box = QGroupBox("Texto")
         overlay_form = QFormLayout(overlay_box)
@@ -1809,6 +1858,128 @@ class MainWindow(QMainWindow):
         self._populate_csv_table(moments)
         self.csv_log.clear()
         self.csv_log.appendPlainText(f"✅ {len(moments)} momentos carregados de {csv_path.name}")
+
+    # ──────────────────────────────────────────────────────────────
+    #  Cortes automáticos com IA (a partir da transcrição do vídeo)
+    # ──────────────────────────────────────────────────────────────
+
+    def _csv_ai_busy(self, busy: bool) -> None:
+        """Trava os botões enquanto a IA escolhe os cortes."""
+        self.csv_ai_btn.setEnabled(not busy)
+        self.csv_process_btn.setEnabled(not busy)
+        self.csv_ai_btn.setText("Gerando cortes…" if busy else "🤖 Gerar cortes do vídeo com IA")
+
+    def _csv_generate_cuts(self) -> None:
+        """Ponto de entrada do botão: garante uma transcrição e chama a IA.
+
+        Reaproveita a legenda .srt ao lado do vídeo; sem ela, transcreve o vídeo
+        inteiro com Whisper antes de perguntar os cortes à IA.
+        """
+        if not self.video_path:
+            QMessageBox.warning(self, APP_NAME, "Selecione um vídeo primeiro.")
+            return
+        if not self._ai_key():
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Informe a chave da API do DeepSeek na seção 4 da aba Edição "
+                "(ou defina DEEPSEEK_API_KEY).")
+            return
+
+        self.csv_log.clear()
+        legenda = find_video_subtitle(self.video_path)
+        if legenda and srt_has_content(legenda):
+            self.csv_log.appendPlainText(f"📄 Usando a legenda do vídeo: {legenda.name}")
+            self._csv_run_cuts_ai(legenda)
+            return
+
+        whisper = whisper_path()
+        if not whisper:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "O vídeo não tem legenda .srt e o Whisper não foi encontrado. "
+                "Instale as dependências do README ou coloque um .srt ao lado do vídeo.")
+            return
+
+        self._csv_ai_busy(True)
+        self.csv_log.appendPlainText("🎙️ Sem legenda ao lado do vídeo; transcrevendo o vídeo inteiro…")
+        self._csv_cuts_wav = self.work_dir / "_csv_cuts_full.wav"
+        self._csv_cuts_whisper = whisper
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.finished.connect(self._csv_cuts_extracted)
+        self._csv_cuts_proc = proc
+        proc.start("ffmpeg", ["-y", "-i", str(self.video_path), "-vn", "-ac", "1",
+                              "-ar", "16000", str(self._csv_cuts_wav)])
+
+    def _csv_cuts_extracted(self, code: int, status: QProcess.ExitStatus) -> None:
+        if code != 0 or not self._csv_cuts_wav.exists():
+            self._csv_ai_busy(False)
+            QMessageBox.critical(self, APP_NAME, "Não foi possível extrair o áudio do vídeo.")
+            return
+        self.csv_log.appendPlainText(
+            f"🎙️ Transcrevendo com Whisper (modelo {self.whisper_model.currentData()})… "
+            "pode demorar em vídeos longos.")
+        command = [self._csv_cuts_whisper, str(self._csv_cuts_wav),
+                   "--model", self.whisper_model.currentData(), "--language", "Portuguese",
+                   "--task", "transcribe", "--output_format", "srt",
+                   "--output_dir", str(self.work_dir)]
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.finished.connect(self._csv_cuts_after_whisper)
+        self._csv_cuts_proc = proc
+        proc.start(command[0], command[1:])
+
+    def _csv_cuts_after_whisper(self, code: int, status: QProcess.ExitStatus) -> None:
+        srt = self._csv_cuts_wav.with_suffix(".srt")
+        if code != 0 or not srt_has_content(srt):
+            self._csv_ai_busy(False)
+            QMessageBox.critical(
+                self, APP_NAME,
+                "O Whisper não gerou uma transcrição utilizável para este vídeo.")
+            return
+        self.csv_log.appendPlainText("✅ Transcrição pronta; pedindo os cortes à IA…")
+        self._csv_run_cuts_ai(srt)
+
+    def _csv_run_cuts_ai(self, srt_path: Path) -> None:
+        """Monta a transcrição com tempos e dispara a escolha dos cortes."""
+        transcript = transcript_with_timestamps(srt_path)
+        if not transcript.strip():
+            self._csv_ai_busy(False)
+            QMessageBox.warning(self, APP_NAME, "A transcrição do vídeo veio vazia.")
+            return
+        self._csv_ai_busy(True)
+        self.csv_log.appendPlainText("🤖 A IA está escolhendo os cortes…")
+        worker = CutsSuggestWorker(
+            transcript, self._ai_key(), self.ai_model.currentText().strip(), self)
+        worker.done.connect(self._csv_apply_cuts)
+        worker.finished.connect(worker.deleteLater)
+        self._csv_cuts_worker = worker
+        worker.start()
+
+    def _csv_apply_cuts(self, ok: bool, message: str, cortes: list) -> None:
+        """Recebe os cortes da IA e preenche a tabela do CSV."""
+        self._csv_ai_busy(False)
+        self.csv_log.appendPlainText(("✅ " if ok else "⚠️ ") + message)
+        if not ok:
+            QMessageBox.warning(self, APP_NAME, message)
+            return
+        duracao = self._live_probe_duration(self.video_path)
+        moments = cuts_to_moments(cortes, duracao)
+        if not moments:
+            QMessageBox.information(
+                self, APP_NAME, "A IA não trouxe nenhum corte aproveitável para este vídeo.")
+            return
+        self._csv_moments = moments
+        self.csv_label.setText(f"{len(moments)} cortes sugeridos pela IA")
+        self._populate_csv_table(moments)
+        for m in moments:
+            if m.get("comentario"):
+                self.csv_log.appendPlainText(
+                    f"   • {m['label']} ({as_time(m['start_s'])}–{as_time(m['end_s'])}): {m['comentario']}")
+        QMessageBox.information(
+            self, APP_NAME,
+            f"{len(moments)} cortes sugeridos e carregados na tabela.\n\n"
+            "Revise os trechos e clique em “Cortar todos os momentos” quando quiser exportar.")
 
     def _populate_csv_table(self, moments: list[dict]) -> None:
         self.csv_table.setRowCount(len(moments))

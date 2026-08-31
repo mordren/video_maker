@@ -235,6 +235,87 @@ def ask(prompt: str, api_key: str, model: str = DEFAULT_MODEL,
     return str(content).strip(), usage
 
 
+_CUTS_PROMPT = """Você é um cortador de vídeos políticos. Recebe a transcrição de \
+uma live, discurso, entrevista, debate ou podcast (com marcação de tempo) e escolhe \
+os melhores trechos para virarem shorts/reels — os mais fortes, polêmicos e \
+"meme-áveis", que se sustentam sozinhos.
+
+O que puxar (uma ou mais categorias por corte):
+- declaração-tese ou bordão que resume a posição do orador;
+- ataque direto e nominal a adversário, instituição ou grupo;
+- momento-personagem: fala arrogante, engraçada, provocadora;
+- contradição, revelação de estratégia ou bastidor;
+- carga emocional (indignação, exaltação, comoção);
+- número ou afirmação forte que sozinha rende manchete.
+
+Como montar cada corte:
+- Pegue o RACIOCÍNIO INTEIRO, não só a frase de efeito. Comece no início natural \
+da ideia (o gancho, o setup) e termine logo depois de a frase de efeito "cair". A \
+punchline é o clímax do corte, não o corte inteiro.
+- Duração de 30 a 90 segundos; teto rígido de 1min30. Um assunto por corte — se o \
+orador emenda dois temas fortes, gere dois cortes.
+- Comece numa abertura que já prende; termine numa frase de impacto, nunca no meio \
+de um raciocínio.
+
+Responda APENAS com JSON, exatamente neste formato:
+{"cortes": [{"inicio": "m:ss", "fim": "m:ss", "titulo": "...", "subtitulo": "...", \
+"comentario": "..."}]}
+
+- inicio, fim: os tempos do trecho, no formato m:ss (ou h:mm:ss acima de 1h), \
+tirados da marcação da transcrição. Dê ~1s de folga antes e depois para não cortar \
+a fala no talo.
+- titulo: o gancho curto (o "título do short"), no máximo 25 caracteres. Priorize a \
+frase de efeito ou o bordão, não a descrição do tema. Em CAIXA ALTA.
+- subtitulo: a manchete em destaque, chamativa e fiel à fala, até ~60 caracteres, \
+sem ponto final.
+- comentario: 1 ou 2 frases dizendo por que o trecho vira um bom short e a duração \
+estimada. Quando o trecho imputa crime a pessoa nomeada, acusa sobre a vida privada \
+ou xinga alguém identificável, comece o comentario com "⚠️ " e diga o risco \
+(difamação, possível strike/desmonetização).
+
+Ordene os cortes do mais forte para o mais fraco, não em ordem cronológica. \
+Traga de 3 a 6 cortes para vídeos curtos e de 8 a 12 para vídeos longos — mas só o \
+que realmente se sustenta como short, sem forçar número. Escolha pelo potencial de \
+audiência, sem tomar partido nem distorcer o sentido da fala."""
+
+
+def suggest_cuts(transcript: str, api_key: str, model: str = DEFAULT_MODEL
+                 ) -> tuple[list[dict], dict]:
+    """Escolhe cortes a partir da transcrição com tempos. Devolve (cortes, uso).
+
+    Cada corte é um dict com inicio, fim, titulo, subtitulo e comentario — como
+    veio da IA, em texto. Quem converte os tempos e monta os "moments" é a
+    interface, para manter este módulo sem dependência do resto do app.
+    """
+    if not api_key:
+        raise AiError("Informe a chave da API do DeepSeek.")
+    if not transcript.strip():
+        return [], {}
+    payload = {
+        "model": model or DEFAULT_MODEL,
+        "temperature": 0.4,
+        # A saída tem vários cortes; um teto generoso evita cortar a lista no
+        # meio, mas ainda segura uma resposta desgovernada.
+        "max_tokens": 4000,
+        "messages": [
+            {"role": "system", "content": _CUTS_PROMPT},
+            {"role": "user", "content": transcript},
+        ],
+    }
+    data = _request("/chat/completions", api_key, payload)
+    usage = data.get("usage") or {}
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as error:
+        raise AiError("Resposta da API sem conteúdo.") from error
+    obj = _unwrap_json(content)
+    cortes = obj.get("cortes")
+    if not isinstance(cortes, list):
+        raise AiError("A IA não devolveu a lista de cortes.")
+    limpos = [c for c in cortes if isinstance(c, dict) and c.get("inicio") and c.get("fim")]
+    return limpos, usage
+
+
 def list_models(api_key: str) -> list[str]:
     """Modelos disponíveis para essa chave, para preencher a lista na interface."""
     if not api_key:
