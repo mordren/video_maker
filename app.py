@@ -46,10 +46,12 @@ import censor
 import trilhas
 from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 
-# Piso de duração dos cortes sugeridos pela IA. O prompt já pede no mínimo 1min30;
-# isto derruba os que vierem curtos mesmo assim (a IA às vezes desobedece). Fica
-# 2s abaixo de 90 para não descartar um corte que a IA arredondou por baixo.
+# Piso e teto de duração dos cortes sugeridos pela IA. O prompt já pede de 1min30
+# a 2min30; isto derruba os que vierem fora mesmo assim (a IA às vezes desobedece,
+# e short longo demais não funciona). A folga de ~2s evita descartar um corte que
+# a IA arredondou de leve para fora da faixa.
 MIN_CUT_SECONDS = 88
+MAX_CUT_SECONDS = 152
 
 # Marca d'água fixa no topo de todo vídeo exportado (Edição, CSV e Live). Deixe
 # "" para desligar. O tamanho é calculado para preencher a largura do 9:16.
@@ -2010,17 +2012,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, message)
             return
         duracao = self._live_probe_duration(self.video_path)
-        moments = cuts_to_moments(cortes, duracao, min_duration=MIN_CUT_SECONDS)
-        curtos = len(cortes) - len(moments)
-        if curtos > 0:
+        moments = cuts_to_moments(cortes, duracao, min_duration=MIN_CUT_SECONDS,
+                                  max_cut_duration=MAX_CUT_SECONDS)
+        fora = len(cortes) - len(moments)
+        if fora > 0:
             self.csv_log.appendPlainText(
-                f"✂️ {curtos} corte(s) abaixo de 1min30 descartado(s) pelo piso de duração.")
+                f"✂️ {fora} corte(s) fora da faixa 1min30–2min30 descartado(s).")
         if not moments:
             QMessageBox.information(
                 self, APP_NAME,
-                "A IA não trouxe nenhum corte que sustente 1min30 neste vídeo.\n\n"
-                "Melhor assim do que cortes curtos e fracos — pode ser que o vídeo "
-                "só tenha momentos rápidos, sem contexto para um short mais longo.")
+                "A IA não trouxe nenhum corte na faixa de 1min30 a 2min30 neste vídeo.\n\n"
+                "Melhor assim do que um short curto e fraco ou longo demais — pode ser "
+                "que o vídeo só tenha momentos rápidos, sem contexto para um short.")
             return
         self._csv_moments = moments
         self.csv_label.setText(f"{len(moments)} cortes sugeridos pela IA")

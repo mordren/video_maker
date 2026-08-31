@@ -249,8 +249,9 @@ O que puxar (uma ou mais categorias por corte):
 - número ou afirmação forte que sozinha rende manchete.
 
 Como montar cada corte:
-- DURAÇÃO MÍNIMA DE 1 MINUTO E 30 SEGUNDOS. Isto é obrigatório: um corte com menos \
-de 90 segundos não serve e não deve ser incluído. O ideal é de 1min30 a 3min.
+- DURAÇÃO ENTRE 1MIN30 E 2MIN30. Isto é obrigatório: um corte com menos de 1min30 \
+ou mais de 2min30 não serve e não deve ser incluído. Um short longo demais não \
+funciona.
 - Para chegar a essa duração, pegue o RACIOCÍNIO INTEIRO em volta do momento forte, \
 não só a frase de efeito. Comece bem antes, quando a pessoa monta o assunto (o \
 gancho, o setup, a pergunta), passe pelo desenvolvimento e só termine depois de a \
