@@ -53,7 +53,7 @@ MIN_CUT_SECONDS = 88
 
 # Marca d'água fixa no topo de todo vídeo exportado (Edição, CSV e Live). Deixe
 # "" para desligar. O tamanho é calculado para preencher a largura do 9:16.
-WATERMARK_TEXT = "@RENANSANTOSMBL SIGA"
+WATERMARK_TEXT = "@RENANSANTOSMBL"
 
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
 # em pixels: 1 unidade ≈ 6,67 px num vídeo 9:16 (1920 px de altura). Converte a
@@ -1608,7 +1608,7 @@ class MainWindow(QMainWindow):
         size = int((1080 - 60) * 1000 / _text_width(WATERMARK_TEXT, 1000))
         esc = escape_drawtext(WATERMARK_TEXT)
         chain += (f";[{current}]drawtext=fontfile='{_FONT}':text='{esc}':"
-                  f"x=(w-text_w)/2:y=70:fontsize={size}:fontcolor=white@0.8:"
+                  f"x=(w-text_w)/2:y=70:fontsize={size}:fontcolor=yellow@0.8:"
                   f"borderw=2:bordercolor=black@0.4[{label}]")
         return chain, label
 
