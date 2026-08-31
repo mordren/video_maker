@@ -418,12 +418,15 @@ def transcript_with_timestamps(srt_path: Path) -> str:
     return "\n".join(linhas)
 
 
-def cuts_to_moments(cuts: list[dict], max_duration: float = 0.0) -> list[dict]:
+def cuts_to_moments(cuts: list[dict], max_duration: float = 0.0,
+                    min_duration: float = 0.0) -> list[dict]:
     """Converte os cortes que a IA devolveu em 'moments' para a tabela do CSV.
 
     Os tempos vêm como texto (m:ss ou segundos) e são lidos com tolerância. Um
-    corte com fim antes do início, ou fora do vídeo, é descartado — melhor faltar
-    um corte do que exportar um trecho quebrado. Devolve a lista já limpa.
+    corte com fim antes do início, fora do vídeo, ou mais curto que
+    `min_duration`, é descartado — o piso de duração é a rede de segurança para
+    quando a IA ignora a instrução e devolve um corte curto. Devolve a lista já
+    limpa.
     """
     moments: list[dict] = []
     for c in cuts:
@@ -431,7 +434,7 @@ def cuts_to_moments(cuts: list[dict], max_duration: float = 0.0) -> list[dict]:
         end_s = parse_time_string(str(c.get("fim", "")))
         if max_duration:
             end_s = min(end_s, max_duration)
-        if end_s <= start_s:
+        if end_s <= start_s or (end_s - start_s) < min_duration:
             continue
         titulo = str(c.get("titulo", "")).strip("'\" ") or f"Corte {len(moments) + 1}"
         moments.append({

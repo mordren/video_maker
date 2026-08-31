@@ -249,13 +249,16 @@ O que puxar (uma ou mais categorias por corte):
 - número ou afirmação forte que sozinha rende manchete.
 
 Como montar cada corte:
-- Pegue o RACIOCÍNIO INTEIRO, não só a frase de efeito. Comece no início natural \
-da ideia (o gancho, o setup) e termine logo depois de a frase de efeito "cair". A \
-punchline é o clímax do corte, não o corte inteiro.
-- Duração de 30 a 90 segundos; teto rígido de 1min30. Um assunto por corte — se o \
-orador emenda dois temas fortes, gere dois cortes.
-- Comece numa abertura que já prende; termine numa frase de impacto, nunca no meio \
-de um raciocínio.
+- DURAÇÃO MÍNIMA DE 1 MINUTO E 30 SEGUNDOS. Isto é obrigatório: um corte com menos \
+de 90 segundos não serve e não deve ser incluído. O ideal é de 1min30 a 3min.
+- Para chegar a essa duração, pegue o RACIOCÍNIO INTEIRO em volta do momento forte, \
+não só a frase de efeito. Comece bem antes, quando a pessoa monta o assunto (o \
+gancho, o setup, a pergunta), passe pelo desenvolvimento e só termine depois de a \
+ideia fechar. A frase de efeito é o clímax do corte, não o corte inteiro.
+- Se um momento forte não tiver contexto suficiente em volta para sustentar 90 \
+segundos, NÃO o inclua — melhor deixar de fora do que entregar um corte curto.
+- Um assunto por corte; comece numa abertura que já prende e termine numa frase que \
+fecha, nunca no meio de um raciocínio.
 
 Responda APENAS com JSON, exatamente neste formato:
 {"cortes": [{"inicio": "m:ss", "fim": "m:ss", "titulo": "...", "subtitulo": "...", \
@@ -273,10 +276,14 @@ estimada. Quando o trecho imputa crime a pessoa nomeada, acusa sobre a vida priv
 ou xinga alguém identificável, comece o comentario com "⚠️ " e diga o risco \
 (difamação, possível strike/desmonetização).
 
-Ordene os cortes do mais forte para o mais fraco, não em ordem cronológica. \
-Traga de 3 a 6 cortes para vídeos curtos e de 8 a 12 para vídeos longos — mas só o \
-que realmente se sustenta como short, sem forçar número. Escolha pelo potencial de \
-audiência, sem tomar partido nem distorcer o sentido da fala."""
+QUALIDADE ACIMA DE QUANTIDADE. Não existe número mínimo de cortes. Traga só os \
+trechos que realmente se sustentam sozinhos como um bom short — nem que seja UM \
+único corte, ou nenhum. É muito melhor um corte forte do que cinco medianos. Se o \
+vídeo só tem um momento que presta, devolva só ele. Não encha a lista para parecer \
+mais completo.
+
+Ordene os cortes do mais forte para o mais fraco, não em ordem cronológica. Escolha \
+pelo potencial de audiência, sem tomar partido nem distorcer o sentido da fala."""
 
 
 def suggest_cuts(transcript: str, api_key: str, model: str = DEFAULT_MODEL

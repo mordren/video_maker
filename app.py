@@ -46,6 +46,11 @@ import censor
 import trilhas
 from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
 
+# Piso de duração dos cortes sugeridos pela IA. O prompt já pede no mínimo 1min30;
+# isto derruba os que vierem curtos mesmo assim (a IA às vezes desobedece). Fica
+# 2s abaixo de 90 para não descartar um corte que a IA arredondou por baixo.
+MIN_CUT_SECONDS = 88
+
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
 # em pixels: 1 unidade ≈ 6,67 px num vídeo 9:16 (1920 px de altura). Converte a
 # faixa ocupada pelo lower-third + uma folga para essas unidades, de modo que a
@@ -1982,10 +1987,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, message)
             return
         duracao = self._live_probe_duration(self.video_path)
-        moments = cuts_to_moments(cortes, duracao)
+        moments = cuts_to_moments(cortes, duracao, min_duration=MIN_CUT_SECONDS)
+        curtos = len(cortes) - len(moments)
+        if curtos > 0:
+            self.csv_log.appendPlainText(
+                f"✂️ {curtos} corte(s) abaixo de 1min30 descartado(s) pelo piso de duração.")
         if not moments:
             QMessageBox.information(
-                self, APP_NAME, "A IA não trouxe nenhum corte aproveitável para este vídeo.")
+                self, APP_NAME,
+                "A IA não trouxe nenhum corte que sustente 1min30 neste vídeo.\n\n"
+                "Melhor assim do que cortes curtos e fracos — pode ser que o vídeo "
+                "só tenha momentos rápidos, sem contexto para um short mais longo.")
             return
         self._csv_moments = moments
         self.csv_label.setText(f"{len(moments)} cortes sugeridos pela IA")
