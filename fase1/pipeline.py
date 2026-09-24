@@ -57,7 +57,18 @@ def ler_json(path: Path, padrao=None):
 def gravar_json(path: Path, dados) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    # O projeto roda dentro do OneDrive: ele abre um handle no arquivo para
+    # sincronizar bem na hora da troca, e o os.replace() do Windows falha com
+    # "Access is denied" nessa janela curta — não é erro de permissão real,
+    # é o arquivo estar temporariamente ocupado. Tenta de novo com espera.
+    for tentativa in range(6):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            if tentativa == 5:
+                raise
+            time.sleep(0.2 * (tentativa + 1))
 
 
 @contextmanager

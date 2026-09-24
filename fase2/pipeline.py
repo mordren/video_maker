@@ -53,7 +53,18 @@ def etapa(nome: str):
 
 
 def gravar_json(path: Path, dados) -> None:
-    path.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+    texto = json.dumps(dados, ensure_ascii=False, indent=2)
+    # O projeto roda dentro do OneDrive: ele pode segurar um handle no arquivo
+    # por sincronização, e a escrita falha com "Access is denied" numa janela
+    # curta — não é erro de permissão real. Tenta de novo com espera.
+    for tentativa in range(6):
+        try:
+            path.write_text(texto, encoding="utf-8")
+            return
+        except PermissionError:
+            if tentativa == 5:
+                raise
+            time.sleep(0.2 * (tentativa + 1))
 
 
 def recorta_video(video: Path, inicio: float, duracao: float, destino: Path) -> None:
