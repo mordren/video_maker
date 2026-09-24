@@ -1,0 +1,3 @@
+pyyaml>=6.0
+# Só para vídeos sem .srt ao lado (o app principal já instala):
+# openai-whisper>=20250625

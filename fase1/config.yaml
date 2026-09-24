@@ -1,0 +1,37 @@
+# Configuração da Fase 1 (seleção de blocos). Tempos em segundos.
+
+janela:
+  duracao: 45            # tamanho de cada janela candidata
+  sobreposicao: 10       # quanto uma janela invade a seguinte
+  palavras_minimas: 25   # janela com menos fala que isso nem vai para o JEV
+  duracao_minima_bloco: 20  # nenhum ajuste de limite pode deixar o bloco menor que isso
+
+transcricao:
+  whisper_modelo: small
+  whisper_idioma: Portuguese
+
+jev:
+  modelo: "~typesafe/jev-latest"
+  limiar_coerente: 0.6        # etapa 4: abaixo disso a janela é descartada
+  limiar_precisa_melhora: 0.5 # etapa 6: acima disso os limites sugeridos são aplicados
+  opcoes_limite: 8            # quantos segmentos do começo/fim podem virar o novo limite
+  paralelo: 8
+  timeout: 30
+  tentativas: 3
+
+llm:
+  # Reutiliza o DeepSeek do app (https://api.deepseek.com/v1).
+  # A chave vem de: DEEPSEEK_API_KEY (env) ou ~\AppData\Local\CortaLegenda\config.json
+  modelo: "deepseek-chat"
+  contexto_segundos: 20  # fala antes/depois do bloco que o LLM também enxerga
+  paralelo: 4
+  timeout: 120
+  tentativas: 3
+
+consolidacao:
+  sobreposicao_maxima: 0.7  # acima disso dois blocos contam como o mesmo
+
+ranking:
+  peso_viral: 0.5
+  peso_coerencia: 0.2
+  peso_llm: 0.3
