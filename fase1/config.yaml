@@ -20,11 +20,11 @@ jev:
   tentativas: 3
 
 llm:
-  # Modelo gratuito do OpenRouter, enquanto os parâmetros ainda estão em ajuste.
-  # Mesma chave do JEV (OPENROUTER_API_KEY).
-  modelo: "inclusionai/ling-3.0-flash-fin:free"
+  # Reutiliza o DeepSeek do app (https://api.deepseek.com/v1).
+  # A chave vem de: DEEPSEEK_API_KEY (env) ou ~\AppData\Local\CortaLegenda\config.json
+  modelo: "deepseek-chat"
   contexto_segundos: 20  # fala antes/depois do bloco que o LLM também enxerga
-  paralelo: 2            # modelos :free do OpenRouter têm rate limit apertado
+  paralelo: 4
   timeout: 120
   tentativas: 3
 

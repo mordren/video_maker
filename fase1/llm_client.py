@@ -1,10 +1,9 @@
-"""LLM contextual (etapa 8), via OpenRouter (mesma chave do JEV).
+"""LLM contextual (etapa 8), via DeepSeek.
 
-Modelo padrão: um gratuito do OpenRouter (ver config.yaml), enquanto os
-parâmetros do pipeline ainda estão sendo ajustados. Só roda nos blocos que
-passaram pelo JEV. Recebe o bloco segmento a segmento, com os tempos, mais um
-pouco de fala antes e depois como contexto, e devolve coerência, coesão,
-problemas e uma sugestão de corte em segundos.
+Reutiliza a chave do DeepSeek do app. Só roda nos blocos que passaram pelo JEV.
+Recebe o bloco segmento a segmento, com os tempos, mais um pouco de fala antes
+e depois como contexto, e devolve coerência, coesão, problemas e uma sugestão
+de corte em segundos.
 """
 
 from __future__ import annotations
@@ -12,9 +11,10 @@ from __future__ import annotations
 import json
 import re
 
-from openrouter import APIError, post
+import deepseek_client
+from deepseek_client import APIError
 
-ENDPOINT = "/v1/chat/completions"
+ENDPOINT = "/chat/completions"
 
 _SISTEMA = """Você é editor de cortes de vídeo para redes sociais (podcasts, entrevistas, \
 lives em português do Brasil). Recebe a transcrição de um bloco candidato, uma linha por \
@@ -44,9 +44,10 @@ class LLM:
     def analisar(self, antes: list[dict], bloco: list[dict], depois: list[dict]) -> dict:
         linhas = ([_linha(s, "(contexto) ") for s in antes] + [_linha(s) for s in bloco]
                   + [_linha(s, "(contexto) ") for s in depois])
-        resp = post(ENDPOINT, {
+        resp = deepseek_client.post(ENDPOINT, {
             "model": self.modelo,
             "temperature": 0.2,
+            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": _SISTEMA},
                 {"role": "user", "content": "\n".join(linhas)},

@@ -9,16 +9,17 @@ entrada da Fase 2. Esta fase não corta o vídeo.
 1. Dependência: `pip install -r fase1/requirements.txt` (só o PyYAML; FFmpeg precisa estar
    no PATH, e o Whisper só é usado quando o vídeo não tem `.srt`).
 
-2. **Chave do OpenRouter:** abra `fase1/.env` e preencha `OPENROUTER_API_KEY` com a sua
-   chave (https://openrouter.ai/settings/keys). Serve tanto para o JEV quanto para o LLM
-   contextual — os dois usam a mesma chave. O `.env` está no `.gitignore`.
+2. **Chave do OpenRouter (JEV):** abra `fase1/.env` e preencha `OPENROUTER_API_KEY` com a sua
+   chave do OpenRouter (https://openrouter.ai/settings/keys). O `.env` está no `.gitignore`.
 
-   O LLM contextual (etapa 8) está em `inclusionai/ling-3.0-flash-fin:free` por padrão —
-   gratuito, enquanto os parâmetros do pipeline ainda estão em ajuste. Modelos `:free` do
-   OpenRouter têm rate limit apertado (por isso `llm.paralelo: 2` no config) e às vezes
-   devolvem resposta vazia (o script trata isso como falha recuperável do item, não
-   derruba a execução). Troque `llm.modelo` no `config.yaml` por um modelo pago quando
-   quiser qualidade/velocidade maior.
+3. **Chave do DeepSeek (LLM contextual):** o script procura nos seguintes lugares, nesta ordem:
+   - `DEEPSEEK_API_KEY` no `fase1/.env`
+   - Variável de ambiente `DEEPSEEK_API_KEY`
+   - Arquivo de config do Corta+Legenda: `~\AppData\Local\CortaLegenda\config.json` (Windows)
+   - Se não achar em nenhum lugar, o script para e avisa.
+
+   (Testamos antes um modelo gratuito do OpenRouter aqui, mas o rate limit ficou ruim
+   demais — 4 min para 44 blocos, com vários timeouts. Voltamos para o DeepSeek.)
 
 ## Rodar
 
