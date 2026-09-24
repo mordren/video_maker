@@ -2,9 +2,15 @@
 
     python pipeline.py <video.mp4> [--workspace pasta] [--ate-etapa N]
 
-Etapas: 1 áudio · 2 transcrição (SRT ou Whisper) · 3 janelas · 4 JEV coerência ·
-5 JEV potencial viral · 6 JEV qualidade/limites · 7 consolidação · 8 LLM contextual ·
-9 ranqueamento · 10 blocos_finais.json.
+Etapas: 1 áudio · 2 transcrição (SRT ou Whisper) · 3 segmentação (DeepSeek aponta
+os blocos candidatos, por conteúdo) · 4 JEV qualifica (viral + ritmo + ajuste
+fino de limites, numa chamada) · 5 consolidação · 6 LLM revisão fina ·
+7 ranqueamento · 8 blocos_finais.json.
+
+A segmentação é por conteúdo, não por tempo fixo: o DeepSeek lê a transcrição
+e aponta onde cada bloco candidato começa e termina (etapa 3). O JEV, mais
+rápido e barato, qualifica cada candidato (etapa 4). O LLM contextual entra
+só no final, para os poucos blocos que sobraram da consolidação (etapa 6).
 
 Cada etapa grava o seu JSON na pasta de trabalho. Rodando de novo com
 `--workspace` numa pasta existente, o que já foi feito é reaproveitado e só os
@@ -31,6 +37,7 @@ from jev_client import JEV
 from llm_client import LLM
 from openrouter import APIError as OpenRouterError
 from openrouter import api_key as openrouter_key
+from segmentador_llm import Segmentador, segmentar
 from transcricao import extrair_audio, obter_transcricao
 
 AQUI = Path(__file__).resolve().parent
@@ -119,7 +126,7 @@ def ajusta_limites(bloco: dict, segs: list[dict], inicio: float, fim: float,
 
 def deduplica(blocos: list[dict], limite: float) -> list[dict]:
     """Entre blocos que se sobrepõem mais que `limite`, fica o de maior score."""
-    ordem = sorted(blocos, key=lambda b: (b["score_viral"], b["prob_coerente"]), reverse=True)
+    ordem = sorted(blocos, key=lambda b: (b["score_viral"], b["qualidade_interna"]), reverse=True)
     mantidos: list[dict] = []
     for b in ordem:
         if all(sg.sobreposicao(b, m) <= limite for m in mantidos):
@@ -139,8 +146,8 @@ def nota_llm(analise: dict | None) -> float:
 # ---------------------------------------------------------------------------
 
 def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
-    cj, cl, cjan = cfg["jev"], cfg["llm"], cfg["janela"]
-    minimo = cjan["duracao_minima_bloco"]
+    cseg, cj, cl, cb = cfg["segmentacao"], cfg["jev"], cfg["llm"], cfg["bloco"]
+    minimo = cb["duracao_minima"]
 
     # 1 ─ áudio
     with etapa(1, "extrair áudio"):
@@ -172,12 +179,41 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
     if ate_etapa <= 2:
         return 0
 
-    # 3 ─ janelas
-    with etapa(3, "pré-segmentação por tempo"):
-        janelas = sg.janelas(segs, cjan["duracao"], cjan["sobreposicao"], cjan["palavras_minimas"])
-        gravar_json(ws / "janelas.json", janelas)
-        log.info("   %d janelas de ~%ss (sobreposição %ss)", len(janelas), cjan["duracao"], cjan["sobreposicao"])
+    try:
+        deepseek_client.api_key()
+    except deepseek_client.APIError as exc:
+        log.error("%s", exc)
+        return 2
+
+    # 3 ─ segmentação semântica (DeepSeek aponta os blocos candidatos)
+    with etapa(3, "segmentação (DeepSeek aponta os candidatos)"):
+        cpath = ws / "candidatos.json"
+        if cpath.exists():
+            candidatos = ler_json(cpath)
+            log.info("   candidatos.json reaproveitada")
+        else:
+            segmentador = Segmentador(deepseek_client, cseg)
+            candidatos = segmentar(segs, segmentador, cseg["duracao_chunk_min"], cseg["contexto_seg"])
+            gravar_json(cpath, candidatos)
+        blocos: list[dict] = []
+        descartados = 0
+        for i, c in enumerate(candidatos, 1):
+            bloco = sg.monta_bloco(segs, c["inicio"], c["fim"])
+            if not bloco or not (cb["duracao_minima"] <= bloco["duracao"] <= cb["duracao_maxima"]):
+                descartados += 1
+                continue
+            bloco["id"] = f"cand_{i:03d}"
+            bloco["gancho"] = c.get("gancho", "")
+            bloco["pedaco_origem"] = c.get("pedaco")
+            blocos.append(bloco)
+        gravar_json(ws / "blocos_candidatos.json", blocos)
+        log.info("   %d candidatos brutos · %d fora da faixa de duração (%.0f-%.0fs) · %d seguem",
+                 len(candidatos), descartados, cb["duracao_minima"], cb["duracao_maxima"], len(blocos))
     if ate_etapa <= 3:
+        return 0
+    if not blocos:
+        log.warning("Nenhum candidato sobrou da segmentação; nada a qualificar.")
+        gravar_json(ws / "blocos_finais.json", {"video": str(video), "blocos": []})
         return 0
 
     try:
@@ -186,79 +222,60 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
         log.error("%s", exc)
         log.error("Depois de preencher, continue com: python pipeline.py \"%s\" --workspace \"%s\"", video, ws)
         return 2
-    try:
-        deepseek_client.api_key()
-    except deepseek_client.APIError as exc:
-        log.error("%s", exc)
-        return 2
     jev = JEV(cj)
 
-    # 4 ─ JEV: coerência
-    with etapa(4, "JEV — é um bloco coerente?"):
-        r4 = em_paralelo(ws / "jev_etapa4_coerencia.json", janelas,
-                         lambda j: {"prob_coerente": jev.coerente(j["texto"])}, cj["paralelo"])
-        aprovadas = [dict(j, prob_coerente=round(r4[j["id"]]["prob_coerente"], 4)) for j in janelas
-                     if r4[j["id"]].get("prob_coerente", -1) >= cj["limiar_coerente"]]
-        log.info("   entraram %d · aprovadas %d (limiar %.2f)", len(janelas), len(aprovadas), cj["limiar_coerente"])
+    # 4 ─ JEV: qualifica cada candidato (viral + ritmo + ajuste fino, numa chamada)
+    with etapa(4, "JEV — qualifica os candidatos"):
+        def pergunta4(b):
+            return jev.qualificar(sg.trecho(segs, b["inicio"], b["fim"]), cj["opcoes_limite"])
 
-    # 5 ─ JEV: potencial viral
-    with etapa(5, "JEV — potencial viral"):
-        r5 = em_paralelo(ws / "jev_etapa5_viral.json", aprovadas,
-                         lambda b: {"score_viral": jev.viral(b["texto"])}, cj["paralelo"])
-        pontuados = [dict(b, score_viral=round(r5[b["id"]]["score_viral"], 2)) for b in aprovadas
-                     if "score_viral" in r5[b["id"]]]
-        log.info("   entraram %d · pontuados %d", len(aprovadas), len(pontuados))
-
-    # 6 ─ JEV: qualidade interna e limites
-    with etapa(6, "JEV — qualidade interna e ajuste de limites"):
-        def pergunta6(b):
-            return jev.qualidade(sg.trecho(segs, b["inicio"], b["fim"]), cj["opcoes_limite"])
-
-        r6 = em_paralelo(ws / "jev_etapa6_qualidade.json", pontuados, pergunta6, cj["paralelo"])
-        ajustados = 0
-        for b in pontuados:
-            r = r6[b["id"]]
-            b["qualidade_interna"] = round(r["ritmo"], 4) if "ritmo" in r else None
-            b["precisa_melhora"], b["motivo_melhora"] = False, None
+        r4 = em_paralelo(ws / "jev_qualificacao.json", blocos, pergunta4, cj["paralelo"])
+        pontuados, ajustados = [], 0
+        for b in blocos:
+            r = r4[b["id"]]
             if "erro" in r:
+                b.setdefault("erros", []).append(f"jev: {r['erro']}")
                 continue
+            b["score_viral"] = round(r["score_viral"], 2)
+            b["qualidade_interna"] = round(r["ritmo"], 4)
+            b["precisa_melhora"], b["motivo_melhora"] = False, None
             dentro = sg.trecho(segs, b["inicio"], b["fim"])
             ini, fim = r["inicio_idx"], r["fim_idx"]
             corta_ini, corta_fim = ini > 0, fim < len(dentro) - 1
-            if r["precisa_melhora"] < cj["limiar_precisa_melhora"] or not (corta_ini or corta_fim) or fim <= ini:
-                continue
-            motivo = {(True, False): "cortar o começo", (False, True): "cortar o fim",
-                      (True, True): "cortar o começo e o fim"}[(corta_ini, corta_fim)]
-            b["precisa_melhora"] = True
-            b["motivo_melhora"] = f"{motivo} (JEV {r['precisa_melhora']:.2f})"
-            b["sugestao_jev"] = {"inicio": dentro[ini]["start"], "fim": dentro[fim]["end"]}
-            ajustados += ajusta_limites(b, segs, dentro[ini]["start"], dentro[fim]["end"],
-                                        "jev", motivo, minimo)
-        log.info("   %d blocos · %d com limites ajustados", len(pontuados), ajustados)
+            if r["precisa_melhora"] >= cj["limiar_precisa_melhora"] and (corta_ini or corta_fim) and fim > ini:
+                motivo = {(True, False): "cortar o começo", (False, True): "cortar o fim",
+                          (True, True): "cortar o começo e o fim"}[(corta_ini, corta_fim)]
+                b["precisa_melhora"] = True
+                b["motivo_melhora"] = f"{motivo} (JEV {r['precisa_melhora']:.2f})"
+                ajustados += ajusta_limites(b, segs, dentro[ini]["start"], dentro[fim]["end"],
+                                            "jev", motivo, minimo)
+            pontuados.append(b)
+        log.info("   %d candidatos · %d qualificados · %d com ajuste fino de limites",
+                 len(blocos), len(pontuados), ajustados)
 
-    # 7 ─ consolidação
-    with etapa(7, "consolidar blocos"):
+    # 5 ─ consolidação
+    with etapa(5, "consolidar blocos (dedup entre candidatos sobrepostos)"):
         blocos = deduplica(pontuados, cfg["consolidacao"]["sobreposicao_maxima"])
         for b in blocos:
             b["origem"] = b.pop("id")
-            b["id"] = b["origem"].replace("janela", "bloco")
+            b["id"] = b["origem"].replace("cand_", "bloco_")
         gravar_json(ws / "blocos_jev.json", blocos)
         log.info("   entraram %d · ficaram %d", len(pontuados), len(blocos))
-    if ate_etapa <= 7:
+    if ate_etapa <= 5:
         return 0
 
-    # 8 ─ LLM contextual
-    with etapa(8, f"LLM contextual ({cl['modelo']})"):
+    # 6 ─ LLM contextual (revisão fina: coerência, coesão, problemas, sugestão de corte)
+    with etapa(6, f"LLM revisão fina ({cl['modelo']})"):
         llm = LLM(cl)
 
-        def pergunta8(b):
+        def pergunta6(b):
             antes, depois = sg.contexto(segs, b["inicio"], b["fim"], cl["contexto_segundos"])
             return {"analise": llm.analisar(antes, sg.trecho(segs, b["inicio"], b["fim"]), depois)}
 
-        r8 = em_paralelo(ws / "llm_etapa8.json", blocos, pergunta8, cl["paralelo"])
+        r6 = em_paralelo(ws / "llm_revisao.json", blocos, pergunta6, cl["paralelo"])
         ajustados = 0
         for b in blocos:
-            r = r8[b["id"]]
+            r = r6[b["id"]]
             b["analise_llm"] = r.get("analise")
             if "erro" in r:
                 b.setdefault("erros", []).append(f"llm: {r['erro']}")
@@ -276,25 +293,25 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
         blocos = deduplica(blocos, cfg["consolidacao"]["sobreposicao_maxima"])
         gravar_json(ws / "blocos_llm.json", blocos)
         log.info("   %d analisados · %d com limites ajustados · %d após nova deduplicação",
-                 len(r8), ajustados, len(blocos))
+                 len(r6), ajustados, len(blocos))
 
-    # 9 ─ ranqueamento
-    with etapa(9, "ranqueamento final"):
+    # 7 ─ ranqueamento
+    with etapa(7, "ranqueamento final"):
         pesos = cfg["ranking"]
         for b in blocos:
             b["nota_llm"] = round(nota_llm(b.get("analise_llm")), 4)
             b["nota_final"] = round(pesos["peso_viral"] * (b["score_viral"] - 1) / 4
-                                    + pesos["peso_coerencia"] * b["prob_coerente"]
+                                    + pesos["peso_ritmo"] * b["qualidade_interna"]
                                     + pesos["peso_llm"] * b["nota_llm"], 4)
         blocos.sort(key=lambda b: b["nota_final"], reverse=True)
         for i, b in enumerate(blocos, 1):
             b["rank"] = i
 
-    # 10 ─ JSON final
-    with etapa(10, "salvar blocos_finais.json"):
+    # 8 ─ JSON final
+    with etapa(8, "salvar blocos_finais.json"):
         campos = ["id", "rank", "inicio", "fim", "duracao", "texto", "palavras", "fonte_transcricao",
-                  "score_viral", "prob_coerente", "qualidade_interna", "precisa_melhora",
-                  "motivo_melhora", "analise_llm", "nota_llm", "nota_final", "origem", "ajustes", "erros"]
+                  "gancho", "score_viral", "qualidade_interna", "precisa_melhora", "motivo_melhora",
+                  "analise_llm", "nota_llm", "nota_final", "origem", "pedaco_origem", "ajustes", "erros"]
         finais = []
         for b in blocos:
             b["fonte_transcricao"] = tipo_fonte
@@ -326,7 +343,7 @@ def main() -> int:
     ap.add_argument("--workspace", type=Path, help="pasta de trabalho existente, para retomar")
     ap.add_argument("--config", type=Path, default=AQUI / "config.yaml")
     ap.add_argument("--ate-etapa", type=int, default=10,
-                    help="para depois desta etapa (3 = só janelas, sem gastar API)")
+                    help="para depois desta etapa (2 = só transcrição, sem gastar API)")
     args = ap.parse_args()
 
     video = args.video.resolve()

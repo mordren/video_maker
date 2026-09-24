@@ -1,27 +1,40 @@
 # Configuração da Fase 1 (seleção de blocos). Tempos em segundos.
 
-janela:
-  duracao: 90             # tamanho de cada janela candidata (45s era curto demais p/ ter começo-meio-fim)
-  sobreposicao: 15        # quanto uma janela invade a seguinte
-  palavras_minimas: 25    # janela com menos fala que isso nem vai para o JEV
-  duracao_minima_bloco: 20  # nenhum ajuste de limite pode deixar o bloco menor que isso
-
 transcricao:
   whisper_modelo: small
   whisper_idioma: Portuguese
 
+# Etapa 3: segmentação semântica. O DeepSeek lê a transcrição e aponta os
+# próprios limites dos blocos candidatos — não é janela de tempo fixo.
+segmentacao:
+  modelo: "deepseek-chat"
+  duracao_chunk_min: 15   # tamanho de cada pedaço mandado ao modelo, em minutos
+                           # (limite de contexto, não de conteúdo — bem maior que um bloco)
+  contexto_seg: 45        # segundos de transcrição extra em cada borda do pedaço,
+                           # só para o modelo entender o que vem antes/depois
+  timeout: 180
+  tentativas: 3
+
+bloco:
+  duracao_minima: 20   # candidato mais curto que isso é descartado (etapa 3)
+  duracao_maxima: 200  # candidato mais longo que isso é descartado (etapa 3)
+
+# Etapa 4: qualificação rápida e barata de cada candidato, numa chamada só
+# (viral + ritmo + ajuste fino de limites).
 jev:
   modelo: "~typesafe/jev-latest"
-  limiar_coerente: 0.4        # etapa 4: abaixo disso a janela é descartada
-  limiar_precisa_melhora: 0.5 # etapa 6: acima disso os limites sugeridos são aplicados
-  opcoes_limite: 8            # quantos segmentos do começo/fim podem virar o novo limite
+  limiar_precisa_melhora: 0.5  # acima disso os limites sugeridos são aplicados
+  opcoes_limite: 6             # quantos segmentos do começo/fim podem virar o novo limite
+                                # (afinamento de borda, não redesenho do bloco)
   paralelo: 8
   timeout: 30
   tentativas: 3
 
+# Etapa 6: revisão fina só dos blocos que sobraram da consolidação.
 llm:
   # Reutiliza o DeepSeek do app (https://api.deepseek.com/v1).
-  # A chave vem de: DEEPSEEK_API_KEY (env) ou ~\AppData\Local\CortaLegenda\config.json
+  # A chave vem de: DEEPSEEK_API_KEY (fase1/.env, ambiente) ou
+  # ~\AppData\Local\CortaLegenda\config.json
   modelo: "deepseek-chat"
   contexto_segundos: 20  # fala antes/depois do bloco que o LLM também enxerga
   paralelo: 4
@@ -33,5 +46,5 @@ consolidacao:
 
 ranking:
   peso_viral: 0.5
-  peso_coerencia: 0.2
+  peso_ritmo: 0.2
   peso_llm: 0.3

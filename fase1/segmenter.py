@@ -1,4 +1,9 @@
-"""Etapa 3 e utilitários de tempo: janelas, recorte da transcrição e encaixe de limites.
+"""Utilitários de tempo: recorte da transcrição e encaixe de limites de bloco.
+
+A segmentação em si (etapa 3) é semântica, feita pelo LLM em `segmentador_llm.py`
+— aqui ficam só as operações sobre a transcrição que todas as etapas reusam:
+encaixar um intervalo nas bordas de segmento, montar o texto/palavras de um
+bloco, pegar o contexto ao redor e medir sobreposição entre dois blocos.
 
 Todo limite de bloco é encaixado na borda de um segmento da transcrição. Um
 segmento pertence a um intervalo quando o seu ponto médio cai dentro dele.
@@ -53,28 +58,6 @@ def monta_bloco(segs: list[dict], inicio: float, fim: float) -> dict | None:
         "texto": texto(dentro),
         "palavras": palavras(dentro),
     }
-
-
-def janelas(segs: list[dict], duracao: float, sobreposicao: float, palavras_minimas: int) -> list[dict]:
-    """Janelas fixas de `duracao` s, andando `duracao - sobreposicao` s por vez."""
-    if not segs:
-        return []
-    passo = max(1.0, duracao - sobreposicao)
-    total = segs[-1]["end"]
-    t = segs[0]["start"]
-    saida, vistos = [], set()
-    while t < total:
-        bloco = monta_bloco(segs, t, t + duracao)
-        t += passo
-        if not bloco or len(bloco["texto"].split()) < palavras_minimas:
-            continue
-        chave = (bloco["inicio"], bloco["fim"])
-        if chave in vistos:  # segmento longo pode encaixar duas janelas no mesmo lugar
-            continue
-        vistos.add(chave)
-        bloco["id"] = f"janela_{len(saida) + 1:03d}"
-        saida.append(bloco)
-    return saida
 
 
 def contexto(segs: list[dict], inicio: float, fim: float, segundos: float) -> tuple[list[dict], list[dict]]:
