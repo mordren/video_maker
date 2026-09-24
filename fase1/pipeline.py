@@ -228,7 +228,8 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
     # 4 ─ JEV: qualifica cada candidato (viral + ritmo + ajuste fino, numa chamada)
     with etapa(4, "JEV — qualifica os candidatos"):
         def pergunta4(b):
-            return jev.qualificar(sg.trecho(segs, b["inicio"], b["fim"]), cj["opcoes_limite"])
+            return jev.qualificar(sg.trecho(segs, b["inicio"], b["fim"]), cj["opcoes_limite"],
+                                  gancho=b.get("gancho", ""), motivo_editor=b.get("comentario", ""))
 
         r4 = em_paralelo(ws / "jev_qualificacao.json", blocos, pergunta4, cj["paralelo"])
         pontuados, ajustados = [], 0

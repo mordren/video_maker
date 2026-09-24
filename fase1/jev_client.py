@@ -42,17 +42,30 @@ class JEV:
         return answers
 
     # Etapa 4 (qualificação dos candidatos que vieram da segmentação por LLM) ----
-    def qualificar(self, segmentos: list[dict], n_opcoes: int) -> dict:
+    def qualificar(self, segmentos: list[dict], n_opcoes: int,
+                  gancho: str = "", motivo_editor: str = "") -> dict:
         """Score viral, ritmo e (se precisar) um ajuste fino dos limites — tudo numa chamada.
 
         Os candidatos já vêm da segmentação semântica (DeepSeek), então já
         devem começar/terminar perto do lugar certo; isto é só um afinamento
         de borda, por isso as opções de início/fim são os primeiros/últimos
         `n_opcoes` segmentos do bloco, não o vídeo inteiro.
+
+        `gancho`/`motivo_editor` são o título e o comentário que o DeepSeek já
+        escreveu ao escolher este trecho (etapa 3) — mandados aqui para o JEV
+        avaliar com o mesmo contexto que a triagem editorial usou, em vez de
+        julgar um texto pelado do zero. Testado sem isso: o score do JEV saiu
+        sem nenhuma correlação com a ordem de força que o próprio DeepSeek já
+        dá aos candidatos (~0,0 nos dois vídeos testados) — o mais provável é
+        que o JEV estivesse simplesmente re-julgando com menos informação.
         """
-        state = {"segmentos": [
-            {"id": f"s{i}", "inicio": round(s["start"], 2), "fim": round(s["end"], 2), "texto": s["text"]}
-            for i, s in enumerate(segmentos)]}
+        state = {
+            "gancho_do_editor": gancho or "(nenhum)",
+            "motivo_do_editor": motivo_editor or "(nenhum)",
+            "segmentos": [
+                {"id": f"s{i}", "inicio": round(s["start"], 2), "fim": round(s["end"], 2), "texto": s["text"]}
+                for i, s in enumerate(segmentos)],
+        }
         n = len(segmentos)
         ini_idx = list(range(min(n_opcoes, n)))
         fim_idx = list(range(max(0, n - n_opcoes), n))
@@ -65,9 +78,12 @@ class JEV:
                 "type": "score",
                 "instructions": (
                     "Avalie o potencial viral deste trecho de vídeo como corte para redes "
-                    "sociais. Considere: força do gancho inicial, clareza da ideia, densidade "
-                    "de informação, presença de emoção ou surpresa, possibilidade de gerar "
-                    "comentário ou compartilhamento."),
+                    "sociais. `gancho_do_editor` e `motivo_do_editor` são a justificativa de "
+                    "uma primeira triagem — use como contexto do que se esperava encontrar, "
+                    "mas julgue pelo texto real dos segmentos: se o motivo não se sustenta "
+                    "na fala, dê uma nota baixa mesmo assim. Considere: força do gancho "
+                    "inicial, clareza da ideia, densidade de informação, presença de emoção "
+                    "ou surpresa, possibilidade de gerar comentário ou compartilhamento."),
                 "criteria": _CRITERIO_VIRAL,
             },
             "ritmo": {

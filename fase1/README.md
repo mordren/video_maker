@@ -131,6 +131,13 @@ de por que funcionam como short, pipeline inteiro em ~15s do zero.
   pelas probabilidades que o JEV devolve. É o sinal mais especulativo do ranqueamento — o
   JEV só vê texto, sem tom de voz nem expressão; vale desconfiar dele sem validar contra
   desempenho real (o app já grava `historico.json` de vídeos publicados, dá para cruzar).
+- **O JEV recebe o `gancho`/`comentario` que o DeepSeek já escreveu ao escolher o corte
+  (etapa 3), não só o texto pelado.** Testado sem isso: a ordem de força que o próprio
+  DeepSeek já dá aos candidatos (ele ordena por força, é regra do prompt) não tinha
+  correlação nenhuma com o score do JEV (~0,0 em dois vídeos testados) — o JEV estava
+  rejulgando do zero, com menos informação que a triagem editorial já tinha. Com o
+  contexto, a correlação subiu para +0,49 e +0,67: concorda bastante, mas não copia (não é
+  1,0) — sinal de que ainda está julgando por conta própria, só que informado.
 - **Os limites sempre caem na borda de um segmento.** Depois de cada ajuste (JEV ou LLM),
   texto e palavras são recalculados a partir da transcrição. Os ajustes ficam em `ajustes`.
 - **O LLM da etapa 6 só mexe dentro do que viu:** o bloco mais 20s de contexto de cada lado.
