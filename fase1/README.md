@@ -4,11 +4,12 @@ Recebe um vídeo longo (podcast, entrevista, live) e devolve `blocos_finais.json
 blocos qualificados e ranqueados. Todos os blocos têm timestamps exatos, que são a
 entrada da Fase 2. Esta fase não corta o vídeo.
 
-A segmentação é **semântica, não por tempo fixo**: o DeepSeek lê a transcrição inteira e
-aponta ele mesmo onde cada bloco candidato começa e termina — por assunto, não por grade
-de segundos. (A v1 usava janelas de tempo fixo com sobreposição; testado e descartado: uma
-grade cega raramente coincide com o início/fim real de uma ideia. Ver "Por que mudamos" no
-fim deste arquivo.)
+A segmentação é **semântica, não por tempo fixo**: o DeepSeek lê a transcrição inteira,
+numa chamada só, e aponta ele mesmo onde cada bloco candidato começa e termina — os
+trechos mais fortes e polêmicos para virar corte, não um recorte por assunto qualquer.
+O prompt é o mesmo que o app já usa em produção no painel "Cortes IA"
+(`ai_srt._CUTS_PROMPT`), adaptado só para referenciar ID de segmento em vez de escrever
+o tempo de cabeça. Ver "Por que mudamos" no fim deste arquivo.
 
 ## Configurar
 
@@ -62,37 +63,50 @@ Consequência para a Fase 2: vindo de SRT, `palavras` sai vazio e
 |---|---|---|
 | 1 | Áudio WAV mono 16 kHz | `audio.wav` |
 | 2 | Transcrição (SRT ou Whisper) | `transcricao.json`, `fonte_transcricao.txt` |
-| 3 | **Segmentação semântica** — DeepSeek lê a transcrição em pedaços de ~15 min (com folga de contexto na borda) e aponta os blocos candidatos por ID de segmento, com um "gancho" resumindo o porquê | `candidatos.json`, `blocos_candidatos.json` |
+| 3 | **Segmentação semântica** — DeepSeek lê a transcrição inteira (numa chamada só, salvo se estourar o limite de contexto) e escolhe os melhores cortes por ID de segmento: título curto e comentário com o porquê, duração-alvo de 1min-2min30 | `candidatos.json`, `blocos_candidatos.json` |
 | 4 | **JEV qualifica**, numa chamada por bloco: `score` viral de 1 a 5, `noul` de ritmo, `noul` de precisa-ajustar e `choice` de onde afinar início/fim | `jev_qualificacao.json` |
 | 5 | Deduplicação (sobreposição > 70% → fica o de maior score) | `blocos_jev.json` |
 | 6 | LLM (DeepSeek): coerência, coesão, problemas e sugestão de corte — só nos blocos que sobraram da consolidação | `llm_revisao.json`, `blocos_llm.json` |
 | 7–8 | Ranqueamento (viral 0,5 · ritmo 0,2 · LLM 0,3) | `blocos_finais.json` |
 
-Os parâmetros ficam em `config.yaml`: tamanho do pedaço de segmentação, faixa de duração do
-bloco, pesos e modelos.
+Os parâmetros ficam em `config.yaml`: faixa de duração do bloco, pesos e modelos.
 
-## Por que mudamos (v1 → v2)
+## Por que mudamos (v1 → v2 → v3)
 
-A v1 cortava o vídeo em janelas de tempo fixo (45s, depois 90s) com sobreposição, e usava o
-JEV como filtro de "isso é coerente?" antes de gastar o LLM. Dois problemas apareceram
-testando com vídeo real:
+**v1:** o vídeo era cortado em janelas de tempo fixo (45s, depois 90s) com sobreposição, e o
+JEV filtrava "isso é coerente?" antes de gastar o LLM. Dois problemas apareceram testando
+com vídeo real:
 
 1. **Uma grade de tempo fixo corta às cegas.** Um gancho forte raramente começa exatamente
-   num múltiplo de 90s do início do vídeo. A sobreposição ajudava pouco — ainda era uma
-   grade rígida tentando capturar algo sem ritmo fixo.
+   num múltiplo de 90s do início do vídeo.
 2. **O filtro do JEV não tinha poder discriminativo real.** Pedir "começo e fim perfeitos"
    numa janela cortada às cegas reprovava quase tudo (média de 0,13 de coerência). Suavizar
-   a pergunta para "tem conteúdo aproveitável" resolveu a rejeição, mas o preço foi o filtro
-   aprovar quase tudo (44 de 45) — deixou de filtrar de verdade.
-3. Isso também expôs uma ineficiência: a v1 fazia **3 chamadas separadas ao JEV por bloco**
-   (coerência, viral, qualidade), quando a Decisions API responde várias perguntas em
-   paralelo numa única chamada sem custo extra de latência.
+   a pergunta resolveu a rejeição, mas o preço foi o filtro aprovar quase tudo (44 de 45) —
+   deixou de filtrar de verdade.
+3. A v1 também fazia **3 chamadas separadas ao JEV por bloco**, quando a Decisions API
+   responde várias perguntas em paralelo numa única chamada sem custo extra de latência.
 
-A v2 inverte a ordem: quem entende semântica (DeepSeek) faz a segmentação — aponta os
-próprios limites dos blocos, olhando a transcrição inteira de uma vez — e quem é
-rápido/barato (JEV) qualifica os candidatos já bem formados, numa chamada só por bloco.
-Testado no mesmo vídeo: 34 candidatos, todos dentro da faixa de duração, cada um com um
-assunto reconhecível (STF, Lula, Carmen Lúcia, Trump...), pipeline inteiro em ~32s.
+**v2:** inverteu a ordem — DeepSeek segmenta por conteúdo (aponta os próprios limites dos
+blocos), JEV qualifica os candidatos numa chamada só. Usava um prompt de segmentação
+genérico escrito do zero, dividindo a transcrição em pedaços de ~15 min. Funcionou (34
+candidatos, cada um com assunto reconhecível), mas dois pontos ficaram capengas:
+
+1. **O prompt era genérico.** O app já tinha, em produção, um prompt testado e específico
+   para o que este projeto realmente quer (`ai_srt._CUTS_PROMPT`, painel "Cortes IA"): pede
+   categorias de gancho (declaração-tese, ataque nominal, contradição, carga emocional...),
+   duração obrigatória de 1min-2min30, "pegar o raciocínio inteiro, não só a frase de
+   efeito" e "qualidade acima de quantidade" — pode devolver poucos cortes, ou nenhum.
+2. **O chunking em pedaços de 15 min era desnecessário.** O deepseek-chat tem contexto de
+   64K tokens; a transcrição inteira de uma live de 56min tem uns 17K — cabe numa chamada
+   só. Dividir sem necessidade só multiplicava chamadas e ainda arriscava cortar um bloco
+   forte bem na fronteira de dois pedaços.
+
+**v3 (atual):** troca o prompt genérico pelo `_CUTS_PROMPT` do app (adaptado para referenciar
+ID de segmento em vez de escrever "m:ss" de cabeça) e manda a transcrição inteira numa
+chamada só — só divide em pedaços (grandes, não de 15 min) se estourar um teto de tokens de
+segurança. Testado no mesmo vídeo: 1 chamada, ~17K tokens, 8 candidatos (rigorosos:
+"LACAIO DA FAMÍLIA TRUMP", "NÃO CUMPRO DECISÃO ILEGAL"...), todos com título e comentário
+de por que funcionam como short, pipeline inteiro em ~15s do zero.
 
 ## Detalhes que vale saber
 
@@ -100,11 +114,16 @@ assunto reconhecível (STF, Lula, Carmen Lúcia, Trump...), pipeline inteiro em 
   (`[s0042] texto`); o modelo só aponta o ID de início/fim de cada bloco, nunca escreve o
   tempo — o tempo real vem sempre da transcrição. Isso evita o erro comum de LLM arredondar
   ou inventar um número decimal.
-- **Segmentação é chunking por limite de contexto, não por conteúdo.** Os pedaços de ~15 min
-  mandados ao DeepSeek existem só para caber no contexto do modelo, com margem de segundos
-  de contexto extra nas bordas para não perder um bloco que atravessa a fronteira do pedaço.
-  Um candidato só é aceito se pelo menos uma ponta (início ou fim) cai dentro do núcleo do
-  pedaço — evita duplicar o mesmo bloco em dois pedaços vizinhos.
+- **Segmentação é 1 chamada na imensa maioria dos vídeos.** Só existe pedaço (chunking) por
+  limite de contexto do modelo — a transcrição inteira é tentada primeiro. Se estourar o
+  teto de tokens (`_TETO_TOKENS_PEDACO` em `segmentador_llm.py`), divide no menor número de
+  pedaços que cabe, com margem de contexto nas bordas para não perder um bloco que atravessa
+  a fronteira. Um candidato só é aceito se pelo menos uma ponta (início ou fim) cai dentro do
+  núcleo do pedaço — evita duplicar o mesmo bloco em dois pedaços vizinhos.
+- **O prompt de seleção é o mesmo do app** (painel "Cortes IA"), então herda as mesmas
+  regras: qualidade acima de quantidade (pode devolver poucos cortes por vídeo, ou nenhum),
+  duração-alvo de 1-2min30, e o aviso "⚠️" no comentário quando o corte imputa crime ou
+  xinga alguém identificável.
 - **O JEV faz um afinamento fino de borda, não um redesenho do bloco.** As opções de
   início/fim que ele recebe são só os primeiros/últimos `opcoes_limite` segmentos do bloco
   já proposto pela segmentação — o grosso do corte já veio semântico.

@@ -193,7 +193,7 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
             log.info("   candidatos.json reaproveitada")
         else:
             segmentador = Segmentador(deepseek_client, cseg)
-            candidatos = segmentar(segs, segmentador, cseg["duracao_chunk_min"], cseg["contexto_seg"])
+            candidatos = segmentar(segs, segmentador, cseg["contexto_seg"])
             gravar_json(cpath, candidatos)
         blocos: list[dict] = []
         descartados = 0
@@ -204,6 +204,7 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
                 continue
             bloco["id"] = f"cand_{i:03d}"
             bloco["gancho"] = c.get("gancho", "")
+            bloco["comentario"] = c.get("comentario", "")
             bloco["pedaco_origem"] = c.get("pedaco")
             blocos.append(bloco)
         gravar_json(ws / "blocos_candidatos.json", blocos)
@@ -310,8 +311,9 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
     # 8 ─ JSON final
     with etapa(8, "salvar blocos_finais.json"):
         campos = ["id", "rank", "inicio", "fim", "duracao", "texto", "palavras", "fonte_transcricao",
-                  "gancho", "score_viral", "qualidade_interna", "precisa_melhora", "motivo_melhora",
-                  "analise_llm", "nota_llm", "nota_final", "origem", "pedaco_origem", "ajustes", "erros"]
+                  "gancho", "comentario", "score_viral", "qualidade_interna", "precisa_melhora",
+                  "motivo_melhora", "analise_llm", "nota_llm", "nota_final", "origem",
+                  "pedaco_origem", "ajustes", "erros"]
         finais = []
         for b in blocos:
             b["fonte_transcricao"] = tipo_fonte

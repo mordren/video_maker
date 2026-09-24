@@ -1,21 +1,16 @@
-"""Etapa 3 (v2): segmentação semântica via DeepSeek, no lugar da janela fixa.
+"""Etapa 3: segmentação semântica via DeepSeek, no lugar da janela fixa.
 
-Por quê: uma grade de tempo fixo (a v1 usava janelas de 90s) corta às cegas —
-raramente coincide com o início/fim real de uma ideia. Aqui é o contrário: o
-LLM lê a transcrição e aponta os próprios limites dos blocos candidatos.
+O prompt é adaptado do `_CUTS_PROMPT` de `ai_srt.py` — o mesmo que o Corta+Legenda já usa
+em produção (painel "Cortes IA") e que já mostrou escolher bem os melhores trechos de
+vídeos políticos. Duas diferenças da versão do app:
 
-Para não deixar o LLM inventar timestamp (ele erra número decimal fácil), a
-transcrição é mandada com um ID curto por segmento (`s0042`) e ele só
-referencia esses IDs; o tempo real vem sempre da transcrição, nunca do texto
-que o modelo escreve.
-
-Um vídeo de 1h não cabe (ou não deveria caber, por segurança) numa única
-chamada, então a transcrição é dividida em pedaços de tempo fixo (bem maiores
-que uma janela de corte — ~15 min) só para caber no contexto do modelo, com
-uma margem de segundos de contexto extra em cada borda para não perder um
-bloco que atravessa a fronteira do pedaço. Isso é chunking por limite de
-contexto, não segmentação de conteúdo — os blocos candidatos é que carregam o
-sentido.
+1. Aqui o LLM referencia os limites por ID de segmento (`s0042`), não escreve "m:ss" de
+   cabeça — LLM erra número decimal fácil; o tempo real vem sempre da transcrição, nunca do
+   texto que o modelo escreve.
+2. O app manda a transcrição inteira numa chamada só, e aqui também: o deepseek-chat tem
+   contexto de 64K tokens, e mesmo uma live de 1h (~1500 segmentos de SRT) fica bem abaixo
+   disso. Só divide em pedaços se a transcrição estourar um teto de segurança — e aí cada
+   pedaço ainda é grande (dezenas de minutos), não uma janela de corte.
 """
 
 from __future__ import annotations
@@ -27,29 +22,57 @@ import re
 ENDPOINT = "/chat/completions"  # deepseek_client.BASE_URL já termina em /v1
 log = logging.getLogger("fase1")
 
-_SISTEMA = """Você separa a transcrição de um vídeo falado (podcast, entrevista, live, em \
-português do Brasil) nos melhores trechos para virarem cortes de rede social.
+# Estimativa grosseira (chars/4) só para decidir se cabe numa chamada só; a API
+# valida de verdade. Deixa boa margem para o contexto de 64K do deepseek-chat.
+_TETO_TOKENS_PEDACO = 40_000
 
-A transcrição vem numerada por segmento, um por linha: "[ID] texto". Alguns segmentos no \
-início e no fim (marcados "(contexto, fora do intervalo)") são só para você entender o que \
-vem antes/depois deste pedaço — nunca proponha um bloco que comece ou termine só neles.
+_SISTEMA = """Você é um cortador de vídeos políticos. Recebe a transcrição de uma live, \
+discurso, entrevista, debate ou podcast, numerada por segmento — uma linha por segmento, \
+no formato "[ID] texto" — e escolhe os melhores trechos para virarem shorts/reels: os mais \
+fortes, polêmicos e "meme-áveis", que se sustentam sozinhos.
 
-Para cada bloco que valha a pena cortar:
-- Escolha o ID de início e o ID de fim (o bloco cobre do início do segmento inicial ao fim \
-do segmento final).
-- O bloco deve ter começo e fim que fazem sentido sozinhos: começa numa ideia nova (não no \
-meio de uma frase) e termina quando essa ideia se fecha (pergunta respondida, argumento \
-concluído, frase de efeito) — não corte no meio de um raciocínio.
-- Prefira blocos entre 20 e 180 segundos. Pode haver blocos que se sobrepõem (dois cortes \
-possíveis do mesmo trecho, um mais curto e direto, outro mais longo e completo) — liste os \
-dois, a etapa seguinte escolhe.
-- Ignore trechos que são só transição, saudação, chamada, sumário de pauta ou sem assunto.
-- Não invente texto: só use os IDs que existem na numeração.
+Alguns segmentos no início e no fim vêm marcados "(contexto, fora do intervalo)": servem só \
+para você entender o que vem antes/depois deste pedaço da transcrição — nunca escolha um \
+corte que comece ou termine só neles.
 
-Responda só com JSON:
-{"blocos": [{"inicio_id": "s0012", "fim_id": "s0034", "gancho": "resumo de 6-10 palavras \
-do que torna este trecho forte"}, ...]}
-Se não houver nenhum bloco bom neste pedaço, devolva {"blocos": []}."""
+O que puxar (uma ou mais categorias por corte):
+- declaração-tese ou bordão que resume a posição do orador;
+- ataque direto e nominal a adversário, instituição ou grupo;
+- momento-personagem: fala arrogante, engraçada, provocadora;
+- contradição, revelação de estratégia ou bastidor;
+- carga emocional (indignação, exaltação, comoção);
+- número ou afirmação forte que sozinha rende manchete.
+
+Como montar cada corte:
+- DURAÇÃO ENTRE 1MIN E 2MIN30. Isto é obrigatório: um corte com menos de 1min ou mais de \
+2min30 não serve e não deve ser incluído. Um short longo demais não funciona.
+- Para chegar a essa duração, pegue o RACIOCÍNIO INTEIRO em volta do momento forte, não só \
+a frase de efeito. Comece bem antes, quando a pessoa monta o assunto (o gancho, o setup, a \
+pergunta), passe pelo desenvolvimento e só termine depois de a ideia fechar. A frase de \
+efeito é o clímax do corte, não o corte inteiro.
+- Se um momento forte não tiver contexto suficiente em volta para sustentar 1 minuto, NÃO \
+o inclua — melhor deixar de fora do que entregar um corte curto.
+- Um assunto por corte; comece numa abertura que já prende e termine numa frase que fecha, \
+nunca no meio de um raciocínio.
+- inicio_id e fim_id: os IDs de segmento exatos da numeração recebida (nunca invente um ID \
+que não apareceu). O corte cobre do início do segmento inicial ao fim do segmento final.
+
+Responda APENAS com JSON, exatamente neste formato:
+{"cortes": [{"inicio_id": "s0012", "fim_id": "s0045", "titulo": "...", "comentario": "..."}]}
+
+- titulo: o gancho curto (o "título do short"), no máximo 25 caracteres. Priorize a frase \
+de efeito ou o bordão, não a descrição do tema. Em CAIXA ALTA.
+- comentario: 1 ou 2 frases dizendo por que o trecho vira um bom short. Quando o trecho \
+imputa crime a pessoa nomeada, acusa sobre a vida privada ou xinga alguém identificável, \
+comece o comentario com "⚠️ " e diga o risco (difamação, possível strike/desmonetização).
+
+QUALIDADE ACIMA DE QUANTIDADE. Não existe número mínimo de cortes. Traga só os trechos que \
+realmente se sustentam sozinhos como um bom short — nem que seja UM único corte, ou \
+nenhum. É muito melhor um corte forte do que cinco medianos. Se este pedaço da transcrição \
+só tem um momento que presta, devolva só ele. Não encha a lista para parecer mais completo.
+
+Ordene os cortes do mais forte para o mais fraco, não em ordem cronológica. Escolha pelo \
+potencial de audiência, sem tomar partido nem distorcer o sentido da fala."""
 
 
 class Segmentador:
@@ -64,7 +87,8 @@ class Segmentador:
     def segmentar_pedaco(self, linhas: list[str]) -> list[dict]:
         resp = self.cliente.post(ENDPOINT, {
             "model": self.modelo,
-            "temperature": 0.2,
+            "temperature": 0.4,
+            "max_tokens": 4000,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": _SISTEMA},
@@ -79,8 +103,8 @@ class Segmentador:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise self.cliente.APIError(f"resposta do segmentador sem conteúdo: {exc}") from exc
         dados = _json(conteudo, self.cliente.APIError)
-        blocos = dados.get("blocos")
-        return blocos if isinstance(blocos, list) else []
+        cortes = dados.get("cortes")
+        return cortes if isinstance(cortes, list) else []
 
 
 def _json(texto: str, erro_cls) -> dict:
@@ -95,18 +119,31 @@ def _json(texto: str, erro_cls) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Chunking por tempo (só para caber no contexto do modelo) + montagem dos blocos
+# Pedaços: só existem por limite de contexto do modelo, não por conteúdo. Um
+# vídeo comum cabe inteiro numa chamada só; só divide se estourar o teto.
 # ---------------------------------------------------------------------------
 
-def _pedacos(segs: list[dict], duracao_min: float, contexto_seg: float):
-    """Gera (contexto_antes, nucleo, contexto_depois) cobrindo o vídeo inteiro."""
+def _tokens_estimados(linhas: list[str]) -> int:
+    return sum(len(l) for l in linhas) // 4
+
+
+def _pedacos(segs: list[dict], contexto_seg: float):
+    """Divide `segs` no menor número de pedaços que cabe no teto de tokens.
+
+    Tenta primeiro o vídeo inteiro numa chamada só (caso comum). Só quando
+    isso estoura o teto é que divide — em pedaços iguais, o quanto baste para
+    cada um caber, nunca em janelas curtas — com folga de contexto na borda.
+    """
     if not segs:
         return
-    duracao = duracao_min * 60
+    linhas_totais = [s["text"] for s in segs]
+    n_pedacos = max(1, -(-_tokens_estimados(linhas_totais) // _TETO_TOKENS_PEDACO))  # ceil div
     total = segs[-1]["end"]
-    t = segs[0]["start"]
-    while t < total:
-        fim_nucleo = t + duracao
+    inicio_video = segs[0]["start"]
+    duracao_pedaco = (total - inicio_video) / n_pedacos
+    t = inicio_video
+    for _ in range(n_pedacos):
+        fim_nucleo = t + duracao_pedaco
         nucleo = [s for s in segs if t <= (s["start"] + s["end"]) / 2 < fim_nucleo]
         antes = [s for s in segs if t - contexto_seg <= (s["start"] + s["end"]) / 2 < t]
         depois = [s for s in segs if fim_nucleo <= (s["start"] + s["end"]) / 2 < fim_nucleo + contexto_seg]
@@ -126,17 +163,17 @@ def _linhas(antes: list[dict], nucleo: list[dict], depois: list[dict], ids: dict
     return saida
 
 
-def segmentar(segs: list[dict], segmentador: Segmentador, duracao_min: float,
-             contexto_seg: float) -> list[dict]:
-    """Devolve blocos candidatos: {inicio, fim, gancho, pedaco}, com tempos reais da transcrição."""
+def segmentar(segs: list[dict], segmentador: Segmentador, contexto_seg: float) -> list[dict]:
+    """Devolve blocos candidatos: {inicio, fim, titulo, comentario, pedaco}."""
     ids = {id(s): f"s{i:04d}" for i, s in enumerate(segs)}
     por_id = {f"s{i:04d}": s for i, s in enumerate(segs)}
     candidatos: list[dict] = []
-    pedacos = list(_pedacos(segs, duracao_min, contexto_seg))
+    pedacos = list(_pedacos(segs, contexto_seg))
+    log.info("   vídeo inteiro dividido em %d pedaço(s) (limite de contexto do modelo)", len(pedacos))
     for i, (antes, nucleo, depois) in enumerate(pedacos, 1):
         linhas = _linhas(antes, nucleo, depois, ids)
-        log.info("   pedaço %d/%d: %d segmentos (+%d de contexto)", i, len(pedacos),
-                 len(nucleo), len(antes) + len(depois))
+        log.info("   pedaço %d/%d: %d segmentos (+%d de contexto, ~%d tokens)", i, len(pedacos),
+                 len(nucleo), len(antes) + len(depois), _tokens_estimados(linhas))
         try:
             brutos = segmentador.segmentar_pedaco(linhas)
         except Exception as exc:  # noqa: BLE001 — um pedaço falhar não derruba o resto
@@ -158,7 +195,8 @@ def segmentar(segs: list[dict], segmentador: Segmentador, duracao_min: float,
             candidatos.append({
                 "inicio": round(ini_s["start"], 3),
                 "fim": round(fim_s["end"], 3),
-                "gancho": str(b.get("gancho") or "").strip(),
+                "gancho": str(b.get("titulo") or "").strip(),
+                "comentario": str(b.get("comentario") or "").strip(),
                 "pedaco": i,
             })
     return candidatos

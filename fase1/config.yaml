@@ -4,20 +4,22 @@ transcricao:
   whisper_modelo: small
   whisper_idioma: Portuguese
 
-# Etapa 3: segmentação semântica. O DeepSeek lê a transcrição e aponta os
-# próprios limites dos blocos candidatos — não é janela de tempo fixo.
+# Etapa 3: segmentação semântica. O DeepSeek lê a transcrição (inteira, numa
+# chamada só, a não ser que estoure o limite de contexto) e aponta os próprios
+# limites dos blocos candidatos — não é janela de tempo fixo. Prompt igual ao
+# que o app já usa em produção no painel "Cortes IA" (ai_srt._CUTS_PROMPT):
+# pede duração de 1min-2min30 e qualidade acima de quantidade.
 segmentacao:
   modelo: "deepseek-chat"
-  duracao_chunk_min: 15   # tamanho de cada pedaço mandado ao modelo, em minutos
-                           # (limite de contexto, não de conteúdo — bem maior que um bloco)
-  contexto_seg: 45        # segundos de transcrição extra em cada borda do pedaço,
-                           # só para o modelo entender o que vem antes/depois
+  contexto_seg: 45   # segundos de transcrição extra em cada borda do pedaço,
+                      # só para o modelo entender o que vem antes/depois
+                      # (só importa se o vídeo precisar ser dividido em pedaços)
   timeout: 180
   tentativas: 3
 
 bloco:
-  duracao_minima: 20   # candidato mais curto que isso é descartado (etapa 3)
-  duracao_maxima: 200  # candidato mais longo que isso é descartado (etapa 3)
+  duracao_minima: 55   # o prompt já pede 1min-2min30; a margem cobre arredondamento
+  duracao_maxima: 155  # de segmento na borda
 
 # Etapa 4: qualificação rápida e barata de cada candidato, numa chamada só
 # (viral + ritmo + ajuste fino de limites).
