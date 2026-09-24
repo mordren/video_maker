@@ -1,0 +1,40 @@
+# Configuração da Fase 2 (depuração mecânica de cada bloco). Tempos em segundos.
+
+entrada:
+  blocos_finais: "../fase1/blocos_finais.json"  # ajuste para o workspace da Fase 1 que quer usar
+
+whisper:
+  # Roda por bloco (poucos, já filtrados pela Fase 1), não no vídeo inteiro —
+  # precisamos de timestamp por palavra, que SRT não tem, para cortar com
+  # segurança (recomeço de frase e, mais tarde, o gancho de 2,5s).
+  modelo: small
+  idioma: Portuguese
+
+silencio:
+  noise_db: -30         # abaixo disso (dB) conta como silêncio
+  duracao_minima: 0.30  # pausa mais curta que isso nem entra na lista
+  limiar_corte: 0.80    # pausa mais longa que isso é encolhida
+  duracao_alvo: 0.25    # para quanto encolher uma pausa longa
+  margem_seguranca: 0.06  # nunca corta mais perto da palavra do que isso
+
+bordas:
+  max_silencio_borda: 0.30  # sobra no máximo isso de silêncio no início/fim do clipe
+
+recomeco:
+  ativo: true
+  min_palavras: 2       # só corta repetição de 2+ palavras seguidas (conservador:
+                         # evita confundir com ênfase retórica intencional)
+  max_palavras: 8        # não procura prefixos repetidos maiores que isso
+  gap_minimo: 0.12       # pausa mínima entre a tentativa abortada e o recomeço —
+                          # sem isso, "um idiota, ele é um idiota" (dito de corrida,
+                          # ênfase retórica) é confundido com hesitação genuína
+  gap_maximo: 0.5        # pausa máxima entre a tentativa abortada e o recomeço
+
+loudness:
+  alvo_lufs: -14
+  true_peak: -1.5
+  faixa_lra: 11
+
+saida:
+  pasta: "cortes"
+  crossfade_ms: 15   # suaviza o ponto de corte de áudio (evita "clique")

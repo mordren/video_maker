@@ -3,3 +3,25 @@ __pycache__/
 *.pyc
 build/
 dist/
+client_secret*.json
+youtube_token*.json
+youtube_queue.txt
+tiktok_cookies*.txt
+tiktok_queue.txt
+youtube_browser_cookies*.txt
+youtube_browser_queue.txt
+# Retrato da tela do Studio quando um envio falha: página logada inteira, com
+# identificadores da sessão dentro. Serve para depurar, nunca para o git.
+youtube_browser_falha.*
+# Retrato da tela do TikTok quando um envio falha: é a página logada inteira,
+# com identificadores da sessão dentro. Serve para depurar, nunca para o git.
+tiktok_falha.*
+# Fase 1: chave da API e pastas de execução.
+fase1/.env
+workspace_*/
+fase1/teste_*/
+fase1/workspace_*/
+
+# Fase 2: saída dos cortes (vídeos, .wav e o .json do Whisper por bloco).
+fase2/cortes/
+fase2/teste_*/
