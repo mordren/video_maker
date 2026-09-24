@@ -1,3 +1,6 @@
 pyyaml>=6.0
-# Só para vídeos sem .srt ao lado (o app principal já instala):
-# openai-whisper>=20250625
+# pipeline.py (Fase 1): só usa o Whisper se o vídeo não tiver .srt ao lado
+# (o app principal já instala). pipeline_cortes.py (Fase 2) sempre usa, para
+# ter timestamp por palavra — mesmo quando a Fase 1 leu de um .srt.
+openai-whisper>=20250625
+# FFmpeg (com ffprobe) precisa estar no PATH — usado pelas duas fases.

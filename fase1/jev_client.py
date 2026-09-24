@@ -14,6 +14,8 @@ vez de três.
 
 from __future__ import annotations
 
+import re
+
 from openrouter import APIError, post
 
 ENDPOINT = "/alpha/decisions"
@@ -123,13 +125,44 @@ class JEV:
         }
 
 
+    # Gancho de 2,5s (Fase 2, pipeline_cortes.py) ---------------------------
+    def escolher_gancho(self, candidatos: list[dict], gancho_do_editor: str = "",
+                        motivo_editor: str = "") -> dict:
+        """Escolhe, entre micro-trechos de ~2-3s do bloco, o melhor para tocar
+        sozinho no início do clipe (antes do corte principal), como prévia do
+        que vem a seguir — tem que prender atenção mesmo fora de contexto.
+        """
+        opts = {f"c{i}": _resumo(c["texto"], 200) for i, c in enumerate(candidatos)}
+        state = {
+            "gancho_do_editor": gancho_do_editor or "(nenhum)",
+            "motivo_do_editor": motivo_editor or "(nenhum)",
+            "candidatos": opts,
+        }
+        a = self.decide(state, {
+            "melhor": {
+                "type": "choice",
+                "instructions": (
+                    "Este trecho vai tocar sozinho, ISOLADO DO RESTO, nos primeiros 2-3 "
+                    "segundos do vídeo — antes mesmo do corte principal começar — para "
+                    "prender quem está passando o dedo na tela. `gancho_do_editor` e "
+                    "`motivo_do_editor` dizem o que faz este bloco forte; escolha o "
+                    "candidato que melhor entrega essa força sozinho, sem precisar do "
+                    "resto do contexto para fazer sentido ou impactar: a frase de efeito, "
+                    "o dado chocante, a acusação direta — não um preâmbulo ou uma "
+                    "transição."),
+                "criteria": opts,
+            },
+        })
+        idx = _idx(a["melhor"]["choice"], 0)
+        return {"indice": idx, **candidatos[idx]}
+
+
 def _resumo(texto: str, limite: int = 140) -> str:
     texto = " ".join(texto.split())
     return texto if len(texto) <= limite else texto[:limite - 1] + "…"
 
 
 def _idx(choice, padrao: int) -> int:
-    try:
-        return int(str(choice).lstrip("s"))
-    except ValueError:
-        return padrao
+    """Extrai o número de uma chave tipo 's3' ou 'c12' devolvida pelo `choice`."""
+    m = re.search(r"\d+", str(choice))
+    return int(m.group()) if m else padrao

@@ -1,12 +1,10 @@
 # Configuração da Fase 2 (depuração mecânica de cada bloco). Tempos em segundos.
-
-entrada:
-  blocos_finais: "../fase1/blocos_finais.json"  # ajuste para o workspace da Fase 1 que quer usar
+# O blocos_finais.json a processar é sempre passado na linha de comando, não aqui.
 
 whisper:
   # Roda por bloco (poucos, já filtrados pela Fase 1), não no vídeo inteiro —
   # precisamos de timestamp por palavra, que SRT não tem, para cortar com
-  # segurança (recomeço de frase e, mais tarde, o gancho de 2,5s).
+  # segurança (recomeço de frase e a abertura).
   modelo: small
   idioma: Portuguese
 
@@ -34,6 +32,22 @@ loudness:
   alvo_lufs: -14
   true_peak: -1.5
   faixa_lra: 11
+
+# Único trecho desta fase que usa IA: escolhe, entre micro-trechos do próprio
+# bloco, o que mais impacta sozinho para tocar no início do clipe, antes do
+# corte principal — mostra o pico primeiro para prender atenção. Usa a mesma
+# chave do OpenRouter da Fase 1 (fase1/.env). Sem chave, ou com ativo: false,
+# o pipeline segue normalmente e só não gera a abertura.
+abertura:
+  ativo: true
+  duracao_minima: 1.8
+  duracao_maxima: 3.2
+  max_candidatos: 20   # teto de opções mandadas ao JEV (mais opções = decisão pior/mais lenta)
+
+jev:
+  modelo: "~typesafe/jev-latest"
+  timeout: 30
+  tentativas: 3
 
 saida:
   pasta: "cortes"

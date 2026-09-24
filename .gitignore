@@ -16,12 +16,9 @@ youtube_browser_falha.*
 # Retrato da tela do TikTok quando um envio falha: é a página logada inteira,
 # com identificadores da sessão dentro. Serve para depurar, nunca para o git.
 tiktok_falha.*
-# Fase 1: chave da API e pastas de execução.
+# Fase 1: chave da API, pastas de execução (pipeline.py) e de cortes (pipeline_cortes.py).
 fase1/.env
 workspace_*/
 fase1/teste_*/
 fase1/workspace_*/
-
-# Fase 2: saída dos cortes (vídeos, .wav e o .json do Whisper por bloco).
-fase2/cortes/
-fase2/teste_*/
+fase1/*/cortes/

@@ -86,3 +86,16 @@ def renderizar(origem: Path, destino: Path, manter: list[tuple[float, float]],
         cmd += ["-c:a", "aac", "-b:a", "192k"]
     cmd.append(str(destino))
     subprocess.run(cmd, check=True, capture_output=True)
+
+
+def concatenar(clipes: list[Path], destino: Path) -> None:
+    """Concatena clipes JÁ RENDERIZADOS com o mesmo codec (ex.: gancho + corte
+    principal) sem reencode — usa o demuxer concat do FFmpeg, que só copia os
+    streams."""
+    lista = destino.with_suffix(".txt")
+    lista.write_text("".join(f"file '{c.resolve().as_posix()}'\n" for c in clipes), encoding="utf-8")
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                        "-i", str(lista), "-c", "copy", str(destino)], check=True, capture_output=True)
+    finally:
+        lista.unlink(missing_ok=True)

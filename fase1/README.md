@@ -1,23 +1,22 @@
-# Fase 1: seleção de blocos
+# Fase 1: mineração de cortes virais
 
-Recebe um vídeo longo (podcast, entrevista, live) e devolve `blocos_finais.json` com os
-blocos qualificados e ranqueados. Todos os blocos têm timestamps exatos, que são a
-entrada da Fase 2. Esta fase não corta o vídeo.
+Dois pipelines na mesma pasta, um alimenta o outro:
 
-A segmentação é **semântica, não por tempo fixo**: o DeepSeek lê a transcrição inteira,
-numa chamada só, e aponta ele mesmo onde cada bloco candidato começa e termina — os
-trechos mais fortes e polêmicos para virar corte, não um recorte por assunto qualquer.
-O prompt é o mesmo que o app já usa em produção no painel "Cortes IA"
-(`ai_srt._CUTS_PROMPT`), adaptado só para referenciar ID de segmento em vez de escrever
-o tempo de cabeça. Ver "Por que mudamos" no fim deste arquivo.
+- **`pipeline.py`** — recebe um vídeo longo e devolve `blocos_finais.json`: os melhores
+  trechos para virar corte, com timestamp exato, ranqueados. Não corta o vídeo.
+- **`pipeline_cortes.py`** — recebe esse `blocos_finais.json` e gera, para cada bloco, um
+  `.mp4` pronto: pausas longas encolhidas, recomeço de frase removido, silêncio de borda
+  aparado, volume normalizado. Sem IA — regra determinística sobre o áudio.
 
 ## Configurar
 
-1. Dependência: `pip install -r fase1/requirements.txt` (só o PyYAML; FFmpeg precisa estar
-   no PATH, e o Whisper só é usado quando o vídeo não tem `.srt`).
+1. Dependência: `pip install -r fase1/requirements.txt` (PyYAML + Whisper). FFmpeg (com
+   `ffprobe`) precisa estar no PATH — usado pelos dois pipelines.
 
 2. **Chave do OpenRouter (JEV):** abra `fase1/.env` e preencha `OPENROUTER_API_KEY` com a sua
    chave do OpenRouter (https://openrouter.ai/settings/keys). O `.env` está no `.gitignore`.
+   Os dois pipelines usam: `pipeline.py` na etapa 4, `pipeline_cortes.py` só na abertura
+   (`abertura.ativo: false` no `config_cortes.yaml` tira essa dependência do segundo).
 
 3. **Chave do DeepSeek (segmentação + revisão fina):** o script procura nos seguintes
    lugares, nesta ordem:
@@ -29,6 +28,17 @@ o tempo de cabeça. Ver "Por que mudamos" no fim deste arquivo.
    (Testamos um modelo gratuito do OpenRouter para a revisão fina, mas o rate limit ficou
    ruim demais — 4 min para 44 blocos, com vários timeouts. Voltamos para o DeepSeek: o
    mesmo trabalho levou 17s.)
+
+---
+
+# Parte A — `pipeline.py`: seleção de blocos
+
+A segmentação é **semântica, não por tempo fixo**: o DeepSeek lê a transcrição inteira,
+numa chamada só, e aponta ele mesmo onde cada bloco candidato começa e termina — os
+trechos mais fortes e polêmicos para virar corte, não um recorte por assunto qualquer.
+O prompt é o mesmo que o app já usa em produção no painel "Cortes IA"
+(`ai_srt._CUTS_PROMPT`), adaptado só para referenciar ID de segmento em vez de escrever
+o tempo de cabeça. Ver "Por que mudamos" mais abaixo.
 
 ## Rodar
 
@@ -54,8 +64,10 @@ que for legível e tiver fala. Aí o Whisper não roda. A legenda automática do
 Sem SRT utilizável, roda o Whisper com `--word_timestamps True`. A fonte usada fica em
 `fonte_transcricao.txt` e no log.
 
-Consequência para a Fase 2: vindo de SRT, `palavras` sai vazio e
-`"granularidade": "segmento"`; vindo do Whisper, `palavras` traz o tempo de cada palavra.
+Consequência para a Parte B: vindo de SRT, `palavras` sai vazio e
+`"granularidade": "segmento"`; vindo do Whisper, `palavras` traz o tempo de cada palavra —
+mas isso pouco importa na prática, porque `pipeline_cortes.py` roda o Whisper de novo por
+bloco de qualquer forma (ver por quê, na Parte B).
 
 ## Etapas
 
@@ -146,3 +158,105 @@ de por que funcionam como short, pipeline inteiro em ~15s do zero.
   segue, e `--workspace` repete só os que falharam. Sem análise do LLM, o bloco recebe
   nota 0,5 nessa parte. Um pedaço de segmentação que falhar (etapa 3) só perde os candidatos
   daquele pedaço — os outros pedaços seguem normalmente.
+
+---
+
+# Parte B — `pipeline_cortes.py`: depuração mecânica
+
+Pega o `blocos_finais.json` da Parte A e, para cada bloco, gera um clipe pronto: pausas
+longas encolhidas, recomeço de frase removido, silêncio nas bordas aparado, volume
+normalizado, e uma abertura de ~2-3s no início (o pico do bloco, escolhido pelo JEV) antes
+do corte principal começar. Só a abertura usa IA — o resto é sinal de áudio e regra
+determinística (ver "Abertura", mais abaixo).
+
+## Rodar
+
+```
+python fase1/pipeline_cortes.py <caminho>/blocos_finais.json
+```
+
+- Salva em `<pasta do blocos_finais.json>/cortes/` por padrão, ou em `--saida <pasta>`.
+- Cada bloco vira `cortes/<id>.mp4` (o clipe pronto — já com a abertura, se gerada) mais
+  `cortes/<id>/relatorio.json` (todo corte aplicado, com o motivo, e o trecho escolhido
+  para a abertura) e `cortes/<id>/bruto.json` (a transcrição por palavra do Whisper, para
+  auditoria). Os intermediários (`bruto.mp4`, `principal.mp4`, `abertura.mp4`) são apagados
+  ao final de cada bloco — sem isso, cada um deixaria 3-4 cópias de dezenas de MB para trás.
+- Um bloco que falhar não derruba os outros; o erro fica registrado em
+  `cortes/relatorio_geral.json`.
+- Parâmetros em `config_cortes.yaml` (não o `config.yaml` da Parte A).
+
+## Por que roda Whisper de novo, se a Parte A já transcreveu?
+
+A Parte A quase sempre usa o `.srt` do vídeo (rota mais rápida e barata), que só tem
+granularidade de **segmento** (frase), não de palavra. Cortar recomeço de frase com
+precisão — sem comer a palavra vizinha — exige saber o tempo exato de cada palavra. Rodar
+Whisper aqui, nos ~6-8 blocos que sobraram da Parte A (não no vídeo inteiro), é barato: o
+gargalo real do pipeline é o Whisper (~85-90s por bloco de ~1min, modelo `small` em CPU) —
+o resto (silêncio, recomeço, render) leva uns 10-15s por bloco.
+
+## O que cada etapa faz
+
+1. **Recorte bruto** — `ffmpeg -ss/-t -c copy` do vídeo original, só o intervalo do bloco.
+   Rápido (sem reencode) porque o corte fino de verdade é feito depois, na renderização.
+2. **Transcrição por palavra** — Whisper com `--word_timestamps` nesse recorte.
+3. **Silêncio** (`silencio.py`) — `ffmpeg silencedetect` acha as pausas; uma pausa mais
+   longa que `limiar_corte` (0,8s por padrão) é **encolhida**, não removida inteira, para
+   `duracao_alvo` (0,25s) — cortar a pausa toda deixaria o corte sem ar, tudo jump cut.
+   Silêncio sobrando nas bordas do bloco é aparado (`bordas.max_silencio_borda`).
+4. **Recomeço de frase** (`recomeco.py`) — a pessoa começa a dizer algo, para, recomeça
+   repetindo o início ("eu acho, eu acho que..."). Só corta repetição literal de 2+
+   palavras com uma pausa real entre as duas tentativas (`gap_minimo`..`gap_maximo`).
+5. **Render do corte principal** (`renderiza.py`) — os cortes de silêncio e recomeço se
+   mesclam num único plano; o complementar (o que sobra) é concatenado com `trim`/`atrim` +
+   `concat`, com um fade curto (`crossfade_ms`) em cada junção interna para não soar um
+   "clique", e `loudnorm` no áudio inteiro.
+6. **Abertura** (`gancho.py` + JEV) — opcional, ver seção própria mais abaixo. Renderizada à
+   parte e colada na frente do corte principal com o demuxer concat do FFmpeg.
+
+## Um falso-positivo real que apareceu no teste (e o que ele ensina)
+
+Testando com vídeo real, o detector de recomeço pegou "considere Eduardo **um idiota**, ele
+é **um idiota** perigoso" como se fosse hesitação — cortando o primeiro "um idiota" fora.
+Não é: é repetição retórica intencional (dobrar a ênfase), dita de corrida, sem pausa.
+
+O bug: o gap entre a primeira e a segunda menção estava sendo medido do jeito errado quando
+havia palavras no meio ("ele é") — pegava a transição normal da própria frase, não uma pausa
+de hesitação. Corrigido para medir sempre a pausa imediatamente antes de onde a repetição
+recomeça. Depois disso, esse caso passou a exigir `gap_minimo` (0,12s) — que a repetição
+retórica, dita fluida, não tem — e parou de ser cortado.
+
+Fica como lembrete de que esta heurística é conservadora mas não infalível: sempre vale
+ouvir o resultado, não só olhar a contagem de cortes. Cada corte grava o motivo em
+`relatorio.json` — é o primeiro lugar a olhar se um clipe soar estranho.
+
+## Limitações conhecidas
+
+- **Recorte inicial usa `-c copy`** (sem reencode) — corta no keyframe mais próximo do
+  timestamp pedido, não exatamente nele. Pode entrar meio segundo de sobra no começo/fim do
+  recorte bruto; o trim de bordas (etapa 3) deveria absorver isso na maioria dos casos.
+- **`loudnorm` de passada única**, não as duas passadas que dão a medição mais precisa —
+  mais rápido, ligeiramente menos exato. Trocar por two-pass é uma melhoria futura barata
+  se a normalização não ficar precisa o suficiente nos testes.
+- **A heurística de recomeço ainda pode ter falso-positivo/negativo** em casos que o teste
+  não cobriu. `recomeco.ativo: false` desliga essa etapa inteira sem afetar o resto.
+
+## Abertura (o único trecho desta fase que usa IA)
+
+Se `abertura.ativo: true` (padrão), depois de calcular os cortes de silêncio/recomeço:
+
+1. `gancho.py` gera candidatos de 1,8-3,2s, ancorados em início de palavra e preferindo
+   terminar em pontuação de frase, **sempre fora dos trechos já cortados** — um candidato
+   que cruzasse um corte mostraria, na abertura, algo que depois "some" quando o corte
+   principal começa.
+2. O JEV (`jev_client.escolher_gancho`) escolhe, entre até `max_candidatos` opções, o trecho
+   que mais impacta sozinho — recebe o `gancho`/`comentario` que o DeepSeek escreveu na
+   segmentação (Parte A) como contexto do que se espera encontrar.
+3. Esse trecho é renderizado à parte (mesmo `loudnorm`, sem fade — a transição é o próprio
+   corte do vídeo, não uma junção interna) e colado na frente do corte principal com o
+   demuxer concat do FFmpeg (sem reencode: os dois já saíram do mesmo codec).
+
+Sem `OPENROUTER_API_KEY` configurada, ou com `abertura.ativo: false`, o pipeline segue
+normal e só não gera a abertura — não é obrigatória para o resto funcionar.
+
+Testado com vídeo real: de 20 candidatos, o JEV escolheu "Eduardo Bolsonaro é um imbecil
+completo. O papel dele é justamente..." (a frase de efeito do bloco) em ~2s.

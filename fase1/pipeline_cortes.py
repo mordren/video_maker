@@ -1,6 +1,6 @@
-"""Fase 2 — depuração mecânica de cada bloco selecionado pela Fase 1.
+"""Fase 2 — depuração mecânica de cada bloco selecionado por `pipeline.py` (Fase 1).
 
-    python pipeline.py <blocos_finais.json> [--saida pasta] [--config config.yaml]
+    python pipeline_cortes.py <blocos_finais.json> [--saida pasta] [--config config_cortes.yaml]
 
 Para cada bloco:
 1. Recorta vídeo+áudio do vídeo original (ffmpeg -ss -t) — um clipe bruto, ainda
@@ -12,12 +12,16 @@ Para cada bloco:
    removidas inteiras; apara o excesso de silêncio nas bordas do clipe.
 4. Detecta recomeço de frase (repetição de prefixo de palavras) — conservador,
    só corta repetição literal com pausa curta entre as duas tentativas.
-5. Mescla os dois planos de corte, calcula os trechos a manter, renderiza
-   (trim+concat, loudnorm, fade curto em cada junção interna).
-6. Salva um relatório por bloco: duração antes/depois e cada corte com motivo.
+5. Mescla os dois planos de corte, calcula os trechos a manter, renderiza o
+   corte principal (trim+concat, loudnorm, fade curto em cada junção interna).
+6. Se `abertura.ativo`: gera candidatos de ~2-3s do bloco (fora dos trechos já
+   cortados), o JEV escolhe o mais forte sozinho, e esse trecho é renderizado
+   à parte e colado na frente do corte principal — a técnica de mostrar o
+   pico primeiro para prender atenção nos primeiros segundos.
+7. Salva um relatório por bloco: duração antes/depois e cada corte com motivo.
 
-Sem seleção de gancho de 2,5s ainda — isso é uma etapa separada (usa JEV),
-ver README.
+A abertura é a única parte desta fase que usa IA (JEV) — o resto é tudo regra
+determinística sobre sinal de áudio/texto.
 """
 
 from __future__ import annotations
@@ -34,12 +38,13 @@ from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "fase1"))
-from transcricao import rodar_whisper  # noqa: E402  (reaproveita o wrapper do Whisper da Fase 1)
-
+import gancho
 import recomeco
 import renderiza
 import silencio
+from jev_client import JEV
+from openrouter import APIError, api_key
+from transcricao import rodar_whisper  # reaproveita o wrapper do Whisper da Fase 1
 
 AQUI = Path(__file__).resolve().parent
 log = logging.getLogger("fase2")
@@ -82,7 +87,7 @@ def duracao_de(arquivo: Path) -> float:
     return float(r.stdout.strip())
 
 
-def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict) -> dict:
+def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | None) -> dict:
     bid = bloco["id"]
     pbloco = pasta / bid
     pbloco.mkdir(parents=True, exist_ok=True)
@@ -99,6 +104,7 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict) -> dict:
         log.warning("   %s: Whisper não achou palavras; bloco copiado sem cortes internos", bid)
         destino = pasta / f"{bid}.mp4"
         shutil.copy(clipe_bruto, destino)
+        clipe_bruto.unlink(missing_ok=True)
         return {"id": bid, "duracao_antes": duracao_bruta, "duracao_depois": duracao_bruta,
                "cortes": [], "aviso": "sem transcrição por palavra"}
 
@@ -121,11 +127,41 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict) -> dict:
     todos_cortes = renderiza.mescla_cortes(cortes_silencio + cortes_recomeco)
     manter = renderiza.trechos_a_manter(todos_cortes, inicio_ok, fim_ok)
 
-    destino = pasta / f"{bid}.mp4"
+    principal = pbloco / "principal.mp4"
     with etapa("renderização (corte + loudnorm)"):
-        renderiza.renderizar(clipe_bruto, destino, manter, tem_video=True, cfg_loud=cfg["loudness"],
+        renderiza.renderizar(clipe_bruto, principal, manter, tem_video=True, cfg_loud=cfg["loudness"],
                              crossfade_ms=cfg["saida"]["crossfade_ms"])
+
+    destino = pasta / f"{bid}.mp4"
+    abertura_info = None
+    ca = cfg["abertura"]
+    if ca["ativo"] and jev is not None:
+        with etapa("abertura (candidatos + JEV)"):
+            candidatos = gancho.candidatos(palavras, todos_cortes, ca["duracao_minima"],
+                                           ca["duracao_maxima"], ca["max_candidatos"])
+            if candidatos:
+                try:
+                    escolhido = jev.escolher_gancho(candidatos, bloco.get("gancho", ""),
+                                                    bloco.get("comentario", ""))
+                    abertura = pbloco / "abertura.mp4"
+                    renderiza.renderizar(clipe_bruto, abertura, [(escolhido["inicio"], escolhido["fim"])],
+                                         tem_video=True, cfg_loud=cfg["loudness"], crossfade_ms=0)
+                    renderiza.concatenar([abertura, principal], destino)
+                    abertura_info = {"inicio": escolhido["inicio"], "fim": escolhido["fim"],
+                                     "texto": escolhido["texto"]}
+                except Exception as exc:  # noqa: BLE001 — sem abertura não é motivo de falhar o bloco
+                    log.warning("   %s: abertura falhou (%s); seguindo sem ela", bid, exc)
+            else:
+                log.info("   %s: nenhum candidato de abertura dentro da faixa de duração", bid)
+    if abertura_info is None:
+        shutil.copy(principal, destino)
     duracao_final = duracao_de(destino)
+
+    # Limpa os intermediários (bruto/principal/abertura) — só o .mp4 final, o
+    # relatório e a transcrição (bruto.json, pequena e útil para auditoria)
+    # ficam. Sem isso, cada bloco deixa 3-4 cópias de dezenas de MB para trás.
+    for intermediario in (clipe_bruto, principal, pbloco / "abertura.mp4"):
+        intermediario.unlink(missing_ok=True)
 
     relatorio = {
         "id": bid,
@@ -134,10 +170,12 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict) -> dict:
         "removido": round(duracao_bruta - duracao_final, 3),
         "apara_bordas": {"inicio": inicio_ok, "fim": fim_ok},
         "cortes": todos_cortes,
+        "abertura": abertura_info,
     }
     gravar_json(pbloco / "relatorio.json", relatorio)
-    log.info("   %s: %.1fs -> %.1fs (-%.1fs, %d cortes)", bid, duracao_bruta, duracao_final,
-             duracao_bruta - duracao_final, len(todos_cortes))
+    log.info("   %s: %.1fs -> %.1fs (-%.1fs, %d cortes%s)", bid, duracao_bruta, duracao_final,
+             duracao_bruta - duracao_final, len(todos_cortes),
+             ", com abertura" if abertura_info else "")
     return relatorio
 
 
@@ -145,7 +183,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Fase 2: depuração mecânica dos blocos da Fase 1.")
     ap.add_argument("blocos_finais", type=Path, help="blocos_finais.json de uma execução da Fase 1")
     ap.add_argument("--saida", type=Path, default=None)
-    ap.add_argument("--config", type=Path, default=AQUI / "config.yaml")
+    ap.add_argument("--config", type=Path, default=AQUI / "config_cortes.yaml")
     args = ap.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -162,13 +200,23 @@ def main() -> int:
     saida = args.saida or (args.blocos_finais.parent / cfg["saida"]["pasta"])
     saida.mkdir(parents=True, exist_ok=True)
 
+    jev = None
+    if cfg["abertura"]["ativo"]:
+        try:
+            api_key()
+        except APIError as exc:
+            log.warning("%s — seguindo sem abertura (defina OPENROUTER_API_KEY para ativar,"
+                       " ou abertura.ativo: false no config para tirar este aviso)", exc)
+        else:
+            jev = JEV(cfg["jev"])
+
     log.info("Vídeo: %s", video)
     log.info("%d blocos -> %s", len(dados["blocos"]), saida)
     relatorios = []
     for i, bloco in enumerate(dados["blocos"], 1):
         log.info("── Bloco %d/%d: %s (%s)", i, len(dados["blocos"]), bloco["id"], bloco.get("gancho", ""))
         try:
-            relatorios.append(processa_bloco(bloco, video, saida, cfg))
+            relatorios.append(processa_bloco(bloco, video, saida, cfg, jev))
         except Exception as exc:  # noqa: BLE001 — um bloco falhar não derruba os outros
             log.error("   %s falhou: %s", bloco["id"], exc)
             relatorios.append({"id": bloco["id"], "erro": str(exc)})
