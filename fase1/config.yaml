@@ -1,9 +1,9 @@
 # Configuração da Fase 1 (seleção de blocos). Tempos em segundos.
 
 janela:
-  duracao: 45            # tamanho de cada janela candidata
-  sobreposicao: 10       # quanto uma janela invade a seguinte
-  palavras_minimas: 25   # janela com menos fala que isso nem vai para o JEV
+  duracao: 90             # tamanho de cada janela candidata (45s era curto demais p/ ter começo-meio-fim)
+  sobreposicao: 15        # quanto uma janela invade a seguinte
+  palavras_minimas: 25    # janela com menos fala que isso nem vai para o JEV
   duracao_minima_bloco: 20  # nenhum ajuste de limite pode deixar o bloco menor que isso
 
 transcricao:
@@ -12,7 +12,7 @@ transcricao:
 
 jev:
   modelo: "~typesafe/jev-latest"
-  limiar_coerente: 0.6        # etapa 4: abaixo disso a janela é descartada
+  limiar_coerente: 0.4        # etapa 4: abaixo disso a janela é descartada
   limiar_precisa_melhora: 0.5 # etapa 6: acima disso os limites sugeridos são aplicados
   opcoes_limite: 8            # quantos segmentos do começo/fim podem virar o novo limite
   paralelo: 8
@@ -20,11 +20,11 @@ jev:
   tentativas: 3
 
 llm:
-  # Reutiliza o DeepSeek do app (https://api.deepseek.com/v1).
-  # A chave vem de: DEEPSEEK_API_KEY (env) ou ~\AppData\Local\CortaLegenda\config.json
-  modelo: "deepseek-chat"
+  # Modelo gratuito do OpenRouter, enquanto os parâmetros ainda estão em ajuste.
+  # Mesma chave do JEV (OPENROUTER_API_KEY).
+  modelo: "inclusionai/ling-3.0-flash-fin:free"
   contexto_segundos: 20  # fala antes/depois do bloco que o LLM também enxerga
-  paralelo: 4
+  paralelo: 2            # modelos :free do OpenRouter têm rate limit apertado
   timeout: 120
   tentativas: 3
 

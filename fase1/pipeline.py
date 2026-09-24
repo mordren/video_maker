@@ -25,12 +25,10 @@ from pathlib import Path
 
 import yaml
 
-import deepseek_client
 import segmenter as sg
 from jev_client import JEV
 from llm_client import LLM
-from openrouter import APIError as OpenRouterError
-from openrouter import api_key as openrouter_key
+from openrouter import APIError, api_key
 from transcricao import extrair_audio, obter_transcricao
 
 AQUI = Path(__file__).resolve().parent
@@ -181,15 +179,10 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
         return 0
 
     try:
-        openrouter_key()
-    except OpenRouterError as exc:
+        api_key()
+    except APIError as exc:
         log.error("%s", exc)
         log.error("Depois de preencher, continue com: python pipeline.py \"%s\" --workspace \"%s\"", video, ws)
-        return 2
-    try:
-        deepseek_client.api_key()
-    except deepseek_client.APIError as exc:
-        log.error("%s", exc)
         return 2
     jev = JEV(cj)
 

@@ -33,16 +33,28 @@ class JEV:
 
     # Etapa 4 --------------------------------------------------------------
     def coerente(self, texto: str) -> float:
+        """Pré-filtro: o trecho TEM um assunto/ideia aproveitável?
+
+        Isto é uma janela de tempo fixo, cortada às cegas — quase nunca começa
+        ou termina exatamente no lugar certo. Por isso a pergunta é sobre o
+        CONTEÚDO (dá pra reconhecer um assunto no meio do trecho?), não sobre
+        os cortes: ajustar os limites é trabalho da etapa 6 (JEV) e da 8 (LLM),
+        que só rodam para quem passar daqui. Pedir "começo e fim perfeitos"
+        aqui reprovava quase tudo, mesmo material bom.
+        """
         a = self.decide(texto, {"coerente": {
             "type": "noul",
             "instructions": (
-                "O texto a seguir é a transcrição de um trecho de vídeo falado. Ele forma "
-                "um bloco coerente, com começo, meio e fim? Um bloco coerente começa em "
-                "uma ideia completa e termina em outra ideia completa, sem cortar frases "
-                "no meio e sem deixar raciocínios inacabados."),
+                "O texto a seguir é a transcrição de um trecho de vídeo falado, recortado "
+                "por tempo fixo — o começo e o fim exatos ainda não foram ajustados, então "
+                "IGNORE se a primeira ou a última frase parecem cortadas no meio. A pergunta "
+                "é sobre o miolo do trecho: existe, em algum ponto dele, um assunto ou ideia "
+                "reconhecível e que se sustenta sozinho (uma opinião, um fato, uma história, "
+                "uma resposta), ou o trecho inteiro é só transição, saudação, sumário de "
+                "pauta ou barulho sem conteúdo?"),
             "criteria": {
-                "true": "Começa e termina em ideias completas; dá para entender sozinho",
-                "false": "Começa ou termina no meio de uma ideia, ou depende do que veio antes",
+                "true": "Tem um assunto/ideia reconhecível em algum trecho, aproveitável como corte",
+                "false": "É só transição, saudação, chamada ou não tem assunto nenhum",
             },
         }})
         return float(a["coerente"]["noul"])

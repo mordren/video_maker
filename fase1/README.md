@@ -9,16 +9,16 @@ entrada da Fase 2. Esta fase não corta o vídeo.
 1. Dependência: `pip install -r fase1/requirements.txt` (só o PyYAML; FFmpeg precisa estar
    no PATH, e o Whisper só é usado quando o vídeo não tem `.srt`).
 
-2. **Chave do OpenRouter (JEV):** abra `fase1/.env` e preencha `OPENROUTER_API_KEY` com a sua
-   chave do OpenRouter (https://openrouter.ai/settings/keys). O `.env` está no `.gitignore`.
+2. **Chave do OpenRouter:** abra `fase1/.env` e preencha `OPENROUTER_API_KEY` com a sua
+   chave (https://openrouter.ai/settings/keys). Serve tanto para o JEV quanto para o LLM
+   contextual — os dois usam a mesma chave. O `.env` está no `.gitignore`.
 
-3. **Chave do DeepSeek (LLM contextual):** o script procura nos seguintes lugares, nesta ordem:
-   - Variável de ambiente `DEEPSEEK_API_KEY`
-   - Arquivo de config do Corta+Legenda: `~\AppData\Local\CortaLegenda\config.json` (Windows)
-   - Se não achar em nenhum lugar, o script para e avisa.
-
-   **Para configurar:** rode o Corta+Legenda, vá ao painel "Legenda com IA" e configure lá.
-   Ou defina `DEEPSEEK_API_KEY` como variável de ambiente do Windows.
+   O LLM contextual (etapa 8) está em `inclusionai/ling-3.0-flash-fin:free` por padrão —
+   gratuito, enquanto os parâmetros do pipeline ainda estão em ajuste. Modelos `:free` do
+   OpenRouter têm rate limit apertado (por isso `llm.paralelo: 2` no config) e às vezes
+   devolvem resposta vazia (o script trata isso como falha recuperável do item, não
+   derruba a execução). Troque `llm.modelo` no `config.yaml` por um modelo pago quando
+   quiser qualidade/velocidade maior.
 
 ## Rodar
 
@@ -51,8 +51,8 @@ Consequência para a Fase 2: vindo de SRT, `palavras` sai vazio e
 |---|---|---|
 | 1 | Áudio WAV mono 16 kHz | `audio.wav` |
 | 2 | Transcrição (SRT ou Whisper) | `transcricao.json`, `fonte_transcricao.txt` |
-| 3 | Janelas de 45 s com 10 s de sobreposição, encaixadas nas bordas dos segmentos | `janelas.json` |
-| 4 | JEV `noul`: é um bloco coerente? (descarta abaixo de 0,6) | `jev_etapa4_coerencia.json` |
+| 3 | Janelas de 90 s com 15 s de sobreposição, encaixadas nas bordas dos segmentos | `janelas.json` |
+| 4 | JEV `noul`: tem um assunto/ideia aproveitável? (descarta abaixo de 0,4) | `jev_etapa4_coerencia.json` |
 | 5 | JEV `score`: potencial viral de 1 a 5 | `jev_etapa5_viral.json` |
 | 6 | JEV: ritmo (`noul`), precisa de ajuste (`noul`) e em qual segmento começar/terminar (`choice`) | `jev_etapa6_qualidade.json` |
 | 7 | Deduplicação (sobreposição > 70% → fica o de maior score) | `blocos_jev.json` |
@@ -63,6 +63,11 @@ Os parâmetros ficam em `config.yaml`: tamanho da janela, limiares, pesos e mode
 
 ## Detalhes que vale saber
 
+- **A pergunta da etapa 4 é sobre conteúdo, não sobre os cortes.** A janela é recortada às
+  cegas por tempo fixo, então quase nunca começa/termina no lugar exato de uma ideia — pedir
+  "começo e fim perfeitos" aqui reprovava quase tudo (testado: média de 0,13 de coerência).
+  A etapa 4 só filtra lixo óbvio (transição, chamada, sem assunto); os limites são ajustados
+  depois, nas etapas 6 e 8.
 - **O JEV não escreve timestamps.** Ele só responde perguntas tipadas. Na etapa 6, os
   primeiros e os últimos segmentos do bloco viram opções de `choice`, e o novo limite é o
   segmento que ele escolher.

@@ -1,9 +1,10 @@
-"""LLM contextual (etapa 8), via DeepSeek.
+"""LLM contextual (etapa 8), via OpenRouter (mesma chave do JEV).
 
-Reutiliza a chave do DeepSeek do app. Só roda nos blocos que passaram pelo JEV.
-Recebe o bloco segmento a segmento, com os tempos, mais um pouco de fala antes
-e depois como contexto, e devolve coerência, coesão, problemas e uma sugestão
-de corte em segundos.
+Modelo padrão: um gratuito do OpenRouter (ver config.yaml), enquanto os
+parâmetros do pipeline ainda estão sendo ajustados. Só roda nos blocos que
+passaram pelo JEV. Recebe o bloco segmento a segmento, com os tempos, mais um
+pouco de fala antes e depois como contexto, e devolve coerência, coesão,
+problemas e uma sugestão de corte em segundos.
 """
 
 from __future__ import annotations
@@ -11,10 +12,9 @@ from __future__ import annotations
 import json
 import re
 
-import deepseek_client
-from deepseek_client import APIError
+from openrouter import APIError, post
 
-ENDPOINT = "/chat/completions"
+ENDPOINT = "/v1/chat/completions"
 
 _SISTEMA = """Você é editor de cortes de vídeo para redes sociais (podcasts, entrevistas, \
 lives em português do Brasil). Recebe a transcrição de um bloco candidato, uma linha por \
@@ -44,19 +44,23 @@ class LLM:
     def analisar(self, antes: list[dict], bloco: list[dict], depois: list[dict]) -> dict:
         linhas = ([_linha(s, "(contexto) ") for s in antes] + [_linha(s) for s in bloco]
                   + [_linha(s, "(contexto) ") for s in depois])
-        resp = deepseek_client.post(ENDPOINT, {
+        resp = post(ENDPOINT, {
             "model": self.modelo,
             "temperature": 0.2,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": _SISTEMA},
                 {"role": "user", "content": "\n".join(linhas)},
             ],
         }, self.timeout, self.tentativas)
         try:
-            conteudo = resp["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise APIError(f"resposta do LLM sem conteúdo: {str(resp)[:300]}") from exc
+            msg = resp["choices"][0]["message"]
+            # Alguns modelos gratuitos põem o texto em "reasoning_content" ou
+            # cortam por limite de tokens e devolvem "content": null.
+            conteudo = msg.get("content") or msg.get("reasoning_content")
+            if not conteudo or not conteudo.strip():
+                raise ValueError(f"content vazio (finish_reason={resp['choices'][0].get('finish_reason')})")
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise APIError(f"resposta do LLM sem conteúdo: {exc} — {str(resp)[:300]}") from exc
         return _normaliza(_json(conteudo))
 
 
