@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Publicador — fila do YouTube</title>
+<style>
+  :root {
+    --fundo: #16181d; --caixa: #1e2128; --linha: #2b2f38;
+    --texto: #e7e9ee; --fraco: #9aa1ad; --destaque: #4f8cff;
+    --ok: #37c871; --erro: #ff6b6b; --aviso: #ffc95c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 18px 60px; background: var(--fundo); color: var(--texto);
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  p.fraco, span.fraco, td.fraco { color: var(--fraco); }
+  section {
+    background: var(--caixa); border: 1px solid var(--linha); border-radius: 10px;
+    padding: 16px; margin-top: 16px;
+  }
+  button {
+    background: #2a2f3a; color: var(--texto); border: 1px solid var(--linha);
+    border-radius: 7px; padding: 7px 12px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--destaque); }
+  button.principal { background: var(--destaque); border-color: var(--destaque); color: #fff; font-weight: 600; }
+  button.parar { background: #7a2b2b; border-color: #7a2b2b; color: #fff; font-weight: 600; }
+  button.mini { padding: 3px 7px; font-size: 13px; }
+  button:disabled { opacity: .45; cursor: default; }
+  input, select, textarea {
+    background: #14161b; color: var(--texto); border: 1px solid var(--linha);
+    border-radius: 7px; padding: 7px 9px; font: inherit; width: 100%;
+  }
+  input[type=checkbox] { width: auto; }
+  label { display: block; font-size: 13px; color: var(--fraco); margin-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--linha); vertical-align: middle; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--fraco); }
+  .barra-topo {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+  }
+  .acoes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+  .pilula { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--linha); }
+  .aguardando { color: var(--fraco); }
+  .enviando { color: var(--aviso); border-color: var(--aviso); }
+  .enviado { color: var(--ok); border-color: var(--ok); }
+  .falhou { color: var(--erro); border-color: var(--erro); }
+  progress { width: 100%; height: 8px; }
+  pre#log {
+    margin: 0; max-height: 240px; overflow: auto; font: 13px/1.55 ui-monospace, Consolas, monospace;
+    color: var(--fraco); white-space: pre-wrap;
+  }
+  .recado { margin-top: 10px; font-size: 14px; min-height: 20px; }
+  .recado.erro { color: var(--erro); }
+  .recado.ok { color: var(--ok); }
+  #aviso-conexao {
+    background: #3a1f1f; border: 1px solid var(--erro); color: #ffd3d3;
+    border-radius: 8px; padding: 10px 14px; margin-top: 10px; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Publicador — fila do YouTube</h1>
+  <p class="fraco" id="resumo">Carregando…</p>
+  <!-- Sem isto, uma queda de rede entre o navegador e o servidor faz a página
+       parecer travada: os cliques não fazem nada e nada explica o porquê. -->
+  <div id="aviso-conexao" hidden></div>
+
+  <section>
+    <div class="barra-topo">
+      <div>
+        <div id="estado-fila" style="font-size:17px;font-weight:600">—</div>
+        <div class="fraco" id="estado-proximo">—</div>
+        <div id="proximos" style="margin-top:6px;display:grid;gap:4px"></div>
+      </div>
+      <div class="acoes">
+        <button id="btn-ligar" class="principal">▶ Ligar fila</button>
+        <button id="btn-limpar">🧹 Limpar publicados</button>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Adicionar vídeos</h2>
+    <div class="grade">
+      <div>
+        <label for="arquivos">Arquivos (pode escolher vários)</label>
+        <input type="file" id="arquivos" multiple accept=".mp4,.mov,.mkv,.avi,.webm">
+      </div>
+      <div>
+        <label for="canal-novo">Canal destes vídeos</label>
+        <select id="canal-novo"></select>
+      </div>
+      <div style="align-self:end">
+        <button id="btn-subir" class="principal">⬆ Subir para o servidor</button>
+      </div>
+    </div>
+    <progress id="progresso" value="0" max="100" hidden></progress>
+    <div class="recado" id="recado-upload"></div>
+    <p class="fraco" style="margin:6px 0 0">Os arquivos ficam em <code id="pasta-videos">—</code> no HD do servidor.</p>
+  </section>
+
+  <section>
+    <h2>Fila (publica de cima para baixo)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:70px">Ordem</th>
+          <th>Título no YouTube</th>
+          <th style="width:150px">Canal</th>
+          <th style="width:120px">Situação</th>
+          <th style="width:150px">Ações</th>
+        </tr>
+      </thead>
+      <tbody id="corpo-fila"></tbody>
+    </table>
+    <div class="recado" id="recado-fila"></div>
+  </section>
+
+  <section>
+    <h2>Configuração dos envios</h2>
+    <div class="grade">
+      <div>
+        <label for="config-canal">Canal</label>
+        <select id="config-canal"></select>
+      </div>
+    </div>
+    <div class="grade" style="margin-top:14px">
+      <div>
+        <label for="privacidade">Privacidade</label>
+        <select id="privacidade">
+          <option value="public">Público</option>
+          <option value="unlisted">Não listado</option>
+          <option value="private">Privado</option>
+        </select>
+      </div>
+      <div>
+        <label for="intervalo-min">Espera mínima (minutos)</label>
+        <input type="number" id="intervalo-min" min="1" max="2880">
+      </div>
+      <div>
+        <label for="intervalo-max">Espera máxima (minutos)</label>
+        <input type="number" id="intervalo-max" min="1" max="2880">
+      </div>
+      <div style="align-self:end">
+        <label style="display:flex;gap:8px;align-items:center;color:var(--texto)">
+          <input type="checkbox" id="ordem-aleatoria"> Sortear qual vídeo deste canal sai
+        </label>
+      </div>
+    </div>
+    <p class="fraco" style="margin:10px 0 0">
+      Depois de cada publicação deste canal o servidor sorteia um tempo dentro
+      dessa faixa (padrão: 150 a 210 minutos, ou seja, perto de 3 horas) e só
+      então manda o próximo vídeo dele — cada canal tem a sua própria espera,
+      configurada aqui separadamente. Sem a opção de sortear, sai o vídeo mais
+      antigo da fila deste canal.
+    </p>
+    <p class="fraco" style="margin:8px 0 0">
+      O vídeo já sai publicado com a privacidade acima assim que o envio e as
+      verificações do YouTube terminam — sem agendamento.
+    </p>
+    <div style="margin-top:14px">
+      <label for="config-descricao">Descrição padrão deste canal</label>
+      <textarea id="config-descricao" rows="4"
+        placeholder="Texto usado na descrição de todos os vídeos deste canal"></textarea>
+    </div>
+    <div class="grade" style="margin-top:14px">
+      <div>
+        <label for="tiktok-conta">Publicar também no TikTok, na conta</label>
+        <select id="tiktok-conta"></select>
+      </div>
+    </div>
+    <p class="fraco" style="margin:8px 0 0">
+      Com uma conta escolhida, todo vídeo deste canal sai <b>na mesma leva</b>
+      para o YouTube e para essa conta do TikTok — o TikTok logo depois que o
+      envio ao YouTube termina, para os dois não disputarem a internet. Contas
+      aparecem aqui depois de importar os cookies delas em <b>Canais</b>, mais
+      abaixo.
+    </p>
+    <div style="margin-top:14px">
+      <label for="tiktok-legenda">Legenda/hashtags padrão no TikTok</label>
+      <textarea id="tiktok-legenda" rows="3"
+        placeholder="Vai depois do título do vídeo, na legenda do post"></textarea>
+    </div>
+    <div class="acoes" style="margin-top:12px">
+      <button id="btn-config" class="principal">Salvar configuração</button>
+      <button id="btn-testar-tiktok">🧪 Testar TikTok (sem mexer no YouTube)</button>
+    </div>
+    <div class="recado" id="recado-config"></div>
+    <p class="fraco" style="margin:8px 0 0">
+      Deu erro no TikTok? <a href="/tiktok-falha.png" target="_blank" rel="noopener"
+      style="color:var(--destaque)">ver a tela do TikTok no instante da falha</a> —
+      é o que mostra se caiu em login, captcha ou numa tela diferente.
+    </p>
+  </section>
+
+  <section>
+    <h2>Canais</h2>
+    <div id="lista-canais" class="fraco">—</div>
+    <p class="fraco" style="margin:12px 0 6px">
+      O YouTube não tem login programático aqui: logue em
+      <code>studio.youtube.com</code> num navegador normal (no canal certo),
+      exporte os cookies com uma extensão (ex.: "Get cookies.txt") e mande aqui
+      o arquivo renomeado para <code>youtube_browser_cookies_&lt;canal&gt;.txt</code>
+      — o nome escolhido é o que identifica o canal em todo o resto da tela.
+    </p>
+    <p class="fraco" style="margin:0 0 6px">
+      Contas do TikTok: <span id="lista-tiktok">—</span>. Para conectar uma, logue
+      em tiktok.com no navegador, exporte os cookies com uma extensão (ex.: "Get
+      cookies.txt") e mande aqui o arquivo renomeado para
+      <code>tiktok_cookies_&lt;apelido&gt;.txt</code> — o apelido é o que vai
+      aparecer no seletor da configuração de cada canal.
+    </p>
+    <div class="grade">
+      <div>
+        <label for="credenciais">Credenciais (.txt de cookies do YouTube ou do TikTok)</label>
+        <input type="file" id="credenciais" multiple accept=".txt">
+      </div>
+      <div style="align-self:end">
+        <button id="btn-credenciais">🔑 Enviar credenciais</button>
+      </div>
+    </div>
+    <div class="recado" id="recado-credenciais"></div>
+    <p class="fraco" style="margin:8px 0 0">
+      Deu erro no YouTube? <a href="/youtube-falha.png" target="_blank" rel="noopener"
+      style="color:var(--destaque)">ver a tela do Studio no instante da falha</a> —
+      é o que mostra se caiu em login, num botão que mudou de lugar ou numa
+      verificação ainda pendente.
+    </p>
+  </section>
+
+  <section>
+    <h2>Histórico</h2>
+    <pre id="log">—</pre>
+  </section>
+</main>
+
+<script>
+const SITUACOES = {
+  aguardando: "Na fila", enviando: "Enviando…", enviado: "Publicado", falhou: "Falhou"
+};
+let estado = null;
+let assinatura = "";
+
+const el = (id) => document.getElementById(id);
+const escapar = (texto) => String(texto == null ? "" : texto).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function recado(id, texto, tipo) {
+  const alvo = el(id);
+  alvo.textContent = texto || "";
+  alvo.className = "recado" + (tipo ? " " + tipo : "");
+}
+
+function semConexao(caiu, detalhe) {
+  const aviso = el("aviso-conexao");
+  aviso.hidden = !caiu;
+  if (caiu) {
+    aviso.textContent = "Sem conexão com o servidor — os botões não têm efeito até voltar. "
+      + "Tentando de novo sozinho a cada poucos segundos." + (detalhe ? " (" + detalhe + ")" : "");
+  }
+}
+
+async function pedir(url, corpo) {
+  let resposta;
+  try {
+    resposta = await fetch(url, corpo === undefined ? {method: "POST"} : {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(corpo)
+    });
+  } catch (erro) {                                   // o servidor não respondeu
+    semConexao(true);
+    throw new Error("Sem conexão com o servidor; nada foi feito.");
+  }
+  semConexao(false);
+  const dados = await resposta.json().catch(() => ({}));
+  if (!resposta.ok) throw new Error(dados.erro || "Falhou (" + resposta.status + ")");
+  return dados;
+}
+
+function tempoRestante(alvo, agora) {
+  const segundos = Math.round((new Date(alvo) - new Date(agora)) / 1000);
+  if (segundos <= 0) return "agora";
+  const horas = Math.floor(segundos / 3600), minutos = Math.round((segundos % 3600) / 60);
+  return horas ? "em " + horas + "h" + String(minutos).padStart(2, "0") : "em " + minutos + " min";
+}
+
+function desenharTopo() {
+  const ligada = estado.rodando;
+  el("estado-fila").textContent = ligada ? "Fila ligada" : "Fila parada";
+  el("estado-fila").style.color = ligada ? "var(--ok)" : "var(--fraco)";
+  el("btn-ligar").textContent = ligada ? "⏸ Parar fila" : "▶ Ligar fila";
+  el("btn-ligar").className = ligada ? "parar" : "principal";
+
+  const naFila = estado.itens.filter((i) => i.status === "aguardando").length;
+  const publicados = estado.itens.filter((i) => i.status === "enviado").length;
+  el("resumo").textContent = naFila + " na fila · " + publicados + " já publicados · "
+    + estado.canais.filter((c) => c.conectado).length + " canal(is) conectado(s)";
+
+  let texto;
+  if (estado.enviando) texto = "Enviando um vídeo agora…";
+  else if (!ligada) texto = "Nada sai enquanto a fila estiver parada.";
+  else if (!naFila) texto = "Sem vídeos esperando na fila.";
+  else texto = "Cada canal tem a sua própria espera:";
+  el("estado-proximo").textContent = texto;
+  desenharProximos();
+  el("pasta-videos").textContent = estado.pasta_videos;
+}
+
+// Uma linha por canal que tem vídeo esperando: cada um corre no seu relógio,
+// então mostrar um horário só esconderia metade da informação.
+function desenharProximos() {
+  const esperando = {};
+  for (const item of estado.itens) {
+    if (item.status !== "aguardando") continue;
+    esperando[item.canal || ""] = (esperando[item.canal || ""] || 0) + 1;
+  }
+  const linhas = [];
+  for (const canal of Object.keys(esperando).sort()) {
+    const quantos = esperando[canal] + (esperando[canal] > 1 ? " vídeos" : " vídeo");
+    if (!canal) {
+      linhas.push('<div class="fraco">' + quantos + " sem canal escolhido — escolha na lista abaixo.</div>");
+      continue;
+    }
+    const quando = (estado.proximos || {})[canal];
+    const livre = !quando || new Date(quando) <= new Date(estado.agora);
+    const detalhe = livre ? "pode sair agora" : tempoRestante(quando, estado.agora) + " ("
+      + new Date(quando).toLocaleString("pt-BR",
+          {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) + ")";
+    linhas.push('<div><b>' + escapar(canal) + "</b> — " + detalhe
+      + ' <span class="fraco">· ' + quantos + " na fila</span> "
+      + '<button class="mini" data-adiar="' + escapar(canal)
+      + '" title="Sortear um novo horário para este canal">⏳</button></div>');
+  }
+  el("proximos").innerHTML = linhas.join("");
+}
+
+function opcoesDeCanal(selecionado) {
+  const nomes = estado.canais.map((c) => c.nome);
+  const partes = [];
+  // Sem uma opção para o valor salvo, o navegador mostraria o primeiro canal da
+  // lista como se fosse o escolhido — e o vídeo iria parar em outro lugar.
+  if (!selecionado) partes.push('<option value="" selected>(escolha o canal)</option>');
+  else if (!nomes.includes(selecionado)) {
+    partes.push('<option value="' + escapar(selecionado) + '" selected>'
+      + escapar(selecionado) + " (sem credencial)</option>");
+  }
+  for (const nome of nomes) {
+    partes.push('<option value="' + escapar(nome) + '"' + (nome === selecionado ? " selected" : "")
+      + ">" + escapar(nome) + "</option>");
+  }
+  return partes.join("");
+}
+
+function desenharFila() {
+  const nova = estado.itens.map((i) => i.id + i.status + i.canal + (i.tentativas || 0)).join("|")
+    + estado.canais.length;
+  // Redesenhar por cima de um campo em edição apagaria o que está sendo digitado.
+  const digitando = document.activeElement && document.activeElement.closest("#corpo-fila");
+  if (nova === assinatura || digitando) return;
+  assinatura = nova;
+
+  const corpo = el("corpo-fila");
+  if (!estado.itens.length) {
+    corpo.innerHTML = '<tr><td colspan="5" class="fraco">A fila está vazia — suba os vídeos acima.</td></tr>';
+    return;
+  }
+  corpo.innerHTML = estado.itens.map((item, indice) => {
+    // Esperando nova tentativa automática: não é "parado na fila", e a
+    // diferença importa quando se olha a lista para saber se falta agir.
+    const repetindo = item.status === "aguardando" && (item.tentativas || 0) > 0;
+    const situacao = repetindo ? "Repetindo" : (SITUACOES[item.status] || item.status);
+    const classe = repetindo ? "enviando" : item.status;
+    let detalhe = "";
+    if (item.status === "enviado") {
+      if (item.url) detalhe = '<a href="' + escapar(item.url)
+        + '" target="_blank" rel="noopener" style="color:var(--destaque)">ver no YouTube</a>';
+    } else if (item.mensagem) {
+      detalhe = '<span class="fraco" title="' + escapar(item.mensagem) + '">'
+        + escapar(item.mensagem.slice(0, 60)) + "</span>";
+    }
+    const acoes = item.status === "falhou"
+      ? '<button class="mini" data-repetir="' + item.id + '">↻ Tentar de novo</button>'
+      : (item.status === "aguardando"
+          ? '<button class="mini" data-agora="' + item.id + '">Enviar já</button>' : "");
+    return '<tr>'
+      + '<td><button class="mini" data-sobe="' + item.id + '"' + (indice === 0 ? " disabled" : "") + '>↑</button> '
+      + '<button class="mini" data-desce="' + item.id + '"' + (indice === estado.itens.length - 1 ? " disabled" : "") + '>↓</button></td>'
+      + '<td><input data-titulo="' + item.id + '" value="' + escapar(item.titulo) + '">'
+      + '<div class="fraco" style="font-size:12px;margin-top:3px">' + escapar(item.arquivo) + "</div></td>"
+      + '<td><select data-canal="' + item.id + '">' + opcoesDeCanal(item.canal) + "</select></td>"
+      + '<td><span class="pilula ' + escapar(classe) + '">' + escapar(situacao) + "</span>"
+      + (detalhe ? '<div style="font-size:12px;margin-top:3px">' + detalhe + "</div>" : "") + "</td>"
+      + '<td>' + acoes + ' <button class="mini" data-remover="' + item.id + '">✕</button></td>'
+      + "</tr>";
+  }).join("");
+}
+
+// Cada canal tem sua própria privacidade, intervalo, sorteio e descrição —
+// por isso a configuração inteira gira em torno deste seletor, em vez de
+// valores soltos que não deixavam claro a qual canal pertenciam.
+let canalConfigAtual = "";
+
+function configPadraoCanal() {
+  return {privacidade: "public", intervalo_min: 150, intervalo_max: 210,
+          ordem_aleatoria: false, descricao: "",
+          tiktok_conta: "", tiktok_legenda: ""};
+}
+
+// Opções da conta do TikTok: sempre tem "não publicar", e mantém a conta
+// salva na lista mesmo que os cookies dela tenham sido removidos depois.
+function opcoesDeContaTiktok(selecionada) {
+  const contas = estado.tiktok_contas || [];
+  const partes = ['<option value="">(não publicar no TikTok)</option>'];
+  if (selecionada && !contas.includes(selecionada)) {
+    partes.push('<option value="' + escapar(selecionada) + '" selected>'
+      + escapar(selecionada) + " (sem cookies)</option>");
+  }
+  for (const conta of contas) {
+    partes.push('<option value="' + escapar(conta) + '"' + (conta === selecionada ? " selected" : "")
+      + ">" + escapar(conta) + "</option>");
+  }
+  return partes.join("");
+}
+
+function desenharSeletorDeConfig() {
+  const seletor = el("config-canal");
+  const nomes = estado.canais.map((c) => c.nome);
+  const chave = nomes.join("|");
+  if (seletor.dataset.canais === chave) return;         // só remonta quando muda
+  seletor.dataset.canais = chave;
+  seletor.innerHTML = nomes.length
+    ? nomes.map((nome) => '<option value="' + escapar(nome) + '">' + escapar(nome) + "</option>").join("")
+    : '<option value="">(nenhum canal ainda)</option>';
+  if (!nomes.includes(canalConfigAtual)) canalConfigAtual = nomes[0] || "";
+  seletor.value = canalConfigAtual;
+}
+
+function desenharConfig(forcar) {
+  desenharSeletorDeConfig();
+  const foco = document.activeElement;
+  const editando = foco && foco.closest("section") === el("config-canal").closest("section");
+  if (editando && !forcar) return;
+  canalConfigAtual = el("config-canal").value;
+  const cfg = (canalConfigAtual && (estado.config.canais || {})[canalConfigAtual]) || configPadraoCanal();
+  el("privacidade").value = cfg.privacidade;
+  el("intervalo-min").value = cfg.intervalo_min;
+  el("intervalo-max").value = cfg.intervalo_max;
+  el("ordem-aleatoria").checked = !!cfg.ordem_aleatoria;
+  el("config-descricao").value = cfg.descricao || "";
+  el("tiktok-conta").innerHTML = opcoesDeContaTiktok(cfg.tiktok_conta);
+  el("tiktok-legenda").value = cfg.tiktok_legenda || "";
+  delete el("config-canal").closest("section").dataset.sujo;
+}
+
+function desenharCanais() {
+  const seletor = el("canal-novo");
+  const escolhido = seletor.value;
+  const conectados = estado.canais.filter((c) => c.conectado).map((c) => c.nome);
+  seletor.innerHTML = (conectados.length ? conectados : estado.canais.map((c) => c.nome))
+    .map((nome) => '<option value="' + escapar(nome) + '">' + escapar(nome) + "</option>").join("")
+    || '<option value="">(nenhum canal)</option>';
+  if (escolhido) seletor.value = escolhido;
+
+  el("lista-canais").innerHTML = estado.canais.length
+    ? estado.canais.map((c) => '<span class="pilula enviado" style="margin-right:8px">'
+        + escapar(c.nome) + " · conectado</span>").join("")
+    : "Nenhum canal ainda. Mande os arquivos de credencial abaixo.";
+  el("lista-tiktok").textContent = (estado.tiktok_contas || []).length
+    ? estado.tiktok_contas.join(", ") : "nenhuma ainda";
+  desenharSeletorDeConfig();
+}
+
+async function atualizar() {
+  let resposta;
+  try {
+    resposta = await fetch("/api/estado");
+  } catch (erro) {
+    semConexao(true);
+    return;                                          // mantém o que está na tela
+  }
+  if (!resposta.ok) { semConexao(true, "erro " + resposta.status); return; }
+  semConexao(false);
+  estado = await resposta.json();
+  desenharTopo();
+  desenharCanais();
+  desenharFila();
+  if (!el("privacidade").value) desenharConfig(true); else desenharConfig(false);
+  el("log").textContent = estado.log.length ? estado.log.join("\n") : "Nada ainda.";
+  el("log").scrollTop = el("log").scrollHeight;
+}
+
+/* ── cliques da fila (delegados, a tabela é redesenhada) ───────── */
+el("corpo-fila").addEventListener("click", async (evento) => {
+  const botao = evento.target.closest("button");
+  if (!botao) return;
+  const dados = botao.dataset;
+  try {
+    if (dados.sobe) await pedir("/api/itens/" + dados.sobe + "/mover", {direcao: -1});
+    else if (dados.desce) await pedir("/api/itens/" + dados.desce + "/mover", {direcao: 1});
+    else if (dados.agora) await pedir("/api/itens/" + dados.agora + "/enviar-agora");
+    else if (dados.repetir) await pedir("/api/itens/" + dados.repetir + "/repetir");
+    else if (dados.remover) {
+      if (!confirm("Tirar da fila e apagar o arquivo do servidor?")) return;
+      await pedir("/api/itens/" + dados.remover + "/remover");
+    } else return;
+    recado("recado-fila", "");
+    assinatura = "";
+    await atualizar();
+  } catch (erro) { recado("recado-fila", erro.message, "erro"); }
+});
+
+el("corpo-fila").addEventListener("change", async (evento) => {
+  const campo = evento.target;
+  const id = campo.dataset.titulo || campo.dataset.canal;
+  if (!id) return;
+  const corpo = campo.dataset.titulo ? {titulo: campo.value} : {canal: campo.value};
+  try {
+    await pedir("/api/itens/" + id, corpo);
+    recado("recado-fila", "Salvo.", "ok");
+  } catch (erro) { recado("recado-fila", erro.message, "erro"); }
+});
+
+/* ── botões do topo ───────────────────────────────────────────── */
+el("btn-ligar").onclick = async () => {
+  try {
+    await pedir("/api/rodando", {rodando: !estado.rodando});
+    await atualizar();
+  } catch (erro) { recado("recado-fila", erro.message, "erro"); }
+};
+el("proximos").addEventListener("click", async (evento) => {
+  const botao = evento.target.closest("button[data-adiar]");
+  if (!botao) return;
+  try {
+    await pedir("/api/adiar", {canal: botao.dataset.adiar});
+    await atualizar();
+  } catch (erro) { recado("recado-fila", erro.message, "erro"); }
+});
+el("btn-limpar").onclick = async () => {
+  if (!confirm("Apagar do servidor os vídeos que já foram publicados?")) return;
+  const dados = await pedir("/api/limpar-enviados");
+  assinatura = "";
+  await atualizar();
+  recado("recado-fila", dados.removidos + " vídeo(s) apagado(s) do servidor.", "ok");
+};
+
+/* ── upload dos vídeos (XHR para ter barra de progresso) ───────── */
+el("btn-subir").onclick = () => {
+  const campo = el("arquivos");
+  if (!campo.files.length) { recado("recado-upload", "Escolha os arquivos primeiro.", "erro"); return; }
+  const formulario = new FormData();
+  formulario.append("canal", el("canal-novo").value);
+  for (const arquivo of campo.files) formulario.append("arquivos", arquivo);
+
+  const barra = el("progresso");
+  barra.hidden = false; barra.value = 0;
+  el("btn-subir").disabled = true;
+  recado("recado-upload", "Enviando para o servidor…");
+
+  const pedido = new XMLHttpRequest();
+  pedido.open("POST", "/api/videos");
+  pedido.upload.onprogress = (evento) => {
+    if (evento.lengthComputable) barra.value = (evento.loaded / evento.total) * 100;
+  };
+  pedido.onload = async () => {
+    el("btn-subir").disabled = false; barra.hidden = true;
+    let dados = {};
+    try { dados = JSON.parse(pedido.responseText); } catch (e) { dados = {}; }
+    if (pedido.status >= 400 || dados.erro) {
+      recado("recado-upload", dados.erro || "Falhou (" + pedido.status + ")", "erro");
+    } else {
+      recado("recado-upload", (dados.adicionados || []).length + " vídeo(s) no servidor.", "ok");
+      campo.value = "";
+    }
+    assinatura = "";
+    await atualizar();
+  };
+  pedido.onerror = () => {
+    el("btn-subir").disabled = false; barra.hidden = true;
+    recado("recado-upload", "A conexão com o servidor caiu no meio do envio.", "erro");
+  };
+  pedido.send(formulario);
+};
+
+/* ── configuração e credenciais ────────────────────────────────── */
+// Marca como "sujo" qualquer edição, menos a troca do próprio seletor de
+// canal — é o que avisa, ao trocar de canal, que dá para perder o que não
+// foi salvo.
+el("config-canal").closest("section").addEventListener("input", (evento) => {
+  if (evento.target.id !== "config-canal") evento.target.closest("section").dataset.sujo = "1";
+});
+
+el("config-canal").addEventListener("change", () => {
+  const secao = el("config-canal").closest("section");
+  if (secao.dataset.sujo === "1"
+      && !confirm("Descartar as alterações não salvas deste canal?")) {
+    el("config-canal").value = canalConfigAtual;
+    return;
+  }
+  delete secao.dataset.sujo;
+  desenharConfig(true);
+});
+
+el("btn-config").onclick = async () => {
+  const canal = el("config-canal").value;
+  if (!canal) { recado("recado-config", "Nenhum canal para configurar ainda.", "erro"); return; }
+  try {
+    await pedir("/api/config", {
+      canal: canal,
+      privacidade: el("privacidade").value,
+      intervalo_min: Number(el("intervalo-min").value),
+      intervalo_max: Number(el("intervalo-max").value),
+      ordem_aleatoria: el("ordem-aleatoria").checked,
+      descricao: el("config-descricao").value,
+      tiktok_conta: el("tiktok-conta").value,
+      tiktok_legenda: el("tiktok-legenda").value,
+    });
+    delete el("config-canal").closest("section").dataset.sujo;
+    recado("recado-config", "Configuração salva.", "ok");
+    await atualizar();
+    desenharConfig(true);
+  } catch (erro) { recado("recado-config", erro.message, "erro"); }
+};
+
+el("btn-testar-tiktok").onclick = async () => {
+  const canal = el("config-canal").value;
+  if (!canal) { recado("recado-config", "Escolha um canal primeiro.", "erro"); return; }
+  el("btn-testar-tiktok").disabled = true;
+  recado("recado-config", "Testando envio ao TikTok… pode levar um tempo "
+    + "(abre um navegador de verdade no servidor). Não mexe no YouTube.");
+  try {
+    const dados = await pedir("/api/testar-tiktok", {canal});
+    recado("recado-config", dados.mensagem, "ok");
+  } catch (erro) {
+    recado("recado-config", erro.message, "erro");
+  } finally {
+    el("btn-testar-tiktok").disabled = false;
+  }
+};
+
+el("btn-credenciais").onclick = async () => {
+  const campo = el("credenciais");
+  if (!campo.files.length) { recado("recado-credenciais", "Escolha os arquivos .txt primeiro.", "erro"); return; }
+  const formulario = new FormData();
+  for (const arquivo of campo.files) formulario.append("arquivos", arquivo);
+  const resposta = await fetch("/api/credenciais", {method: "POST", body: formulario});
+  const dados = await resposta.json().catch(() => ({}));
+  if (dados.erro) recado("recado-credenciais", dados.erro, "erro");
+  else recado("recado-credenciais", (dados.aceitos || []).join(", ") + " recebido(s).", "ok");
+  campo.value = "";
+  await atualizar();
+};
+
+atualizar();
+setInterval(() => atualizar().catch(() => semConexao(true)), 7000);
+</script>
+</body>
+</html>

@@ -12,16 +12,17 @@ os.environ["QMEDIAPLAYER_USE_HW"] = "0"
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
 import vlc
-from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QDateTime, QEvent, QObject, QProcess, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QAbstractSpinBox, QApplication, QCheckBox, QComboBox,
-    QFileDialog, QFormLayout, QFrame,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QDateTimeEdit, QFileDialog, QFormLayout, QFrame,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSlider, QSpinBox, QTabWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -30,32 +31,40 @@ from PySide6.QtWidgets import (
 from utils import (
     APP_NAME, DOWNLOAD_DIR, FONT_DIR, OUTPUT_DIR,
     PROJECT_DIR, YTDLP_BUNDLED, YTDLP_SYSTEM,
-    as_time, build_clip_filter, build_srt_for_clip, command_exists,
+    as_time, build_clip_filter, build_srt_for_clip, clean_srt_file, command_exists,
     escape_drawtext, filter_path, find_video_subtitle, format_title_for_video,
     build_reels_prompt, cuts_to_moments, looks_like_auto_caption,
-    render_thumbnail, review_srt_with_ai,
+    review_srt_with_ai,
     strip_markdown, transcript_with_timestamps,
     thumbnail_path, write_reels_prompt, write_reels_text,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
-    TimestampInput,
+    TimestampInput, log_change, log_video,
 )
 
 import ai_srt
 import censor
 import trilhas
-from cg_generator import LT_BOTTOM_MARGIN, LT_HEIGHT, create_lower_third
+import tiktok_upload
+import youtube_upload
+import youtube_browser_upload
+from cg_generator import (
+    LT_BOTTOM_MARGIN, LT_HEIGHT, DEFAULT_COLORS, create_lower_third,
+)
 
-# Piso e teto de duração dos cortes sugeridos pela IA. O prompt já pede de 1min30
-# a 2min30; isto derruba os que vierem fora mesmo assim (a IA às vezes desobedece,
-# e short longo demais não funciona). A folga de ~2s evita descartar um corte que
-# a IA arredondou de leve para fora da faixa.
-MIN_CUT_SECONDS = 88
+# Teto de duração dos cortes sugeridos pela IA. O prompt pede de 1min a 2min30; o
+# piso de 1min fica só no prompt (a IA decide), mas o teto é reforçado por software
+# porque um short longo demais não funciona. A folga de ~2s evita descartar um
+# corte que a IA arredondou de leve para fora da faixa.
 MAX_CUT_SECONDS = 152
 
-# Marca d'água fixa no topo de todo vídeo exportado (Edição, CSV e Live). Deixe
-# "" para desligar. O tamanho é calculado para preencher a largura do 9:16.
-WATERMARK_TEXT = "@RENANSANTOSMBL"
+# Padrões da identidade visual. São só o ponto de partida: a aba Configuração
+# sobrescreve cada um e grava em config.json (chaves brand_*). O logo aponta para
+# o caminho antigo do canal quando ele existe, senão fica vazio.
+DEFAULT_WATERMARK = "@RENANSANTOSMBL"   # marca d'água no topo; "" desliga
+DEFAULT_WM_COLOR = "#FFFF00"            # amarelo (equivale ao antigo "yellow")
+DEFAULT_BRAND_NAME = "Informativo Nacional"
+_LEGACY_LOGO = Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png")
 
 # MarginV do libass é em unidades do script ASS (PlayResY ≈ 288 num .srt), não
 # em pixels: 1 unidade ≈ 6,67 px num vídeo 9:16 (1920 px de altura). Converte a
@@ -145,13 +154,16 @@ class CutsSuggestWorker(QThread):
 
     done = Signal(bool, str, list)       # ok?, mensagem, cortes
 
-    def __init__(self, transcript: str, api_key: str, model: str, parent=None) -> None:
+    def __init__(self, transcript: str, api_key: str, model: str,
+                 musicas: list[str] | None = None, parent=None) -> None:
         super().__init__(parent)
         self._transcript, self._api_key, self._model = transcript, api_key, model
+        self._musicas = musicas or []
 
     def run(self) -> None:
         try:
-            cortes, usage = ai_srt.suggest_cuts(self._transcript, self._api_key, self._model)
+            cortes, usage = ai_srt.suggest_cuts(
+                self._transcript, self._api_key, self._model, self._musicas)
         except ai_srt.AiError as error:
             self.done.emit(False, f"A IA não conseguiu escolher os cortes: {error}", [])
             return
@@ -204,6 +216,113 @@ class ReelsCaptionWorker(QThread):
             caminho)
 
 
+class YoutubeUploadWorker(QThread):
+    """Envia o vídeo exportado ao YouTube, fora da thread da interface.
+
+    O upload é resumível e pode levar minutos num vídeo grande; feito direto
+    no clique, travaria a janela até terminar.
+    """
+
+    progress = Signal(float)             # fração enviada (0.0 a 1.0)
+    done = Signal(bool, str)             # ok?, mensagem
+
+    def __init__(self, video_path: Path, title: str, account: str, description: str,
+                 tags: list[str], privacy: str, publish_at: datetime | None = None,
+                 parent=None) -> None:
+        super().__init__(parent)
+        self._video_path, self._title, self._account = video_path, title, account
+        self._description, self._tags, self._privacy = description, tags, privacy
+        self._publish_at = publish_at
+
+    def run(self) -> None:
+        try:
+            url = youtube_upload.upload_video(
+                self._video_path, self._title, self._account, self._description,
+                self._tags, self._privacy, publish_at=self._publish_at,
+                progress=lambda frac: self.progress.emit(frac))
+        except youtube_upload.YoutubeUploadError as error:
+            self.done.emit(False, f"Envio ao YouTube falhou: {error}")
+        except Exception as error:                     # noqa: BLE001
+            self.done.emit(False, f"Envio ao YouTube falhou: {error}")
+        else:
+            if self._publish_at:
+                self.done.emit(
+                    True,
+                    f"Vídeo enviado e agendado para {self._publish_at:%d/%m/%Y %H:%M}: {url}")
+            else:
+                self.done.emit(True, f"Vídeo publicado no YouTube: {url}")
+
+
+class TikTokUploadWorker(QThread):
+    """Envia o vídeo exportado ao TikTok, fora da thread da interface.
+
+    Ao contrário do YouTube, o envio aqui é feito controlando um navegador de
+    verdade (biblioteca não-oficial `tiktok-uploader`) e não avisa o
+    progresso aos pedaços — só quando termina, com sucesso ou não. Como abre
+    uma janela de navegador, feito direto no clique travaria a interface até
+    o fim do preenchimento da tela de upload.
+    """
+
+    done = Signal(bool, str)             # ok?, mensagem
+
+    def __init__(self, video_path: Path, description: str, account: str,
+                 visibility: str, publish_at: datetime | None = None,
+                 headless: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self._video_path, self._description, self._account = video_path, description, account
+        self._visibility = visibility
+        self._publish_at = publish_at
+        self._headless = headless
+
+    def run(self) -> None:
+        try:
+            mensagem = tiktok_upload.upload_video(
+                self._video_path, self._description, self._account,
+                self._visibility, publish_at=self._publish_at, headless=self._headless)
+        except tiktok_upload.TikTokUploadError as error:
+            self.done.emit(False, f"Envio ao TikTok falhou: {error}")
+        except Exception as error:                  # noqa: BLE001
+            self.done.emit(False, f"Envio ao TikTok falhou: {error}")
+        else:
+            self.done.emit(True, mensagem)
+
+
+class YoutubeBrowserUploadWorker(QThread):
+    """Envia o vídeo ao YouTube pela tela do Studio, fora da thread da interface.
+
+    Mesmo esquema do TikTokUploadWorker: controla um navegador de verdade
+    (Playwright), então feito direto no clique travaria a interface até o
+    fim do preenchimento da tela de upload. Ao contrário do TikTok, este
+    fluxo avisa o progresso passo a passo (via `log`), porque o Studio tem
+    várias etapas (detalhes, verificações, visibilidade) que levam tempo.
+    """
+
+    log = Signal(str)                    # mensagem de progresso
+    done = Signal(bool, str)             # ok?, mensagem
+
+    def __init__(self, video_path: Path, title: str, description: str, account: str,
+                 visibility: str, publish_at: datetime | None = None,
+                 headless: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self._video_path, self._title, self._description = video_path, title, description
+        self._account, self._visibility = account, visibility
+        self._publish_at = publish_at
+        self._headless = headless
+
+    def run(self) -> None:
+        try:
+            mensagem = youtube_browser_upload.upload_video(
+                self._video_path, self._title, self._account, self._description,
+                self._visibility, publish_at=self._publish_at, headless=self._headless,
+                log=lambda msg: self.log.emit(msg))
+        except youtube_browser_upload.YoutubeBrowserUploadError as error:
+            self.done.emit(False, f"Envio ao YouTube (navegador) falhou: {error}")
+        except Exception as error:                  # noqa: BLE001
+            self.done.emit(False, f"Envio ao YouTube (navegador) falhou: {error}")
+        else:
+            self.done.emit(True, mensagem)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -212,7 +331,10 @@ class MainWindow(QMainWindow):
         self.video_path: Path | None = None
         self.fixed_image_path: Path | None = None
         self.caption_path: Path | None = None
-        self.cg_icon_path: Path | None = Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png") if Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png").exists() else None
+        # Identidade visual (logo, nome, marca d'água e cores da tarja). Vem do
+        # config.json e é editável na aba Configuração. Precisa carregar antes de
+        # montar as abas, que já usam o logo e o nome nos rótulos.
+        self._load_branding()
         self.duration = 0.0
         self._reels_queue: list[tuple] = []      # legendas de Reels a pedir à IA
         self._reels_worker: ReelsCaptionWorker | None = None
@@ -220,6 +342,7 @@ class MainWindow(QMainWindow):
         self._music_track: Path | None = None    # trilha escolhida pela IA
         self.work_dir = Path(tempfile.mkdtemp(prefix="corta_legenda_"))
         self.process: QProcess | None = None
+        self._thumbnail_procs: set[QProcess] = set()   # mantém os QProcess de thumb vivos até terminar
         self.playback_speed = 1.0
         self._vlc_seeking = False
 
@@ -244,6 +367,7 @@ class MainWindow(QMainWindow):
         self._live_recording = False
         self._live_busy = False
         self._live_fixed_image_path: Path | None = None
+        self._live_cookies_file: Path | None = None
         self._live_cut_process: QProcess | None = None
         self._live_cut_count = 0
         self._live_pending: dict = {}
@@ -252,6 +376,33 @@ class MainWindow(QMainWindow):
         self._live_remux_goal: object = 0
         self._live_remux_count = 0
         self._live_remux_process: QProcess | None = None
+
+        # Fila de publicação no YouTube (aba própria) — carregada do .txt
+        # salvo da última vez, para os vídeos importados sobreviverem entre
+        # sessões.
+        self._youtube_queue: list[youtube_upload.QueueItem] = youtube_upload.load_queue()
+        self._youtube_queue_worker: YoutubeUploadWorker | None = None
+        self._youtube_queue_busy = False
+        # Começa parada de propósito: sem isso, vídeos importados com
+        # "Enviar em" = agora sairiam sozinhos em segundos, antes de dar
+        # tempo de escolher canal, privacidade ou agendar a publicação.
+        self._youtube_queue_running = False
+
+        # Fila de publicação no TikTok (aba própria) — mesma ideia da fila do
+        # YouTube, só que via biblioteca não-oficial (navegador automatizado).
+        self._tiktok_queue: list[tiktok_upload.QueueItem] = tiktok_upload.load_queue()
+        self._tiktok_queue_worker: TikTokUploadWorker | None = None
+        self._tiktok_queue_busy = False
+        self._tiktok_queue_running = False
+
+        # Fila de publicação no YouTube pela tela do Studio (aba própria) —
+        # mesma ideia da fila do TikTok: navegador automatizado com cookies,
+        # em vez da API oficial (cota apertada e vídeos que quase não eram
+        # entregues, na experiência medida neste projeto).
+        self._youtube_browser_queue: list[youtube_browser_upload.QueueItem] = youtube_browser_upload.load_queue()
+        self._youtube_browser_queue_worker: YoutubeBrowserUploadWorker | None = None
+        self._youtube_browser_queue_busy = False
+        self._youtube_browser_queue_running = False
 
         self.build_ui()
 
@@ -268,6 +419,60 @@ class MainWindow(QMainWindow):
         self._live_status_timer.setInterval(10000)
         self._live_status_timer.timeout.connect(self._live_update_status)
         self._live_status_timer.start()
+
+        # Confere a fila do YouTube a cada 30s e dispara o envio de quem já
+        # chegou no horário marcado.
+        self._youtube_queue_timer = QTimer(self)
+        self._youtube_queue_timer.setInterval(30000)
+        self._youtube_queue_timer.timeout.connect(self._check_youtube_queue_schedule)
+        self._youtube_queue_timer.start()
+
+        # Mesma lógica para a fila do TikTok.
+        self._tiktok_queue_timer = QTimer(self)
+        self._tiktok_queue_timer.setInterval(30000)
+        self._tiktok_queue_timer.timeout.connect(self._check_tiktok_queue_schedule)
+        self._tiktok_queue_timer.start()
+
+        # Mesma lógica para a fila do YouTube via navegador (Studio).
+        self._youtube_browser_queue_timer = QTimer(self)
+        self._youtube_browser_queue_timer.setInterval(30000)
+        self._youtube_browser_queue_timer.timeout.connect(self._check_youtube_browser_queue_schedule)
+        self._youtube_browser_queue_timer.start()
+
+    def _running_processes(self) -> list[QProcess]:
+        """Todo QProcess que a janela pode ter em execução neste momento."""
+        procs = [
+            self.process, getattr(self, "_csv_process", None), getattr(self, "_csv_cuts_proc", None),
+            self._live_process, self._live_audio_process, self._live_cut_process,
+        ]
+        procs.extend(self._thumbnail_procs)
+        return [p for p in procs if p is not None]
+
+    def closeEvent(self, event) -> None:
+        """Evita deixar FFmpeg/yt-dlp órfão ao fechar a janela no meio de um corte.
+
+        Sem isso, fechar durante um lote (CSV, Live ou até a geração da capa)
+        deixa o QProcess ser destruído com o processo ainda rodando; quando o
+        `finished` chega tarde, tenta atualizar widgets que a janela já
+        apagou e vira RuntimeError ("already deleted") no console.
+        """
+        running = [p for p in self._running_processes() if p.state() != QProcess.ProcessState.NotRunning]
+        if running:
+            resposta = QMessageBox.question(
+                self, APP_NAME,
+                "Ainda tem processamento em andamento (corte, download ou legenda).\n\n"
+                "Fechar agora interrompe tudo o que está rodando. Fechar mesmo assim?")
+            if resposta != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            for proc in running:
+                try:
+                    proc.finished.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                proc.kill()
+                proc.waitForFinished(2000)
+        event.accept()
 
     def build_ui(self) -> None:
         root = QWidget()
@@ -365,6 +570,21 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.speed_1_5x)
         controls.addWidget(self.speed_2x)
         preview_column.addLayout(controls)
+
+        # Log em baixo do vídeo
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(300)
+        self.log.setMaximumHeight(120)
+        log_label = QLabel("Log de exportação")
+        log_label.setObjectName("muted")
+        preview_column.addWidget(log_label)
+        preview_column.addWidget(self.progress)
+        preview_column.addWidget(self.log)
         edit_layout.addLayout(preview_column, 3)
 
         # --- panel coluna direita ---
@@ -417,9 +637,42 @@ class MainWindow(QMainWindow):
             "Baixa as legendas do próprio vídeo (oficiais ou automáticas do YouTube) "
             "em pt-br, convertidas para .srt ao lado do vídeo."
         )
+
+        time_range_label = QLabel("Intervalo de tempo")
+        time_range_label.setObjectName("sourceLabel")
+        self.download_time_mode = QComboBox()
+        self.download_time_mode.addItem("Tudo", "all")
+        self.download_time_mode.addItem("Personalizado", "custom")
+        self.download_time_mode.setCurrentIndex(0)
+        self.download_time_mode.currentIndexChanged.connect(self._toggle_download_time_inputs)
+
+        self.download_time_row = QWidget()
+        download_time_layout = QVBoxLayout(self.download_time_row); download_time_layout.setContentsMargins(0, 0, 0, 0)
+        download_time_layout.setSpacing(8)
+
+        start_time_layout = QHBoxLayout()
+        start_time_layout.setContentsMargins(0, 0, 0, 0)
+        start_time_label = QLabel("Início")
+        self.download_start_time = self.time_input()
+        start_time_layout.addWidget(start_time_label)
+        start_time_layout.addWidget(self.download_start_time, 1)
+        download_time_layout.addLayout(start_time_layout)
+
+        end_time_layout = QHBoxLayout()
+        end_time_layout.setContentsMargins(0, 0, 0, 0)
+        end_time_label = QLabel("Fim")
+        self.download_end_time = self.time_input()
+        end_time_layout.addWidget(end_time_label)
+        end_time_layout.addWidget(self.download_end_time, 1)
+        download_time_layout.addLayout(end_time_layout)
+
         source_layout.addWidget(self.url_input)
         source_layout.addLayout(acceleration_row)
         source_layout.addWidget(self.download_button)
+        source_layout.addWidget(time_range_label)
+        source_layout.addWidget(self.download_time_mode)
+        source_layout.addWidget(self.download_time_row)
+        self.download_time_row.setVisible(False)
         source_layout.addWidget(self.download_subs)
         source_layout.addWidget(download_hint)
         panel.addWidget(source_box)
@@ -519,7 +772,7 @@ class MainWindow(QMainWindow):
         self.subtitle_input.setPlaceholderText("Manchete em destaque, embaixo (linha grande)")
         overlay_form.addRow("Título", self.text_input)
         overlay_form.addRow("Subtítulo", self.subtitle_input)
-        self.use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")
+        self.use_cg = QCheckBox(f"Usar tarja '{self.brand_name}' (rodapé)")
         self.use_cg.setChecked(bool(self.cg_icon_path))
         self.use_cg.setEnabled(bool(self.cg_icon_path))
         overlay_form.addRow(self.use_cg)
@@ -535,12 +788,8 @@ class MainWindow(QMainWindow):
         self.cancel_button.setObjectName("cancelButton")
         self.cancel_button.clicked.connect(self.cancel_edit)
         self.cancel_button.setEnabled(False)
-        self.progress = QProgressBar(); self.progress.setRange(0, 1); self.progress.setValue(0); self.progress.setTextVisible(False)
-        self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumBlockCount(300); self.log.setMaximumHeight(95)
         panel.addWidget(self.export_button)
         panel.addWidget(self.cancel_button)
-        panel.addWidget(self.progress)
-        panel.addWidget(self.log)
         panel.addStretch()
         panel_content = QWidget()
         panel_content.setObjectName("settingsPanel")
@@ -560,6 +809,18 @@ class MainWindow(QMainWindow):
 
         # ── Aba 3: Live ────────────────────────────────────────────
         self._build_live_tab()
+
+        # ── Aba 4: YouTube (fila de publicação, API oficial) ─────────
+        self._build_youtube_tab()
+
+        # ── Aba 5: YouTube via navegador (fila de publicação, Studio) ─
+        self._build_youtube_browser_tab()
+
+        # ── Aba 6: TikTok (fila de publicação) ───────────────────────
+        self._build_tiktok_tab()
+
+        # ── Aba 6: Configuração (identidade visual) ──────────────────
+        self._build_config_tab()
 
         # A roda do mouse rola a página, não altera combos/spins de passagem.
         self._wheel_guard = WheelGuard(self)
@@ -667,6 +928,10 @@ class MainWindow(QMainWindow):
         if filename:
             self.fixed_image_path = Path(filename)
             self.fixed_image_label.setText(self.fixed_image_path.name)
+
+    def _toggle_download_time_inputs(self) -> None:
+        show = self.download_time_mode.currentData() == "custom"
+        self.download_time_row.setVisible(show)
 
     def _toggle_fixed_image_row(self) -> None:
         self.fixed_image_row.setVisible(self.ratio.currentData() == "vertical_image")
@@ -814,6 +1079,8 @@ class MainWindow(QMainWindow):
     def _download_finished(self, code: int, status: QProcess.ExitStatus) -> None:
         if code == 0 and status == QProcess.ExitStatus.NormalExit:
             self.set_busy(False)
+            if getattr(self, "_dl_wants_subs", False):
+                self._clean_downloaded_subs()
             QMessageBox.information(self, APP_NAME, self._dl_success_msg)
             return
         if self._dl_attempt < self._dl_max_attempts:
@@ -825,6 +1092,30 @@ class MainWindow(QMainWindow):
             self, APP_NAME,
             "O download falhou após várias tentativas. O YouTube pode estar "
             "bloqueando este vídeo agora — tente novamente em alguns minutos.")
+
+    def _clean_downloaded_subs(self) -> None:
+        """Tira as repetições da legenda rolante do YouTube nos .srt baixados.
+
+        O yt-dlp grava a legenda automática crua, em que cada frase reaparece em
+        vários blocos (e vêm micro-blocos de 10ms). Aberto num player/editor,
+        parece "bugado". Limpamos só os .srt recém-gravados por este download
+        (mtime dos últimos 10 min), preservando o fraseado — nada é picado.
+        """
+        try:
+            recentes = [p for p in DOWNLOAD_DIR.glob("*.srt")
+                        if time.time() - p.stat().st_mtime < 600]
+        except OSError:
+            return
+        total = 0
+        for srt in recentes:
+            try:
+                total += clean_srt_file(srt)
+            except OSError:
+                continue
+        if total:
+            self.log.appendPlainText(
+                f"🧹 Legenda limpa: {total} bloco(s) repetido(s) removido(s) "
+                "da legenda automática do YouTube.")
 
     def append_process_output(self) -> None:
         data = bytes(self.process.readAllStandardOutput())
@@ -892,6 +1183,12 @@ class MainWindow(QMainWindow):
                     # Legenda de Instagram (.txt ao lado do vídeo). A IA responde
                     # em segundo plano; o arquivo aparece alguns segundos depois.
                     self.deliver_reels_caption(srt_dst, srt_dst, self.log.appendPlainText)
+                musica_track = getattr(self, "_music_track", None)
+                log_video(
+                    self.text_input.text().strip(),
+                    trilhas.label_for(musica_track) if musica_track else "",
+                    self.subtitle_input.text().strip(),
+                )
                 post = getattr(self, "_post_frame", None)
                 if post:
                     message += f"\n\nFrame de post (também é a capa do vídeo):\n{post}"
@@ -1383,6 +1680,20 @@ class MainWindow(QMainWindow):
             return command + ["--word_timestamps", "True", "--output_format", "all"]
         return command + ["--output_format", "srt"]
 
+    def _csv_music_track(self, moment: dict) -> Path | None:
+        """Trilha do corte de CSV: a que a IA escolheu, se a mixagem estiver ligada.
+
+        Reaproveita a config da aba Edição (checkbox "Misturar trilha" e a pasta
+        de trilhas). O rótulo vem do campo `musica` do momento (escolhido pela IA
+        ao gerar os cortes, ou pela coluna 'musica' de um CSV feito à mão).
+        """
+        if not (hasattr(self, "music_enabled") and self.music_enabled.isChecked()):
+            return None
+        clima = str(moment.get("musica") or "").strip()
+        if not clima:
+            return None
+        return trilhas.find_track(clima, self.music_dir())
+
     def music_export_track(self) -> Path | None:
         """Trilha a misturar na exportação, ou None se a opção estiver desligada."""
         if not (hasattr(self, "music_enabled") and self.music_enabled.isChecked()):
@@ -1446,6 +1757,46 @@ class MainWindow(QMainWindow):
                 "o que ele escreveu.")
         return censor.mute_filter(spans)
 
+    def _render_thumbnail_async(self, command: list[str], thumb_path: Path, callback) -> None:
+        """Gera o frame de post (thumbnail) sem travar a janela.
+
+        Antes rodava via `subprocess.run` direto na thread da interface: um
+        corte problemático (ou um arquivo de trilha ainda baixando do
+        OneDrive) travava a janela inteira até o timeout de 60s — em lote, uma
+        vez por corte, sem nada aparecer no log enquanto isso. Aqui o FFmpeg
+        roda num QProcess, como o resto do app, e `callback(Path | None)` é
+        chamado ao terminar (ou expirar), com o frame gerado ou None.
+        """
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        state = {"done": False}
+
+        def finish(result: Path | None) -> None:
+            if state["done"]:
+                return
+            state["done"] = True
+            timer.stop()
+            self._thumbnail_procs.discard(proc)
+            callback(result)
+
+        def on_finished(code: int, status: QProcess.ExitStatus) -> None:
+            ok = code == 0 and status == QProcess.ExitStatus.NormalExit and thumb_path.exists()
+            finish(thumb_path if ok else None)
+
+        def on_timeout() -> None:
+            if proc.state() != QProcess.ProcessState.NotRunning:
+                proc.kill()
+                proc.waitForFinished(2000)
+            finish(None)
+
+        proc.finished.connect(on_finished)
+        timer.timeout.connect(on_timeout)
+        self._thumbnail_procs.add(proc)
+        timer.start(60000)
+        proc.start(command[0], command[1:])
+
     def download_video(self) -> None:
         url = self.url_input.text().strip()
         if not url:
@@ -1474,13 +1825,46 @@ class MainWindow(QMainWindow):
                    "-N", str(self.fragment_count.value()), "-f", "bv*+ba/b",
                    "--merge-output-format", "mp4", "-P", str(DOWNLOAD_DIR),
                    "-o", "%(title).200B.%(ext)s"]
+
+        # Baixa só a seção desejada (não tudo depois corta)
+        if self.download_time_mode.currentData() == "custom":
+            start_sec = self.download_start_time.value()
+            end_sec = self.download_end_time.value()
+            if end_sec <= start_sec:
+                QMessageBox.warning(self, APP_NAME, "Em 'Personalizado', o Fim precisa ser maior que o Início.")
+                return
+            start_time = as_time(start_sec)
+            end_time = as_time(end_sec)
+            command += ["--download-sections", f"*{start_time}-{end_time}"]
+            # --download-sections só corta de verdade com o downloader nativo;
+            # em HLS (comum em vídeos que já foram live) o yt-dlp precisa usar
+            # o ffmpeg como downloader, e o ffmpeg por padrão não imprime nada
+            # até terminar — parece travado numa live longa. "-stats" força ele
+            # a mostrar time=/size=/speed= periodicamente no log.
+            command += ["--downloader-args", "ffmpeg:-stats"]
+            self.log.appendPlainText(
+                "\nBaixando só o trecho selecionado. Se o vídeo original for longo "
+                "(ex.: gravação de uma live), o ffmpeg pode demorar sem mostrar % "
+                "— acompanhe pelo tamanho crescente do arquivo em "
+                f"{DOWNLOAD_DIR}."
+            )
+
+        self._dl_wants_subs = self.download_subs.isChecked()
         if self.download_subs.isChecked():
             # Legendas do próprio vídeo (oficiais + automáticas do YouTube) em
             # pt-br, convertidas para .srt ao lado do vídeo. A lista de idiomas
             # é enxuta de propósito: incluir "pt.*" puxa dezenas de traduções
             # automáticas e dispara HTTP 429 (Too Many Requests).
+            # --sub-format ttml: o formato nativo do YouTube é WebVTT, e a
+            # conversão vtt->srt do yt-dlp é um bug conhecido para legenda
+            # automática (deixa tags "<c>", "position:63%" etc. dentro do
+            # texto e blocos repetidos da legenda rolante). Pedindo TTML —
+            # que não tem essa sintaxe de cue inline — o srt final sai bem
+            # mais limpo; "/best" é o fallback se o YouTube não oferecer TTML
+            # para aquele idioma.
             command += ["--write-subs", "--write-auto-subs",
                         "--sub-langs", "pt-BR,pt,pt-orig",
+                        "--sub-format", "ttml/best",
                         "--convert-subs", "srt",
                         "--no-abort-on-error"]
         command.append(url)
@@ -1506,7 +1890,7 @@ class MainWindow(QMainWindow):
         if self.use_cg.isChecked() and self.cg_icon_path:
             self._cg_path = create_lower_third(
                 self.text_input.text(), self.subtitle_input.text(),
-                self.work_dir, self.cg_icon_path,
+                self.work_dir, self.cg_icon_path, colors=self.brand_colors,
             )
         # A imagem fixa é a entrada 1; o lower-third vem depois dela.
         self._image_input_index = 1
@@ -1521,37 +1905,41 @@ class MainWindow(QMainWindow):
 
         # 1) Frame de post: mesmo visual (GC), sem legenda escrita.
         thumb = thumbnail_path(Path(filename))
-        self._post_frame = render_thumbnail(
+        thumb_command = (
             ["ffmpeg", "-y", "-ss", str(start)] + inputs
             + ["-filter_complex", self.video_filters(captions=False),
-               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
-            thumb,
+               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)]
         )
-        # 2) O frame de post entra como primeiro frame do vídeo exportado.
-        post_input = None
-        if self._post_frame:
-            inputs += ["-loop", "1", "-i", str(thumb)]
-            post_input = n_inputs
 
-        censor_af = self.apply_censorship(self.caption_path, self.log.appendPlainText)
-        video_chain = self.video_filters(post_input=post_input)
-        # A trilha entra por último; o índice livre é n_inputs, mais um se o
-        # frame de post já ocupou essa vaga.
-        proxima_entrada = n_inputs + (1 if post_input is not None else 0)
-        music_in = proxima_entrada if self.music_export_track() else None
-        if music_in is not None:
-            inputs += ["-i", str(self.music_export_track())]
+        def after_thumbnail(post_frame: Path | None) -> None:
+            # 2) O frame de post entra como primeiro frame do vídeo exportado.
+            self._post_frame = post_frame
+            post_input = None
+            if post_frame:
+                inputs.extend(["-loop", "1", "-i", str(thumb)])
+                post_input = n_inputs
 
-        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length)] + inputs
-        chain, amap = self._audio_chain(video_chain, "0:a", censor_af, music_in, length)
-        command += ["-filter_complex", chain, "-map", "[outv]", "-map", amap]
-        if amap == "0:a?":
-            command += self._audio_censor_args(censor_af)
-        command += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
-        # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
-        self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
-        self._srt_export_target = Path(filename).with_suffix(".srt")
-        self.run_process(command, f"Vídeo exportado em:\n{filename}")
+            censor_af = self.apply_censorship(self.caption_path, self.log.appendPlainText)
+            video_chain = self.video_filters(post_input=post_input)
+            # A trilha entra por último; o índice livre é n_inputs, mais um se o
+            # frame de post já ocupou essa vaga.
+            proxima_entrada = n_inputs + (1 if post_input is not None else 0)
+            music_in = proxima_entrada if self.music_export_track() else None
+            if music_in is not None:
+                inputs.extend(["-i", str(self.music_export_track())])
+
+            command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(length)] + inputs
+            chain, amap = self._audio_chain(video_chain, "0:a", censor_af, music_in, length)
+            command += ["-filter_complex", chain, "-map", "[outv]", "-map", amap]
+            if amap == "0:a?":
+                command += self._audio_censor_args(censor_af)
+            command += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
+            # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
+            self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
+            self._srt_export_target = Path(filename).with_suffix(".srt")
+            self.run_process(command, f"Vídeo exportado em:\n{filename}")
+
+        self._render_thumbnail_async(thumb_command, thumb, after_thumbnail)
 
     def video_filters(self, captions: bool = True, post_input: int | None = None) -> str:
         mode = self.ratio.currentData()
@@ -1596,21 +1984,23 @@ class MainWindow(QMainWindow):
         chain, current = self._with_post_frame(chain, current, post_input)
         return chain + f";[{current}]format=yuv420p[outv]"
 
-    @staticmethod
-    def _watermark_chain(chain: str, current: str, label: str = "wm") -> tuple[str, str]:
-        """Carimba a marca d'água no topo (branca, 80%), preenchendo a largura.
+    def _watermark_chain(self, chain: str, current: str, label: str = "wm") -> tuple[str, str]:
+        """Carimba a marca d'água no topo, preenchendo a largura.
 
-        O tamanho da fonte sai de uma medição do texto (métricas do cg_generator),
+        Texto e cor vêm da aba Configuração (self.brand_watermark / _wm_color). O
+        tamanho da fonte sai de uma medição do texto (métricas do cg_generator),
         para a frase ocupar quase toda a largura do 9:16 sem estourar. Como entra
         antes do frame de post, aparece também na capa do vídeo.
         """
-        if not WATERMARK_TEXT:
+        texto = (self.brand_watermark or "").strip()
+        if not texto:
             return chain, current
         from cg_generator import _text_width, _FONT
-        size = int((1080 - 60) * 1000 / _text_width(WATERMARK_TEXT, 1000))
-        esc = escape_drawtext(WATERMARK_TEXT)
+        size = int((1080 - 60) * 1000 / _text_width(texto, 1000))
+        esc = escape_drawtext(texto)
+        cor = self.brand_wm_color or DEFAULT_WM_COLOR
         chain += (f";[{current}]drawtext=fontfile='{_FONT}':text='{esc}':"
-                  f"x=(w-text_w)/2:y=70:fontsize={size}:fontcolor=yellow@0.8:"
+                  f"x=(w-text_w)/2:y=70:fontsize={size}:fontcolor={cor}@0.8:"
                   f"borderw=2:bordercolor=black@0.4[{label}]")
         return chain, label
 
@@ -1626,6 +2016,1613 @@ class MainWindow(QMainWindow):
             return chain, current
         chain += f";[{current}][{post_input}:v]overlay=0:0:enable='lt(n,1)'[with_post]"
         return chain, "with_post"
+
+    # ──────────────────────────────────────────────────────────────
+    #  Identidade visual (logo, nome, marca d'água e cores)
+    # ──────────────────────────────────────────────────────────────
+
+    def _load_branding(self) -> None:
+        """Carrega a identidade visual do perfil ativo.
+
+        Se nenhum perfil estiver definido, cria o padrão com "info_nacional".
+        """
+        profile_name = ai_srt.get_current_profile_name()
+        if not profile_name:
+            profile_name = "info_nacional"
+            ai_srt.save_profile(
+                profile_name,
+                {
+                    "brand_logo": str(_LEGACY_LOGO) if _LEGACY_LOGO.exists() else "",
+                    "brand_name": DEFAULT_BRAND_NAME,
+                    "brand_watermark": DEFAULT_WATERMARK,
+                    "brand_wm_color": DEFAULT_WM_COLOR,
+                    "brand_color_banner": DEFAULT_COLORS["banner"],
+                    "brand_color_green": DEFAULT_COLORS["green"],
+                    "brand_color_yellow": DEFAULT_COLORS["yellow"],
+                    "brand_color_headline": DEFAULT_COLORS["headline"],
+                },
+                set_as_current=True
+            )
+        profile = ai_srt.load_profile(profile_name)
+        self._current_profile = profile_name
+
+        logo = str(profile.get("brand_logo") or "").strip()
+        if logo and Path(logo).exists():
+            self.cg_icon_path: Path | None = Path(logo)
+        elif not logo and _LEGACY_LOGO.exists():
+            self.cg_icon_path = _LEGACY_LOGO
+        else:
+            self.cg_icon_path = None
+        self.brand_name = str(profile.get("brand_name") or DEFAULT_BRAND_NAME).strip()
+        self.brand_watermark = str(profile.get("brand_watermark", DEFAULT_WATERMARK))
+        self.brand_wm_color = str(profile.get("brand_wm_color") or DEFAULT_WM_COLOR)
+        # Cores da tarja: começa dos padrões e sobrescreve com o que estiver salvo.
+        self.brand_colors = dict(DEFAULT_COLORS)
+        for key in self.brand_colors:
+            saved = str(profile.get(f"brand_color_{key}") or "").strip()
+            if saved:
+                self.brand_colors[key] = saved
+
+    def _build_config_tab(self) -> None:
+        """Aba de identidade visual: logo, nome, marca d'água e cores da tarja."""
+        tab = QWidget()
+        tab.setStyleSheet("background: #0f1119;")
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(22, 22, 22, 22)
+        outer.setSpacing(16)
+
+        intro = QLabel(
+            "Configure a identidade que vai em todos os vídeos (Edição, CSV e "
+            "Live). Tudo é salvo automaticamente e usado nos próximos cortes.")
+        intro.setObjectName("muted")
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        # ── Seleção e gerenciamento de perfis ──────────────────────
+        profile_box = QGroupBox("Perfis")
+        profile_form = QFormLayout(profile_box)
+
+        # Dropdown para selecionar perfil
+        self.cfg_profile_combo = QComboBox()
+        self.cfg_profile_combo.currentTextChanged.connect(self._cfg_load_profile)
+        self._cfg_refresh_profile_list()
+        profile_form.addRow("Perfil ativo", self.cfg_profile_combo)
+
+        # Campo para nome do novo perfil
+        new_profile_row = QWidget()
+        new_profile_layout = QHBoxLayout(new_profile_row)
+        new_profile_layout.setContentsMargins(0, 0, 0, 0)
+        self.cfg_new_profile_name = QLineEdit()
+        self.cfg_new_profile_name.setPlaceholderText("ex.: esportes, economia...")
+        save_as_btn = QPushButton("Salvar como novo perfil")
+        save_as_btn.clicked.connect(self._cfg_save_as_new_profile)
+        delete_btn = QPushButton("🗑 Deletar este perfil")
+        delete_btn.clicked.connect(self._cfg_delete_current_profile)
+        new_profile_layout.addWidget(self.cfg_new_profile_name, 1)
+        new_profile_layout.addWidget(save_as_btn)
+        new_profile_layout.addWidget(delete_btn)
+        profile_form.addRow("Novo perfil", new_profile_row)
+        outer.addWidget(profile_box)
+
+        # ── Logo e textos ──────────────────────────────────────────
+        id_box = QGroupBox("Logo e textos")
+        id_form = QFormLayout(id_box)
+
+        logo_row = QWidget()
+        logo_layout = QHBoxLayout(logo_row); logo_layout.setContentsMargins(0, 0, 0, 0)
+        self.cfg_logo_label = QLabel(
+            self.cg_icon_path.name if self.cg_icon_path else "Nenhum logo escolhido")
+        self.cfg_logo_label.setObjectName("muted")
+        self.cfg_logo_label.setWordWrap(True)
+        logo_btn = QPushButton("Escolher…")
+        logo_btn.clicked.connect(self._cfg_pick_logo)
+        logo_clear = QPushButton("Remover")
+        logo_clear.clicked.connect(self._cfg_clear_logo)
+        logo_layout.addWidget(self.cfg_logo_label, 1)
+        logo_layout.addWidget(logo_btn)
+        logo_layout.addWidget(logo_clear)
+        id_form.addRow("Logo (PNG)", logo_row)
+
+        self.cfg_name = QLineEdit(self.brand_name)
+        self.cfg_name.setPlaceholderText("ex.: Informativo Nacional")
+        self.cfg_name.editingFinished.connect(self._save_branding)
+        id_form.addRow("Nome do canal", self.cfg_name)
+
+        self.cfg_watermark = QLineEdit(self.brand_watermark)
+        self.cfg_watermark.setPlaceholderText("ex.: @SEUCANAL (vazio = sem marca)")
+        self.cfg_watermark.editingFinished.connect(self._save_branding)
+        id_form.addRow("Marca d'água", self.cfg_watermark)
+        outer.addWidget(id_box)
+
+        # ── Cores ──────────────────────────────────────────────────
+        cores_box = QGroupBox("Cores da tarja (lower-third) e marca d'água")
+        cores_form = QFormLayout(cores_box)
+        self._cfg_color_btns: dict[str, QPushButton] = {}
+        # (chave interna, rótulo). "wm" é a cor da marca d'água; as demais são as
+        # cores da tarja definidas no cg_generator.
+        for key, rotulo in (
+            ("banner", "Fundo da tarja"),
+            ("green", "Acento / chapéu"),
+            ("yellow", "Detalhe (amarelo)"),
+            ("headline", "Texto da manchete"),
+            ("wm", "Marca d'água"),
+        ):
+            btn = QPushButton()
+            btn.setMinimumHeight(28)
+            btn.clicked.connect(lambda _=False, k=key: self._cfg_pick_color(k))
+            self._cfg_color_btns[key] = btn
+            self._cfg_refresh_color_btn(key)
+            cores_form.addRow(rotulo, btn)
+        reset_btn = QPushButton("↩ Voltar às cores padrão (bandeira)")
+        reset_btn.clicked.connect(self._cfg_reset_colors)
+        cores_form.addRow(reset_btn)
+        outer.addWidget(cores_box)
+
+        # ── Pré-visualização ───────────────────────────────────────
+        prev_box = QGroupBox("Pré-visualização da tarja")
+        prev_layout = QVBoxLayout(prev_box)
+        self.cfg_preview = QLabel("Clique em “Gerar prévia” para ver a tarja.")
+        self.cfg_preview.setObjectName("muted")
+        self.cfg_preview.setMinimumHeight(90)
+        self.cfg_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        prev_layout.addWidget(self.cfg_preview)
+        prev_btn = QPushButton("🖼 Gerar prévia")
+        prev_btn.clicked.connect(self._cfg_preview_lower_third)
+        prev_layout.addWidget(prev_btn)
+        outer.addWidget(prev_box)
+
+        outer.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(tab)
+        self.tabs.addTab(scroll, "⚙️ Configuração")
+
+    def _cfg_refresh_profile_list(self) -> None:
+        """Recarrega a lista de perfis no combobox."""
+        profiles, current = ai_srt.get_profiles_dict()
+        self.cfg_profile_combo.blockSignals(True)
+        self.cfg_profile_combo.clear()
+        for name in sorted(profiles.keys()):
+            self.cfg_profile_combo.addItem(name, name)
+        # Seleciona o perfil atual
+        idx = self.cfg_profile_combo.findData(current)
+        if idx >= 0:
+            self.cfg_profile_combo.setCurrentIndex(idx)
+        self.cfg_profile_combo.blockSignals(False)
+
+    def _cfg_load_profile(self, name: str) -> None:
+        """Carrega um perfil e atualiza a aba com seus dados."""
+        if not name or name == self._current_profile:
+            return
+        # Muda o perfil ativo
+        if not ai_srt.set_current_profile(name):
+            QMessageBox.warning(self, APP_NAME, f"Não foi possível carregar o perfil '{name}'.")
+            return
+        self._current_profile = name
+        self._load_branding()
+        # Recarrega os controles da aba
+        self.cfg_name.setText(self.brand_name)
+        self.cfg_watermark.setText(self.brand_watermark)
+        if self.cg_icon_path:
+            self.cfg_logo_label.setText(self.cg_icon_path.name)
+        else:
+            self.cfg_logo_label.setText("Nenhum logo escolhido")
+        for key in self._cfg_color_btns:
+            self._cfg_refresh_color_btn(key)
+        self._refresh_cg_enabled()
+
+    def _cfg_save_as_new_profile(self) -> None:
+        """Salva as configs atuais como um novo perfil."""
+        new_name = self.cfg_new_profile_name.text().strip().lower()
+        if not new_name:
+            QMessageBox.warning(self, APP_NAME, "Digite um nome para o novo perfil.")
+            return
+        # Valida o nome (alfanumérico + espaço/hífen)
+        if not all(c.isalnum() or c in " -_" for c in new_name):
+            QMessageBox.warning(self, APP_NAME, "O nome do perfil pode ter só letras, números, espaço e hífen.")
+            return
+        # Verifica se já existe
+        profiles, _ = ai_srt.get_profiles_dict()
+        if new_name in profiles:
+            if QMessageBox.question(
+                    self, APP_NAME,
+                    f"Um perfil chamado '{new_name}' já existe. Sobrescrever?"
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        # Salva as configs atuais como novo perfil
+        self._save_branding()  # atualiza o perfil atual primeiro
+        profile_data = ai_srt.load_profile(self._current_profile)
+        if ai_srt.save_profile(new_name, profile_data, set_as_current=True):
+            self._current_profile = new_name
+            self._cfg_refresh_profile_list()
+            self.cfg_new_profile_name.clear()
+            QMessageBox.information(self, APP_NAME, f"Perfil '{new_name}' criado e ativado.")
+        else:
+            QMessageBox.critical(self, APP_NAME, "Erro ao salvar o novo perfil.")
+
+    def _cfg_delete_current_profile(self) -> None:
+        """Deleta o perfil ativo (se não for o último)."""
+        profiles, current = ai_srt.get_profiles_dict()
+        if len(profiles) <= 1:
+            QMessageBox.warning(self, APP_NAME, "Não dá para deletar o único perfil existente.")
+            return
+        if QMessageBox.question(
+                self, APP_NAME,
+                f"Deletar o perfil '{current}'? Esta ação não tem volta."
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if ai_srt.delete_profile(current):
+            profiles, new_current = ai_srt.get_profiles_dict()
+            self._current_profile = new_current
+            self._load_branding()
+            self._cfg_refresh_profile_list()
+            # Recarrega os controles
+            self.cfg_name.setText(self.brand_name)
+            self.cfg_watermark.setText(self.brand_watermark)
+            if self.cg_icon_path:
+                self.cfg_logo_label.setText(self.cg_icon_path.name)
+            else:
+                self.cfg_logo_label.setText("Nenhum logo escolhido")
+            for key in self._cfg_color_btns:
+                self._cfg_refresh_color_btn(key)
+            self._refresh_cg_enabled()
+            QMessageBox.information(self, APP_NAME, f"Perfil '{current}' deletado.")
+        else:
+            QMessageBox.critical(self, APP_NAME, "Erro ao deletar o perfil.")
+
+    def _cfg_current_color(self, key: str) -> str:
+        """Cor atual de uma chave (tarja ou marca d'água), em hex."""
+        if key == "wm":
+            return self.brand_wm_color or DEFAULT_WM_COLOR
+        return self.brand_colors.get(key, DEFAULT_COLORS.get(key, "#FFFFFF"))
+
+    def _cfg_refresh_color_btn(self, key: str) -> None:
+        """Atualiza o texto/fundo do botão de cor para refletir a cor atual."""
+        cor = self._cfg_current_color(key)
+        btn = self._cfg_color_btns[key]
+        btn.setText(cor.upper())
+        # Texto legível sobre o fundo colorido do botão.
+        legivel = "#000000" if self._cfg_is_light(cor) else "#FFFFFF"
+        # Usa setStyleSheet com sintaxe correta para evitar parse errors.
+        stylesheet = (
+            f"QPushButton {{ background-color: {cor}; color: {legivel}; "
+            f"border: 1px solid #2d3140; border-radius: 6px; font-weight: 600; }}"
+        )
+        btn.setStyleSheet(stylesheet)
+
+    @staticmethod
+    def _cfg_is_light(hex_color: str) -> bool:
+        """True se a cor for clara (para escolher texto preto sobre ela)."""
+        try:
+            h = hex_color.lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except (ValueError, IndexError):
+            return True
+        return (0.299 * r + 0.587 * g + 0.114 * b) > 150
+
+    def _cfg_pick_color(self, key: str) -> None:
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QColorDialog
+        atual = QColor(self._cfg_current_color(key))
+        escolhida = QColorDialog.getColor(atual, self, "Escolha a cor")
+        if not escolhida.isValid():
+            return
+        hexcor = escolhida.name().upper()   # "#RRGGBB"
+        if key == "wm":
+            self.brand_wm_color = hexcor
+        else:
+            self.brand_colors[key] = hexcor
+        self._cfg_refresh_color_btn(key)
+        self._save_branding()
+
+    def _cfg_reset_colors(self) -> None:
+        self.brand_colors = dict(DEFAULT_COLORS)
+        self.brand_wm_color = DEFAULT_WM_COLOR
+        for key in self._cfg_color_btns:
+            self._cfg_refresh_color_btn(key)
+        self._save_branding()
+
+    def _cfg_pick_logo(self) -> None:
+        caminho, _ = QFileDialog.getOpenFileName(
+            self, "Escolha o logo do canal", "",
+            "Imagens (*.png *.jpg *.jpeg *.webp)")
+        if not caminho:
+            return
+        self.cg_icon_path = Path(caminho)
+        self.cfg_logo_label.setText(self.cg_icon_path.name)
+        self._refresh_cg_enabled()
+        self._save_branding()
+
+    def _cfg_clear_logo(self) -> None:
+        self.cg_icon_path = None
+        self.cfg_logo_label.setText("Nenhum logo escolhido")
+        self._refresh_cg_enabled()
+        self._save_branding()
+
+    def _refresh_cg_enabled(self) -> None:
+        """Liga/desliga os checkboxes de tarja conforme haja logo escolhido."""
+        tem = bool(self.cg_icon_path)
+        for attr in ("use_cg", "csv_use_cg"):
+            box = getattr(self, attr, None)
+            if box is not None:
+                box.setEnabled(tem)
+                if not tem:
+                    box.setChecked(False)
+
+    def _save_branding(self) -> None:
+        """Grava a identidade visual no perfil ativo."""
+        self.brand_name = self.cfg_name.text().strip() or DEFAULT_BRAND_NAME
+        self.brand_watermark = self.cfg_watermark.text()
+        profile_data = {
+            "brand_logo": str(self.cg_icon_path) if self.cg_icon_path else "",
+            "brand_name": self.brand_name,
+            "brand_watermark": self.brand_watermark,
+            "brand_wm_color": self.brand_wm_color,
+            "brand_color_banner": self.brand_colors["banner"],
+            "brand_color_green": self.brand_colors["green"],
+            "brand_color_yellow": self.brand_colors["yellow"],
+            "brand_color_headline": self.brand_colors["headline"],
+        }
+        ai_srt.save_profile(self._current_profile, profile_data)
+
+    def _cfg_preview_lower_third(self) -> None:
+        """Gera uma tarja de exemplo com as cores/logo atuais e mostra na aba."""
+        from PySide6.QtGui import QPixmap
+        png = create_lower_third(
+            self.brand_name.upper(), "MANCHETE DE EXEMPLO EM DESTAQUE",
+            self.work_dir, self.cg_icon_path, colors=self.brand_colors)
+        if png and png.exists():
+            pix = QPixmap(str(png))
+            if not pix.isNull():
+                self.cfg_preview.setPixmap(
+                    pix.scaledToWidth(360, Qt.TransformationMode.SmoothTransformation))
+                return
+        self.cfg_preview.setText("Não foi possível gerar a prévia (verifique o FFmpeg).")
+
+    # ──────────────────────────────────────────────────────────────
+    #  Aba YouTube — fila de publicação
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_youtube_tab(self) -> None:
+        """Fila de vídeos para publicar no YouTube, com várias contas/canais.
+
+        O controle é um .txt (`youtube_queue.txt`, via youtube_upload.py):
+        cada linha é um vídeo, a conta de destino e (opcional) o horário em
+        que deve ficar público. A fila roda em ordem enquanto o botão
+        "Iniciar envios" estiver ligado — não há horário de envio por vídeo,
+        só o botão de ligar/desligar. Ao terminar com sucesso, o vídeo sai da
+        lista sozinho — para tentar de novo é só importar de novo.
+
+        As contas vêm dos arquivos client_secret_<apelido>.json na pasta do
+        programa — um por canal (ex.: client_secret_info.json,
+        client_secret_br.json).
+        """
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(10)
+
+        title = QLabel("Fila de publicação no YouTube")
+        title.setObjectName("title")
+        subtitle = QLabel(
+            "Importe os vídeos prontos, escolha o canal de cada um e clique "
+            "em Iniciar — a fila envia em ordem enquanto estiver ligada.")
+        subtitle.setObjectName("muted")
+        subtitle.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+
+        conn_box = QGroupBox("Conta do YouTube")
+        conn_form = QFormLayout(conn_box)
+        self.yt_account_selector = QComboBox()
+        self.yt_account_selector.currentIndexChanged.connect(self._refresh_youtube_queue_status)
+        conn_form.addRow("Canal", self.yt_account_selector)
+        self.yt_queue_status = QLabel()
+        self.yt_queue_status.setWordWrap(True)
+        conn_form.addRow(self.yt_queue_status)
+        self.yt_queue_connect_btn = QPushButton("Conectar conta do YouTube")
+        self.yt_queue_connect_btn.clicked.connect(self._connect_youtube)
+        conn_form.addRow(self.yt_queue_connect_btn)
+        top_row.addWidget(conn_box, 1)
+
+        config = ai_srt.load_config()
+        settings_box = QGroupBox("Configuração de envio")
+        settings_form = QFormLayout(settings_box)
+        self.yt_queue_privacy = QComboBox()
+        self.yt_queue_privacy.addItem("Privado", "private")
+        self.yt_queue_privacy.addItem("Não listado", "unlisted")
+        self.yt_queue_privacy.addItem("Público", "public")
+        saved_privacy = config.get("youtube_privacy", "private")
+        index = self.yt_queue_privacy.findData(saved_privacy)
+        self.yt_queue_privacy.setCurrentIndex(index if index >= 0 else 0)
+        self.yt_queue_privacy.currentIndexChanged.connect(self._save_youtube_queue_config)
+        settings_form.addRow("Privacidade", self.yt_queue_privacy)
+
+        # Uma descrição padrão por canal — cada um tem seu próprio texto de
+        # "siga o canal" e suas próprias hashtags. Trocar o canal acima troca
+        # o texto mostrado aqui (_refresh_youtube_queue_status cuida disso).
+        self.yt_queue_description = QPlainTextEdit()
+        self.yt_queue_description.setMaximumHeight(60)
+        self.yt_queue_description.setPlaceholderText(
+            "Descrição padrão deste canal, usada nos vídeos da fila (opcional)")
+        self.yt_queue_description.textChanged.connect(self._save_youtube_queue_config)
+        settings_form.addRow("Descrição\n(deste canal)", self.yt_queue_description)
+        top_row.addWidget(settings_box, 1)
+        layout.addLayout(top_row)
+
+        note = QLabel(
+            "O título de cada vídeo é o nome do arquivo. Cada canal precisa "
+            "de um client_secret_<apelido>.json na pasta do programa e ter "
+            "passado pela auditoria do YouTube para publicar como público.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        list_box = QGroupBox("Vídeos na fila")
+        list_layout = QVBoxLayout(list_box)
+
+        toggle_row = QHBoxLayout()
+        self.yt_queue_toggle_btn = QPushButton("▶ Iniciar envios")
+        self.yt_queue_toggle_btn.setObjectName("primary")
+        self.yt_queue_toggle_btn.clicked.connect(self._toggle_youtube_queue_running)
+        self.yt_queue_running_label = QLabel("Parado — nada será enviado até você clicar em Iniciar.")
+        self.yt_queue_running_label.setObjectName("muted")
+        toggle_row.addWidget(self.yt_queue_toggle_btn)
+        toggle_row.addWidget(self.yt_queue_running_label, 1)
+        list_layout.addLayout(toggle_row)
+
+        buttons_row = QHBoxLayout()
+        import_btn = QPushButton("Importar vídeos…")
+        import_btn.clicked.connect(self._import_youtube_queue_videos)
+        remove_btn = QPushButton("Remover selecionado")
+        remove_btn.clicked.connect(self._remove_youtube_queue_selected)
+        send_now_btn = QPushButton("Enviar selecionado agora")
+        send_now_btn.clicked.connect(self._send_selected_youtube_queue_item_now)
+        buttons_row.addWidget(import_btn)
+        buttons_row.addWidget(remove_btn)
+        buttons_row.addWidget(send_now_btn)
+        buttons_row.addStretch()
+        list_layout.addLayout(buttons_row)
+
+        self.yt_queue_table = QTableWidget(0, 4)
+        self.yt_queue_table.setHorizontalHeaderLabels(["Vídeo", "Canal", "Publicar em", "Status"])
+        self.yt_queue_table.horizontalHeader().setStretchLastSection(False)
+        self.yt_queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.yt_queue_table.setColumnWidth(1, 100)
+        self.yt_queue_table.setColumnWidth(2, 230)
+        self.yt_queue_table.setColumnWidth(3, 90)
+        self.yt_queue_table.verticalHeader().setVisible(False)
+        self.yt_queue_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.yt_queue_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # A tabela é o que importa nesta aba — ocupa o espaço que sobrar,
+        # bem mais do que o log logo abaixo dela.
+        list_layout.addWidget(self.yt_queue_table, 5)
+
+        self.yt_queue_log = QPlainTextEdit()
+        self.yt_queue_log.setReadOnly(True)
+        self.yt_queue_log.setMaximumHeight(90)
+        list_layout.addWidget(self.yt_queue_log)
+        layout.addWidget(list_box, 1)
+
+        self.tabs.addTab(tab, "📤 YouTube")
+        self._reload_youtube_accounts()
+        self._reload_youtube_queue_table()
+
+    def _reload_youtube_accounts(self) -> None:
+        """Recarrega os canais a partir dos client_secret_<apelido>.json da pasta."""
+        contas = youtube_upload.list_accounts()
+        atual = self.yt_account_selector.currentText()
+        self.yt_account_selector.blockSignals(True)
+        self.yt_account_selector.clear()
+        self.yt_account_selector.addItems(contas)
+        if atual and atual in contas:
+            self.yt_account_selector.setCurrentText(atual)
+        self.yt_account_selector.blockSignals(False)
+        self._refresh_youtube_queue_status()
+
+    def _youtube_description_for(self, account: str) -> str:
+        """Descrição padrão salva para esse canal ('' se nunca foi definida)."""
+        descriptions = ai_srt.load_config().get("youtube_descriptions") or {}
+        return descriptions.get(account, "") if isinstance(descriptions, dict) else ""
+
+    def _save_youtube_queue_config(self) -> None:
+        conta = self.yt_account_selector.currentText()
+        descriptions = ai_srt.load_config().get("youtube_descriptions") or {}
+        if not isinstance(descriptions, dict):
+            descriptions = {}
+        if conta:
+            descriptions[conta] = self.yt_queue_description.toPlainText()
+        ai_srt.save_config({
+            "youtube_privacy": self.yt_queue_privacy.currentData(),
+            "youtube_descriptions": descriptions,
+        })
+
+    def _refresh_youtube_queue_status(self) -> None:
+        conta = self.yt_account_selector.currentText()
+        # Troca de canal: mostra a descrição salva desse canal, sem disparar
+        # o textChanged (que salvaria o texto do canal anterior por engano).
+        self.yt_queue_description.blockSignals(True)
+        self.yt_queue_description.setPlainText(self._youtube_description_for(conta))
+        self.yt_queue_description.blockSignals(False)
+        if not youtube_upload.list_accounts():
+            self.yt_queue_status.setText(
+                "⚠️ Nenhum client_secret_<apelido>.json encontrado na pasta do programa.")
+            self.yt_queue_connect_btn.setEnabled(False)
+        elif not conta:
+            self.yt_queue_status.setText("Escolha um canal.")
+            self.yt_queue_connect_btn.setEnabled(False)
+        elif youtube_upload.is_authorized(conta):
+            self.yt_queue_status.setText(f"✅ Canal '{conta}' conectado.")
+            self.yt_queue_connect_btn.setText("Reconectar este canal")
+            self.yt_queue_connect_btn.setEnabled(True)
+        else:
+            self.yt_queue_status.setText(f"Canal '{conta}' ainda não conectado.")
+            self.yt_queue_connect_btn.setText("Conectar conta do YouTube")
+            self.yt_queue_connect_btn.setEnabled(True)
+
+    def _connect_youtube(self) -> None:
+        conta = self.yt_account_selector.currentText()
+        if not conta:
+            QMessageBox.warning(self, APP_NAME, "Escolha um canal antes de conectar.")
+            return
+        self.yt_queue_connect_btn.setEnabled(False)
+        self.yt_queue_connect_btn.setText("Abrindo o navegador para login…")
+        try:
+            youtube_upload.authorize(conta)
+        except youtube_upload.YoutubeUploadError as error:
+            QMessageBox.critical(self, APP_NAME, f"Não deu para conectar:\n\n{error}")
+        else:
+            QMessageBox.information(self, APP_NAME, f"Canal '{conta}' conectado.")
+        self._refresh_youtube_queue_status()
+
+    def _import_youtube_queue_videos(self) -> None:
+        conta_padrao = self.yt_account_selector.currentText()
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Selecionar vídeos para a fila", str(OUTPUT_DIR),
+            "Vídeos (*.mp4 *.mov *.mkv *.avi *.webm)")
+        if not files:
+            return
+        existentes = {str(item.path) for item in self._youtube_queue}
+        adicionados = 0
+        for arquivo in files:
+            if arquivo in existentes:
+                continue
+            self._youtube_queue.append(youtube_upload.QueueItem(Path(arquivo), conta_padrao))
+            adicionados += 1
+        if adicionados:
+            self._save_youtube_queue()
+            self._reload_youtube_queue_table()
+            self.yt_queue_log.appendPlainText(f"➕ {adicionados} vídeo(s) adicionado(s) à fila.")
+
+    def _remove_youtube_queue_selected(self) -> None:
+        row = self.yt_queue_table.currentRow()
+        if row < 0 or row >= len(self._youtube_queue):
+            return
+        nome = self._youtube_queue[row].path.name
+        del self._youtube_queue[row]
+        self._save_youtube_queue()
+        self._reload_youtube_queue_table()
+        self.yt_queue_log.appendPlainText(f"➖ {nome} removido da fila (sem enviar).")
+
+    def _save_youtube_queue(self) -> None:
+        youtube_upload.save_queue(self._youtube_queue)
+
+    def _reload_youtube_queue_table(self) -> None:
+        contas = youtube_upload.list_accounts()
+        self.yt_queue_table.setRowCount(0)
+        for item in self._youtube_queue:
+            row = self.yt_queue_table.rowCount()
+            self.yt_queue_table.insertRow(row)
+            self.yt_queue_table.setRowHeight(row, 34)
+
+            nome_item = QTableWidgetItem(item.path.name)
+            nome_item.setFlags(nome_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.yt_queue_table.setItem(row, 0, nome_item)
+
+            conta_combo = QComboBox()
+            conta_combo.addItems(contas)
+            if item.account and item.account in contas:
+                conta_combo.setCurrentText(item.account)
+            elif contas:
+                item.account = contas[0]
+            conta_combo.currentTextChanged.connect(
+                lambda texto, widget=conta_combo: self._on_youtube_queue_account_changed(widget, texto))
+            self.yt_queue_table.setCellWidget(row, 1, conta_combo)
+
+            publish_widget = QWidget()
+            publish_layout = QHBoxLayout(publish_widget)
+            publish_layout.setContentsMargins(4, 0, 4, 0)
+            publish_layout.setSpacing(4)
+            publish_check = QCheckBox()
+            publish_check.setToolTip(
+                "Agendar publicação: o vídeo sobe privado e o YouTube libera "
+                "sozinho na data/hora ao lado.")
+            publish_datetime = QDateTimeEdit(QDateTime(item.publish_at or datetime.now()))
+            publish_datetime.setCalendarPopup(True)
+            publish_datetime.setDisplayFormat("dd/MM/yy HH:mm")
+            publish_datetime.setMinimumWidth(140)
+            publish_check.setChecked(item.publish_at is not None)
+            publish_datetime.setEnabled(item.publish_at is not None)
+            publish_check.toggled.connect(
+                lambda checked, w=publish_datetime, c=publish_check:
+                    self._on_youtube_queue_publish_toggled(c, w, checked))
+            publish_datetime.dateTimeChanged.connect(
+                lambda dt, c=publish_check: self._on_youtube_queue_publish_changed(c, c.isChecked(), dt))
+            publish_layout.addWidget(publish_check)
+            publish_layout.addWidget(publish_datetime, 1)
+            self.yt_queue_table.setCellWidget(row, 2, publish_widget)
+
+            status_item = QTableWidgetItem("Aguardando" if self._youtube_queue_running else "Pausado")
+            status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.yt_queue_table.setItem(row, 3, status_item)
+        self._save_youtube_queue()
+
+    def _on_youtube_queue_account_changed(self, widget: QComboBox, texto: str) -> None:
+        """Acha a linha pelo próprio widget (índices mudam quando a fila encolhe)."""
+        for row in range(self.yt_queue_table.rowCount()):
+            if self.yt_queue_table.cellWidget(row, 1) is widget:
+                if row < len(self._youtube_queue):
+                    self._youtube_queue[row].account = texto
+                    self._save_youtube_queue()
+                break
+
+    def _on_youtube_queue_publish_toggled(self, checkbox: QCheckBox, widget: QDateTimeEdit, checked: bool) -> None:
+        """Liga/desliga o campo de data e propaga a mudança para a fila."""
+        widget.setEnabled(checked)
+        self._on_youtube_queue_publish_changed(checkbox, checked, widget.dateTime())
+
+    def _on_youtube_queue_publish_changed(self, checkbox: QCheckBox, checked: bool, value: QDateTime) -> None:
+        """Acha a linha pelo checkbox (índices mudam quando a fila encolhe).
+
+        `publish_at` é o agendamento de verdade do YouTube: com o checkbox
+        marcado, o vídeo sobe privado e o próprio YouTube libera na hora
+        marcada; desmarcado, publica com a privacidade escolhida assim que o
+        upload terminar.
+        """
+        for row in range(self.yt_queue_table.rowCount()):
+            container = self.yt_queue_table.cellWidget(row, 2)
+            if container and container.findChild(QCheckBox) is checkbox:
+                if row < len(self._youtube_queue):
+                    self._youtube_queue[row].publish_at = value.toPython() if checked else None
+                    self._save_youtube_queue()
+                break
+
+    def _toggle_youtube_queue_running(self) -> None:
+        """Liga/desliga o envio automático da fila inteira.
+
+        Parado, nenhum vídeo sai sozinho — dá tempo de importar e configurar
+        vários antes de qualquer coisa ser enviada. "Enviar selecionado
+        agora" continua funcionando mesmo parado, para um envio pontual sem
+        ligar a fila inteira.
+        """
+        self._youtube_queue_running = not self._youtube_queue_running
+        if self._youtube_queue_running:
+            self.yt_queue_toggle_btn.setText("⏸ Parar envios")
+            self.yt_queue_running_label.setText(
+                "Enviando — a fila processa em ordem enquanto estiver ligada.")
+            self._process_youtube_queue()
+        else:
+            self.yt_queue_toggle_btn.setText("▶ Iniciar envios")
+            self.yt_queue_running_label.setText(
+                "Parado — nada será enviado até você clicar em Iniciar.")
+        for row in range(len(self._youtube_queue)):
+            atual = self.yt_queue_table.item(row, 3)
+            if atual and atual.text() in ("Enviando…", "Falhou"):
+                continue                    # não atropela um envio em curso ou uma falha
+            self._set_youtube_queue_row_status(
+                row, "Aguardando" if self._youtube_queue_running else "Pausado")
+
+    def _check_youtube_queue_schedule(self) -> None:
+        """Chamado pelo timer a cada 30s: mantém a fila andando se ela estiver ligada.
+
+        Cobre o caso de um item ter ficado parado por falta de conta
+        conectada — assim que o usuário conectar o canal, este timer retoma
+        sem precisar clicar em Iniciar de novo.
+        """
+        if not self._youtube_queue_running or self._youtube_queue_busy or not self._youtube_queue:
+            return
+        self._process_youtube_queue()
+
+    def _send_selected_youtube_queue_item_now(self) -> None:
+        """Ignora o estado da fila (parada ou não) e envia o selecionado imediatamente."""
+        row = self.yt_queue_table.currentRow()
+        if row < 0 or row >= len(self._youtube_queue):
+            QMessageBox.information(self, APP_NAME, "Selecione um vídeo da fila primeiro.")
+            return
+        if self._youtube_queue_busy:
+            QMessageBox.information(self, APP_NAME, "Já há um envio em andamento.")
+            return
+        item = self._youtube_queue[row]
+        if not youtube_upload.is_authorized(item.account):
+            QMessageBox.warning(
+                self, APP_NAME, f"Conecte o canal '{item.account}' antes de enviar.")
+            return
+        self._process_youtube_queue(force_index=row)
+
+    def _process_youtube_queue(self, force_index: int | None = None) -> None:
+        """Processa a fila em ordem, um vídeo por vez, pulando quem não tem conta conectada.
+
+        `force_index`, usado só por "Enviar selecionado agora", manda aquele
+        item específico mesmo com a fila parada, sem ligá-la — o restante da
+        fila só sai se o usuário clicar em Iniciar.
+        """
+        if self._youtube_queue_busy:
+            return
+        if not self._youtube_queue_running and force_index is None:
+            return
+        self._youtube_queue_busy = True
+        self._send_next_due_youtube_queue_item(force_index=force_index)
+
+    def _send_next_due_youtube_queue_item(self, force_index: int | None = None) -> None:
+        if force_index is not None:
+            index = force_index
+        else:
+            if not self._youtube_queue_running:
+                self._youtube_queue_busy = False
+                return
+            # Pula quem já falhou, senão o timer da fila reenvia o mesmo
+            # vídeo a cada 30s pra sempre. "Enviar selecionado agora" ainda
+            # tenta de novo, de propósito.
+            index = next(
+                (i for i, item in enumerate(self._youtube_queue)
+                 if youtube_upload.is_authorized(item.account)
+                 and (self.yt_queue_table.item(i, 3) is None
+                      or self.yt_queue_table.item(i, 3).text() != "Falhou")),
+                None)
+        if index is None or index >= len(self._youtube_queue):
+            self._youtube_queue_busy = False
+            return
+        item = self._youtube_queue[index]
+        if not item.path.exists():
+            self.yt_queue_log.appendPlainText(
+                f"⚠️ {item.path.name} não existe mais no disco; removendo da fila.")
+            del self._youtube_queue[index]
+            self._save_youtube_queue()
+            self._reload_youtube_queue_table()
+            self._send_next_due_youtube_queue_item()
+            return
+        self._set_youtube_queue_row_status(index, "Enviando…")
+        aviso_agendamento = f", agendado para {item.publish_at:%d/%m %H:%M}" if item.publish_at else ""
+        self.yt_queue_log.appendPlainText(
+            f"📤 Enviando {item.path.name} (canal '{item.account}'{aviso_agendamento})…")
+        worker = YoutubeUploadWorker(
+            item.path, item.path.stem, item.account, self._youtube_description_for(item.account),
+            [], self.yt_queue_privacy.currentData(), item.publish_at, self)
+        worker.progress.connect(
+            lambda frac, nome=item.path.name: self.yt_queue_log.appendPlainText(
+                f"   {nome}: {frac:.0%}"))
+        worker.done.connect(lambda ok, msg, idx=index: self._on_youtube_queue_item_done(ok, msg, idx))
+        worker.finished.connect(worker.deleteLater)
+        self._youtube_queue_worker = worker
+        worker.start()
+
+    def _set_youtube_queue_row_status(self, row: int, texto: str) -> None:
+        item = self.yt_queue_table.item(row, 3)
+        if item:
+            item.setText(texto)
+
+    def _on_youtube_queue_item_done(self, ok: bool, message: str, index: int) -> None:
+        self.yt_queue_log.appendPlainText(("✅ " if ok else "⚠️ ") + message)
+        if ok:
+            if index < len(self._youtube_queue):
+                del self._youtube_queue[index]
+                self._save_youtube_queue()
+                self._reload_youtube_queue_table()
+            self._send_next_due_youtube_queue_item()
+        else:
+            # Erro: para a fila aqui para o usuário ver o que houve, em vez de
+            # tentar os próximos e empilhar mais falhas.
+            self._set_youtube_queue_row_status(index, "Falhou")
+            self._youtube_queue_busy = False
+
+    # ──────────────────────────────────────────────────────────────
+    #  Aba YouTube via navegador — fila de publicação pela tela do Studio
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_youtube_browser_tab(self) -> None:
+        """Fila de vídeos para publicar no YouTube pela tela do Studio (sem API).
+
+        Mesmo motivo do TikTok: a API oficial tem cota apertada (~6 vídeos/dia)
+        e, na experiência medida neste projeto, os vídeos enviados por ela
+        quase não eram entregues. Este fluxo abre um navegador de verdade
+        (Playwright/Chromium), autenticado com os cookies de uma sessão já
+        logada, e faz exatamente o que uma pessoa faria: abre o Studio, clica
+        em Criar → Enviar vídeos, preenche título/descrição, avança pelas
+        etapas de verificação e publica (ou agenda) no fim.
+
+        Sem login programático — cada canal precisa de um
+        youtube_browser_cookies_<apelido>.txt importado nesta aba, do mesmo
+        jeito que a aba TikTok.
+        """
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(10)
+
+        title = QLabel("Fila de publicação no YouTube (navegador)")
+        title.setObjectName("title")
+        subtitle = QLabel(
+            "Importe os vídeos prontos, escolha o canal de cada um e clique "
+            "em Iniciar — a fila envia em ordem enquanto estiver ligada, "
+            "abrindo o Studio de verdade em vez de usar a API.")
+        subtitle.setObjectName("muted")
+        subtitle.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+
+        conn_box = QGroupBox("Canal do YouTube")
+        conn_form = QFormLayout(conn_box)
+        self.yb_account_selector = QComboBox()
+        self.yb_account_selector.setEditable(True)
+        self.yb_account_selector.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.yb_account_selector.currentTextChanged.connect(self._refresh_youtube_browser_queue_status)
+        conn_form.addRow("Apelido", self.yb_account_selector)
+        self.yb_queue_status = QLabel()
+        self.yb_queue_status.setWordWrap(True)
+        conn_form.addRow(self.yb_queue_status)
+        self.yb_queue_import_cookies_btn = QPushButton("Importar cookies.txt…")
+        self.yb_queue_import_cookies_btn.setToolTip(
+            "Logue em studio.youtube.com no navegador (no canal certo), "
+            "exporte os cookies com uma extensão (ex.: 'Get cookies.txt') e "
+            "escolha o arquivo aqui.")
+        self.yb_queue_import_cookies_btn.clicked.connect(self._import_youtube_browser_cookies)
+        conn_form.addRow(self.yb_queue_import_cookies_btn)
+        top_row.addWidget(conn_box, 1)
+
+        config = ai_srt.load_config()
+        settings_box = QGroupBox("Configuração de envio")
+        settings_form = QFormLayout(settings_box)
+        self.yb_queue_visibility = QComboBox()
+        self.yb_queue_visibility.addItem("Privado", "private")
+        self.yb_queue_visibility.addItem("Não listado", "unlisted")
+        self.yb_queue_visibility.addItem("Público", "public")
+        # Sem agendamento nesta aba, o vídeo fica valendo com esta
+        # visibilidade assim que o envio termina — por isso o padrão aqui é
+        # "Público", diferente da aba YouTube (API), onde "Privado" é mais
+        # seguro por poder ficar parado esperando revisão manual.
+        saved_visibility = config.get("youtube_browser_visibility", "public")
+        index = self.yb_queue_visibility.findData(saved_visibility)
+        self.yb_queue_visibility.setCurrentIndex(index if index >= 0 else 2)
+        self.yb_queue_visibility.currentIndexChanged.connect(self._save_youtube_browser_queue_config)
+        settings_form.addRow("Visibilidade", self.yb_queue_visibility)
+
+        self.yb_queue_headless = QCheckBox("Rodar o navegador escondido (headless)")
+        self.yb_queue_headless.setChecked(bool(config.get("youtube_browser_headless", False)))
+        self.yb_queue_headless.setToolTip(
+            "O YouTube detecta automação com mais facilidade nesse modo. "
+            "Deixe desmarcado a menos que precise mesmo.")
+        self.yb_queue_headless.toggled.connect(self._save_youtube_browser_queue_config)
+        settings_form.addRow(self.yb_queue_headless)
+
+        # Uma descrição padrão por canal, igual ao esquema da aba YouTube (API).
+        self.yb_queue_description = QPlainTextEdit()
+        self.yb_queue_description.setMaximumHeight(60)
+        self.yb_queue_description.setPlaceholderText(
+            "Descrição padrão deste canal, usada nos vídeos da fila (opcional)")
+        self.yb_queue_description.textChanged.connect(self._save_youtube_browser_queue_config)
+        settings_form.addRow("Descrição\n(deste canal)", self.yb_queue_description)
+        top_row.addWidget(settings_box, 1)
+        layout.addLayout(top_row)
+
+        note = QLabel(
+            "Contorna a tela do Studio (studio.youtube.com), não a API — "
+            "contraria os Termos de Serviço do YouTube e é frágil a mudanças "
+            "da tela, mas não tem cota diária. Sem login programático — cada "
+            "canal precisa de um youtube_browser_cookies_<apelido>.txt "
+            "importado nesta aba. O título de cada vídeo é o nome do "
+            "arquivo. Sem agendamento nesta aba — todo vídeo vai direto com "
+            "a visibilidade escolhida acima assim que o envio e as "
+            "verificações do YouTube terminarem. Se falhar, confira "
+            "youtube_browser_falha.png/.html na pasta do programa.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        list_box = QGroupBox("Vídeos na fila")
+        list_layout = QVBoxLayout(list_box)
+
+        toggle_row = QHBoxLayout()
+        self.yb_queue_toggle_btn = QPushButton("▶ Iniciar envios")
+        self.yb_queue_toggle_btn.setObjectName("primary")
+        self.yb_queue_toggle_btn.clicked.connect(self._toggle_youtube_browser_queue_running)
+        self.yb_queue_running_label = QLabel("Parado — nada será enviado até você clicar em Iniciar.")
+        self.yb_queue_running_label.setObjectName("muted")
+        toggle_row.addWidget(self.yb_queue_toggle_btn)
+        toggle_row.addWidget(self.yb_queue_running_label, 1)
+        list_layout.addLayout(toggle_row)
+
+        buttons_row = QHBoxLayout()
+        import_btn = QPushButton("Importar vídeos…")
+        import_btn.clicked.connect(self._import_youtube_browser_queue_videos)
+        remove_btn = QPushButton("Remover selecionado")
+        remove_btn.clicked.connect(self._remove_youtube_browser_queue_selected)
+        send_now_btn = QPushButton("Enviar selecionado agora")
+        send_now_btn.clicked.connect(self._send_selected_youtube_browser_queue_item_now)
+        buttons_row.addWidget(import_btn)
+        buttons_row.addWidget(remove_btn)
+        buttons_row.addWidget(send_now_btn)
+        buttons_row.addStretch()
+        list_layout.addLayout(buttons_row)
+
+        self.yb_queue_table = QTableWidget(0, 4)
+        self.yb_queue_table.setHorizontalHeaderLabels(["Vídeo", "Canal", "Publicar em", "Status"])
+        self.yb_queue_table.horizontalHeader().setStretchLastSection(False)
+        self.yb_queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.yb_queue_table.setColumnWidth(1, 100)
+        self.yb_queue_table.setColumnWidth(2, 230)
+        self.yb_queue_table.setColumnWidth(3, 90)
+        self.yb_queue_table.verticalHeader().setVisible(False)
+        self.yb_queue_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.yb_queue_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        list_layout.addWidget(self.yb_queue_table, 5)
+
+        self.yb_queue_log = QPlainTextEdit()
+        self.yb_queue_log.setReadOnly(True)
+        self.yb_queue_log.setMaximumHeight(90)
+        list_layout.addWidget(self.yb_queue_log)
+        layout.addWidget(list_box, 1)
+
+        self.tabs.addTab(tab, "📺 YouTube (navegador)")
+        self._reload_youtube_browser_accounts()
+        self._reload_youtube_browser_queue_table()
+
+    def _reload_youtube_browser_accounts(self) -> None:
+        """Recarrega as contas a partir dos youtube_browser_cookies_<apelido>.txt da pasta."""
+        contas = youtube_browser_upload.list_accounts()
+        atual = self.yb_account_selector.currentText()
+        self.yb_account_selector.blockSignals(True)
+        self.yb_account_selector.clear()
+        self.yb_account_selector.addItems(contas)
+        if atual:
+            self.yb_account_selector.setCurrentText(atual)
+        self.yb_account_selector.blockSignals(False)
+        self._refresh_youtube_browser_queue_status()
+
+    def _youtube_browser_description_for(self, account: str) -> str:
+        """Descrição padrão salva para esse canal ('' se nunca foi definida)."""
+        descriptions = ai_srt.load_config().get("youtube_browser_descriptions") or {}
+        return descriptions.get(account, "") if isinstance(descriptions, dict) else ""
+
+    def _save_youtube_browser_queue_config(self) -> None:
+        conta = self.yb_account_selector.currentText().strip()
+        descriptions = ai_srt.load_config().get("youtube_browser_descriptions") or {}
+        if not isinstance(descriptions, dict):
+            descriptions = {}
+        if conta:
+            descriptions[conta] = self.yb_queue_description.toPlainText()
+        ai_srt.save_config({
+            "youtube_browser_visibility": self.yb_queue_visibility.currentData(),
+            "youtube_browser_headless": self.yb_queue_headless.isChecked(),
+            "youtube_browser_descriptions": descriptions,
+        })
+
+    def _refresh_youtube_browser_queue_status(self) -> None:
+        conta = self.yb_account_selector.currentText().strip()
+        self.yb_queue_description.blockSignals(True)
+        self.yb_queue_description.setPlainText(self._youtube_browser_description_for(conta))
+        self.yb_queue_description.blockSignals(False)
+        if not conta:
+            self.yb_queue_status.setText("Digite ou escolha um apelido de canal.")
+        elif youtube_browser_upload.is_authorized(conta):
+            self.yb_queue_status.setText(f"✅ Canal '{conta}' com cookies importados.")
+        else:
+            self.yb_queue_status.setText(
+                f"Canal '{conta}' ainda sem cookies. Importe o cookies.txt "
+                "exportado do navegador (já logado em studio.youtube.com).")
+
+    def _import_youtube_browser_cookies(self) -> None:
+        conta = self.yb_account_selector.currentText().strip()
+        if not conta:
+            QMessageBox.warning(self, APP_NAME, "Digite um apelido para o canal antes de importar.")
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar cookies.txt exportado do navegador", "", "Cookies (*.txt)")
+        if not filename:
+            return
+        try:
+            youtube_browser_upload.import_cookies(conta, Path(filename))
+        except youtube_browser_upload.YoutubeBrowserUploadError as error:
+            QMessageBox.critical(self, APP_NAME, f"Não deu para importar:\n\n{error}")
+            return
+        QMessageBox.information(self, APP_NAME, f"Cookies importados para o canal '{conta}'.")
+        self._reload_youtube_browser_accounts()
+
+    def _import_youtube_browser_queue_videos(self) -> None:
+        conta_padrao = self.yb_account_selector.currentText().strip()
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Selecionar vídeos para a fila", str(OUTPUT_DIR),
+            "Vídeos (*.mp4 *.mov *.mkv *.avi *.webm)")
+        if not files:
+            return
+        existentes = {str(item.path) for item in self._youtube_browser_queue}
+        adicionados = 0
+        for arquivo in files:
+            if arquivo in existentes:
+                continue
+            self._youtube_browser_queue.append(youtube_browser_upload.QueueItem(Path(arquivo), conta_padrao))
+            adicionados += 1
+        if adicionados:
+            self._save_youtube_browser_queue()
+            self._reload_youtube_browser_queue_table()
+            self.yb_queue_log.appendPlainText(f"➕ {adicionados} vídeo(s) adicionado(s) à fila.")
+
+    def _remove_youtube_browser_queue_selected(self) -> None:
+        row = self.yb_queue_table.currentRow()
+        if row < 0 or row >= len(self._youtube_browser_queue):
+            return
+        nome = self._youtube_browser_queue[row].path.name
+        del self._youtube_browser_queue[row]
+        self._save_youtube_browser_queue()
+        self._reload_youtube_browser_queue_table()
+        self.yb_queue_log.appendPlainText(f"➖ {nome} removido da fila (sem enviar).")
+
+    def _save_youtube_browser_queue(self) -> None:
+        youtube_browser_upload.save_queue(self._youtube_browser_queue)
+
+    def _reload_youtube_browser_queue_table(self) -> None:
+        contas = youtube_browser_upload.list_accounts()
+        self.yb_queue_table.setRowCount(0)
+        for item in self._youtube_browser_queue:
+            row = self.yb_queue_table.rowCount()
+            self.yb_queue_table.insertRow(row)
+            self.yb_queue_table.setRowHeight(row, 34)
+
+            nome_item = QTableWidgetItem(item.path.name)
+            nome_item.setFlags(nome_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.yb_queue_table.setItem(row, 0, nome_item)
+
+            conta_combo = QComboBox()
+            conta_combo.setEditable(True)
+            conta_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            conta_combo.addItems(contas)
+            if item.account:
+                conta_combo.setCurrentText(item.account)
+            elif contas:
+                item.account = contas[0]
+                conta_combo.setCurrentText(item.account)
+            conta_combo.currentTextChanged.connect(
+                lambda texto, widget=conta_combo: self._on_youtube_browser_queue_account_changed(widget, texto))
+            self.yb_queue_table.setCellWidget(row, 1, conta_combo)
+
+            # Sem agendamento nesta aba (vai tudo direto, com a visibilidade
+            # escolhida no topo) — mesma decisão já tomada na aba TikTok.
+            item.publish_at = None
+            imediato_label = QTableWidgetItem("Imediato")
+            imediato_label.setFlags(imediato_label.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.yb_queue_table.setItem(row, 2, imediato_label)
+
+            status_item = QTableWidgetItem("Aguardando" if self._youtube_browser_queue_running else "Pausado")
+            status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.yb_queue_table.setItem(row, 3, status_item)
+        self._save_youtube_browser_queue()
+
+    def _on_youtube_browser_queue_account_changed(self, widget: QComboBox, texto: str) -> None:
+        """Acha a linha pelo próprio widget (índices mudam quando a fila encolhe)."""
+        for row in range(self.yb_queue_table.rowCount()):
+            if self.yb_queue_table.cellWidget(row, 1) is widget:
+                if row < len(self._youtube_browser_queue):
+                    self._youtube_browser_queue[row].account = texto
+                    self._save_youtube_browser_queue()
+                break
+
+    def _toggle_youtube_browser_queue_running(self) -> None:
+        self._youtube_browser_queue_running = not self._youtube_browser_queue_running
+        if self._youtube_browser_queue_running:
+            self.yb_queue_toggle_btn.setText("⏸ Parar envios")
+            self.yb_queue_running_label.setText(
+                "Enviando — a fila processa em ordem enquanto estiver ligada.")
+            self._process_youtube_browser_queue()
+        else:
+            self.yb_queue_toggle_btn.setText("▶ Iniciar envios")
+            self.yb_queue_running_label.setText(
+                "Parado — nada será enviado até você clicar em Iniciar.")
+        for row in range(len(self._youtube_browser_queue)):
+            atual = self.yb_queue_table.item(row, 3)
+            if atual and atual.text() in ("Enviando…", "Falhou"):
+                continue
+            self._set_youtube_browser_queue_row_status(
+                row, "Aguardando" if self._youtube_browser_queue_running else "Pausado")
+
+    def _check_youtube_browser_queue_schedule(self) -> None:
+        if not self._youtube_browser_queue_running or self._youtube_browser_queue_busy or not self._youtube_browser_queue:
+            return
+        self._process_youtube_browser_queue()
+
+    def _send_selected_youtube_browser_queue_item_now(self) -> None:
+        row = self.yb_queue_table.currentRow()
+        if row < 0 or row >= len(self._youtube_browser_queue):
+            QMessageBox.information(self, APP_NAME, "Selecione um vídeo da fila primeiro.")
+            return
+        if self._youtube_browser_queue_busy:
+            QMessageBox.information(self, APP_NAME, "Já há um envio em andamento.")
+            return
+        item = self._youtube_browser_queue[row]
+        if not youtube_browser_upload.is_authorized(item.account):
+            QMessageBox.warning(
+                self, APP_NAME, f"Importe os cookies do canal '{item.account}' antes de enviar.")
+            return
+        self._process_youtube_browser_queue(force_index=row)
+
+    def _process_youtube_browser_queue(self, force_index: int | None = None) -> None:
+        if self._youtube_browser_queue_busy:
+            return
+        if not self._youtube_browser_queue_running and force_index is None:
+            return
+        self._youtube_browser_queue_busy = True
+        self._send_next_due_youtube_browser_queue_item(force_index=force_index)
+
+    def _send_next_due_youtube_browser_queue_item(self, force_index: int | None = None) -> None:
+        if force_index is not None:
+            index = force_index
+        else:
+            if not self._youtube_browser_queue_running:
+                self._youtube_browser_queue_busy = False
+                return
+            # Pula quem já falhou: sem isso, o timer da fila reenviava o
+            # mesmo vídeo a cada 30s pra sempre (ex.: cookies expiraram no
+            # meio do envio), abrindo um upload novo do zero e deixando
+            # rascunhos duplicados no Studio a cada tentativa. "Enviar
+            # selecionado agora" ainda tenta de novo, de propósito.
+            index = next(
+                (i for i, item in enumerate(self._youtube_browser_queue)
+                 if youtube_browser_upload.is_authorized(item.account)
+                 and (self.yb_queue_table.item(i, 3) is None
+                      or self.yb_queue_table.item(i, 3).text() != "Falhou")),
+                None)
+        if index is None or index >= len(self._youtube_browser_queue):
+            self._youtube_browser_queue_busy = False
+            return
+        item = self._youtube_browser_queue[index]
+        if not item.path.exists():
+            self.yb_queue_log.appendPlainText(
+                f"⚠️ {item.path.name} não existe mais no disco; removendo da fila.")
+            del self._youtube_browser_queue[index]
+            self._save_youtube_browser_queue()
+            self._reload_youtube_browser_queue_table()
+            self._send_next_due_youtube_browser_queue_item()
+            return
+        self._set_youtube_browser_queue_row_status(index, "Enviando…")
+        aviso_agendamento = f", agendado para {item.publish_at:%d/%m %H:%M}" if item.publish_at else ""
+        self.yb_queue_log.appendPlainText(
+            f"📤 Enviando {item.path.name} (canal '{item.account}'{aviso_agendamento})…")
+        worker = YoutubeBrowserUploadWorker(
+            item.path, item.path.stem, self._youtube_browser_description_for(item.account), item.account,
+            self.yb_queue_visibility.currentData(), item.publish_at,
+            self.yb_queue_headless.isChecked(), self)
+        worker.log.connect(lambda msg: self.yb_queue_log.appendPlainText(f"   {msg}"))
+        worker.done.connect(lambda ok, msg, idx=index: self._on_youtube_browser_queue_item_done(ok, msg, idx))
+        worker.finished.connect(worker.deleteLater)
+        self._youtube_browser_queue_worker = worker
+        worker.start()
+
+    def _set_youtube_browser_queue_row_status(self, row: int, texto: str) -> None:
+        item = self.yb_queue_table.item(row, 3)
+        if item:
+            item.setText(texto)
+
+    def _on_youtube_browser_queue_item_done(self, ok: bool, message: str, index: int) -> None:
+        self.yb_queue_log.appendPlainText(("✅ " if ok else "⚠️ ") + message)
+        if ok:
+            if index < len(self._youtube_browser_queue):
+                del self._youtube_browser_queue[index]
+                self._save_youtube_browser_queue()
+                self._reload_youtube_browser_queue_table()
+            self._send_next_due_youtube_browser_queue_item()
+        else:
+            self._set_youtube_browser_queue_row_status(index, "Falhou")
+            self._youtube_browser_queue_busy = False
+
+    # ──────────────────────────────────────────────────────────────
+    #  Aba TikTok — fila de publicação (biblioteca não-oficial)
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_tiktok_tab(self) -> None:
+        """Fila de vídeos para publicar no TikTok, com várias contas.
+
+        Sem API oficial acessível, o envio usa a biblioteca não-oficial
+        `tiktok-uploader` (tiktok_upload.py): ela controla um navegador de
+        verdade autenticado com os cookies de uma sessão já logada. Por isso
+        não existe aqui um botão "Conectar" que abre login — em vez disso, o
+        usuário loga manualmente em tiktok.com no navegador, exporta os
+        cookies com uma extensão e importa o arquivo nesta aba.
+
+        Fora esse detalhe de autenticação, a fila funciona exatamente como a
+        do YouTube: importa vídeos, escolhe a conta de cada um e roda em
+        ordem enquanto o botão "Iniciar envios" estiver ligado.
+        """
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(10)
+
+        title = QLabel("Fila de publicação no TikTok")
+        title.setObjectName("title")
+        subtitle = QLabel(
+            "Importe os vídeos prontos, escolha a conta de cada um e clique "
+            "em Iniciar — a fila envia em ordem enquanto estiver ligada.")
+        subtitle.setObjectName("muted")
+        subtitle.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+
+        conn_box = QGroupBox("Conta do TikTok")
+        conn_form = QFormLayout(conn_box)
+        self.tt_account_selector = QComboBox()
+        self.tt_account_selector.setEditable(True)
+        self.tt_account_selector.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.tt_account_selector.currentTextChanged.connect(self._refresh_tiktok_queue_status)
+        conn_form.addRow("Apelido", self.tt_account_selector)
+        self.tt_queue_status = QLabel()
+        self.tt_queue_status.setWordWrap(True)
+        conn_form.addRow(self.tt_queue_status)
+        self.tt_queue_import_cookies_btn = QPushButton("Importar cookies.txt…")
+        self.tt_queue_import_cookies_btn.setToolTip(
+            "Logue em tiktok.com no navegador, exporte os cookies com uma "
+            "extensão (ex.: 'Get cookies.txt') e escolha o arquivo aqui.")
+        self.tt_queue_import_cookies_btn.clicked.connect(self._import_tiktok_cookies)
+        conn_form.addRow(self.tt_queue_import_cookies_btn)
+        top_row.addWidget(conn_box, 1)
+
+        config = ai_srt.load_config()
+        settings_box = QGroupBox("Configuração de envio")
+        settings_form = QFormLayout(settings_box)
+        self.tt_queue_visibility = QComboBox()
+        self.tt_queue_visibility.addItem("Todos", "everyone")
+        self.tt_queue_visibility.addItem("Amigos", "friends")
+        self.tt_queue_visibility.addItem("Só eu", "only_you")
+        saved_visibility = config.get("tiktok_visibility", tiktok_upload.DEFAULT_VISIBILITY)
+        index = self.tt_queue_visibility.findData(saved_visibility)
+        self.tt_queue_visibility.setCurrentIndex(index if index >= 0 else 0)
+        self.tt_queue_visibility.currentIndexChanged.connect(self._save_tiktok_queue_config)
+        settings_form.addRow("Visibilidade", self.tt_queue_visibility)
+
+        self.tt_queue_headless = QCheckBox("Rodar o navegador escondido (headless)")
+        self.tt_queue_headless.setChecked(bool(config.get("tiktok_headless", False)))
+        self.tt_queue_headless.setToolTip(
+            "O TikTok detecta e bloqueia automação com mais facilidade nesse "
+            "modo. Deixe desmarcado a menos que precise mesmo.")
+        self.tt_queue_headless.toggled.connect(self._save_tiktok_queue_config)
+        settings_form.addRow(self.tt_queue_headless)
+
+        # Uma legenda padrão por conta, igual à descrição padrão do YouTube.
+        self.tt_queue_description = QPlainTextEdit()
+        self.tt_queue_description.setMaximumHeight(60)
+        self.tt_queue_description.setPlaceholderText(
+            "Legenda padrão desta conta, usada nos vídeos da fila (opcional)")
+        self.tt_queue_description.textChanged.connect(self._save_tiktok_queue_config)
+        settings_form.addRow("Legenda\n(desta conta)", self.tt_queue_description)
+        top_row.addWidget(settings_box, 1)
+        layout.addLayout(top_row)
+
+        note = QLabel(
+            "Biblioteca não-oficial: exige `pip install tiktok-uploader` e "
+            "depois `playwright install` (baixa o navegador usado no envio). "
+            "Sem login programático — cada conta precisa de um "
+            "tiktok_cookies_<apelido>.txt importado nesta aba. Agendamento "
+            "nativo desativado por enquanto (quebrado nesta versão da "
+            "biblioteca) — todo vídeo vai publicado na hora.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        list_box = QGroupBox("Vídeos na fila")
+        list_layout = QVBoxLayout(list_box)
+
+        toggle_row = QHBoxLayout()
+        self.tt_queue_toggle_btn = QPushButton("▶ Iniciar envios")
+        self.tt_queue_toggle_btn.setObjectName("primary")
+        self.tt_queue_toggle_btn.clicked.connect(self._toggle_tiktok_queue_running)
+        self.tt_queue_running_label = QLabel("Parado — nada será enviado até você clicar em Iniciar.")
+        self.tt_queue_running_label.setObjectName("muted")
+        toggle_row.addWidget(self.tt_queue_toggle_btn)
+        toggle_row.addWidget(self.tt_queue_running_label, 1)
+        list_layout.addLayout(toggle_row)
+
+        buttons_row = QHBoxLayout()
+        import_btn = QPushButton("Importar vídeos…")
+        import_btn.clicked.connect(self._import_tiktok_queue_videos)
+        remove_btn = QPushButton("Remover selecionado")
+        remove_btn.clicked.connect(self._remove_tiktok_queue_selected)
+        send_now_btn = QPushButton("Enviar selecionado agora")
+        send_now_btn.clicked.connect(self._send_selected_tiktok_queue_item_now)
+        buttons_row.addWidget(import_btn)
+        buttons_row.addWidget(remove_btn)
+        buttons_row.addWidget(send_now_btn)
+        buttons_row.addStretch()
+        list_layout.addLayout(buttons_row)
+
+        self.tt_queue_table = QTableWidget(0, 4)
+        self.tt_queue_table.setHorizontalHeaderLabels(["Vídeo", "Conta", "Publicar em", "Status"])
+        self.tt_queue_table.horizontalHeader().setStretchLastSection(False)
+        self.tt_queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tt_queue_table.setColumnWidth(1, 100)
+        self.tt_queue_table.setColumnWidth(2, 230)
+        self.tt_queue_table.setColumnWidth(3, 90)
+        self.tt_queue_table.verticalHeader().setVisible(False)
+        self.tt_queue_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tt_queue_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        list_layout.addWidget(self.tt_queue_table, 5)
+
+        self.tt_queue_log = QPlainTextEdit()
+        self.tt_queue_log.setReadOnly(True)
+        self.tt_queue_log.setMaximumHeight(90)
+        list_layout.addWidget(self.tt_queue_log)
+        layout.addWidget(list_box, 1)
+
+        self.tabs.addTab(tab, "🎵 TikTok")
+        self._reload_tiktok_accounts()
+        self._reload_tiktok_queue_table()
+
+    def _reload_tiktok_accounts(self) -> None:
+        """Recarrega as contas a partir dos tiktok_cookies_<apelido>.txt da pasta."""
+        contas = tiktok_upload.list_accounts()
+        atual = self.tt_account_selector.currentText()
+        self.tt_account_selector.blockSignals(True)
+        self.tt_account_selector.clear()
+        self.tt_account_selector.addItems(contas)
+        if atual:
+            self.tt_account_selector.setCurrentText(atual)
+        self.tt_account_selector.blockSignals(False)
+        self._refresh_tiktok_queue_status()
+
+    def _tiktok_description_for(self, account: str) -> str:
+        """Legenda padrão salva para essa conta ('' se nunca foi definida)."""
+        descriptions = ai_srt.load_config().get("tiktok_descriptions") or {}
+        return descriptions.get(account, "") if isinstance(descriptions, dict) else ""
+
+    def _tiktok_full_description(self, item: tiktok_upload.QueueItem) -> str:
+        """Título do vídeo (nome do arquivo) + a legenda padrão da conta (as #).
+
+        O TikTok só tem um campo de texto no post — sem título separado como
+        o YouTube —, então o título entra na frente da legenda salva para a
+        conta, cada um numa linha.
+        """
+        titulo = item.path.stem
+        legenda = self._tiktok_description_for(item.account)
+        return f"{titulo}\n\n{legenda}" if legenda else titulo
+
+    def _save_tiktok_queue_config(self) -> None:
+        conta = self.tt_account_selector.currentText().strip()
+        descriptions = ai_srt.load_config().get("tiktok_descriptions") or {}
+        if not isinstance(descriptions, dict):
+            descriptions = {}
+        if conta:
+            descriptions[conta] = self.tt_queue_description.toPlainText()
+        ai_srt.save_config({
+            "tiktok_visibility": self.tt_queue_visibility.currentData(),
+            "tiktok_headless": self.tt_queue_headless.isChecked(),
+            "tiktok_descriptions": descriptions,
+        })
+
+    def _refresh_tiktok_queue_status(self) -> None:
+        conta = self.tt_account_selector.currentText().strip()
+        self.tt_queue_description.blockSignals(True)
+        self.tt_queue_description.setPlainText(self._tiktok_description_for(conta))
+        self.tt_queue_description.blockSignals(False)
+        if not conta:
+            self.tt_queue_status.setText("Digite ou escolha um apelido de conta.")
+        elif tiktok_upload.is_authorized(conta):
+            self.tt_queue_status.setText(f"✅ Conta '{conta}' com cookies importados.")
+        else:
+            self.tt_queue_status.setText(
+                f"Conta '{conta}' ainda sem cookies. Importe o cookies.txt "
+                "exportado do navegador (já logado em tiktok.com).")
+
+    def _import_tiktok_cookies(self) -> None:
+        conta = self.tt_account_selector.currentText().strip()
+        if not conta:
+            QMessageBox.warning(self, APP_NAME, "Digite um apelido para a conta antes de importar.")
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar cookies.txt exportado do navegador", "", "Cookies (*.txt)")
+        if not filename:
+            return
+        try:
+            tiktok_upload.import_cookies(conta, Path(filename))
+        except tiktok_upload.TikTokUploadError as error:
+            QMessageBox.critical(self, APP_NAME, f"Não deu para importar:\n\n{error}")
+            return
+        QMessageBox.information(self, APP_NAME, f"Cookies importados para a conta '{conta}'.")
+        self._reload_tiktok_accounts()
+
+    def _import_tiktok_queue_videos(self) -> None:
+        conta_padrao = self.tt_account_selector.currentText().strip()
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Selecionar vídeos para a fila", str(OUTPUT_DIR),
+            "Vídeos (*.mp4 *.mov *.mkv *.avi *.webm)")
+        if not files:
+            return
+        existentes = {str(item.path) for item in self._tiktok_queue}
+        adicionados = 0
+        for arquivo in files:
+            if arquivo in existentes:
+                continue
+            self._tiktok_queue.append(tiktok_upload.QueueItem(Path(arquivo), conta_padrao))
+            adicionados += 1
+        if adicionados:
+            self._save_tiktok_queue()
+            self._reload_tiktok_queue_table()
+            self.tt_queue_log.appendPlainText(f"➕ {adicionados} vídeo(s) adicionado(s) à fila.")
+
+    def _remove_tiktok_queue_selected(self) -> None:
+        row = self.tt_queue_table.currentRow()
+        if row < 0 or row >= len(self._tiktok_queue):
+            return
+        nome = self._tiktok_queue[row].path.name
+        del self._tiktok_queue[row]
+        self._save_tiktok_queue()
+        self._reload_tiktok_queue_table()
+        self.tt_queue_log.appendPlainText(f"➖ {nome} removido da fila (sem enviar).")
+
+    def _save_tiktok_queue(self) -> None:
+        tiktok_upload.save_queue(self._tiktok_queue)
+
+    def _reload_tiktok_queue_table(self) -> None:
+        contas = tiktok_upload.list_accounts()
+        self.tt_queue_table.setRowCount(0)
+        for item in self._tiktok_queue:
+            row = self.tt_queue_table.rowCount()
+            self.tt_queue_table.insertRow(row)
+            self.tt_queue_table.setRowHeight(row, 34)
+
+            nome_item = QTableWidgetItem(item.path.name)
+            nome_item.setFlags(nome_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.tt_queue_table.setItem(row, 0, nome_item)
+
+            conta_combo = QComboBox()
+            conta_combo.setEditable(True)
+            conta_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            conta_combo.addItems(contas)
+            if item.account:
+                conta_combo.setCurrentText(item.account)
+            elif contas:
+                item.account = contas[0]
+                conta_combo.setCurrentText(item.account)
+            conta_combo.currentTextChanged.connect(
+                lambda texto, widget=conta_combo: self._on_tiktok_queue_account_changed(widget, texto))
+            self.tt_queue_table.setCellWidget(row, 1, conta_combo)
+
+            # Agendamento nativo desativado por enquanto: a biblioteca clica num
+            # elemento por um ID gerado pelo próprio TikTok (ex.: "tux-1") que
+            # muda de lugar entre uma tela e outra, e o clique trava/expira. Até
+            # a biblioteca corrigir isso, todo item vai imediato ao ser enviado.
+            item.publish_at = None
+            imediato_label = QTableWidgetItem("Imediato")
+            imediato_label.setFlags(imediato_label.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            imediato_label.setToolTip(
+                "Agendamento desativado por enquanto: o agendamento nativo do "
+                "TikTok está quebrado nesta versão da biblioteca "
+                "tiktok-uploader (trava tentando clicar no botão de agendar).")
+            self.tt_queue_table.setItem(row, 2, imediato_label)
+
+            status_item = QTableWidgetItem("Aguardando" if self._tiktok_queue_running else "Pausado")
+            status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.tt_queue_table.setItem(row, 3, status_item)
+        self._save_tiktok_queue()
+
+    def _on_tiktok_queue_account_changed(self, widget: QComboBox, texto: str) -> None:
+        """Acha a linha pelo próprio widget (índices mudam quando a fila encolhe)."""
+        for row in range(self.tt_queue_table.rowCount()):
+            if self.tt_queue_table.cellWidget(row, 1) is widget:
+                if row < len(self._tiktok_queue):
+                    self._tiktok_queue[row].account = texto
+                    self._save_tiktok_queue()
+                break
+
+    def _toggle_tiktok_queue_running(self) -> None:
+        self._tiktok_queue_running = not self._tiktok_queue_running
+        if self._tiktok_queue_running:
+            self.tt_queue_toggle_btn.setText("⏸ Parar envios")
+            self.tt_queue_running_label.setText(
+                "Enviando — a fila processa em ordem enquanto estiver ligada.")
+            self._process_tiktok_queue()
+        else:
+            self.tt_queue_toggle_btn.setText("▶ Iniciar envios")
+            self.tt_queue_running_label.setText(
+                "Parado — nada será enviado até você clicar em Iniciar.")
+        for row in range(len(self._tiktok_queue)):
+            atual = self.tt_queue_table.item(row, 3)
+            if atual and atual.text() in ("Enviando…", "Falhou"):
+                continue
+            self._set_tiktok_queue_row_status(
+                row, "Aguardando" if self._tiktok_queue_running else "Pausado")
+
+    def _check_tiktok_queue_schedule(self) -> None:
+        if not self._tiktok_queue_running or self._tiktok_queue_busy or not self._tiktok_queue:
+            return
+        self._process_tiktok_queue()
+
+    def _send_selected_tiktok_queue_item_now(self) -> None:
+        row = self.tt_queue_table.currentRow()
+        if row < 0 or row >= len(self._tiktok_queue):
+            QMessageBox.information(self, APP_NAME, "Selecione um vídeo da fila primeiro.")
+            return
+        if self._tiktok_queue_busy:
+            QMessageBox.information(self, APP_NAME, "Já há um envio em andamento.")
+            return
+        item = self._tiktok_queue[row]
+        if not tiktok_upload.is_authorized(item.account):
+            QMessageBox.warning(
+                self, APP_NAME, f"Importe os cookies da conta '{item.account}' antes de enviar.")
+            return
+        self._process_tiktok_queue(force_index=row)
+
+    def _process_tiktok_queue(self, force_index: int | None = None) -> None:
+        if self._tiktok_queue_busy:
+            return
+        if not self._tiktok_queue_running and force_index is None:
+            return
+        self._tiktok_queue_busy = True
+        self._send_next_due_tiktok_queue_item(force_index=force_index)
+
+    def _send_next_due_tiktok_queue_item(self, force_index: int | None = None) -> None:
+        if force_index is not None:
+            index = force_index
+        else:
+            if not self._tiktok_queue_running:
+                self._tiktok_queue_busy = False
+                return
+            # Pula quem já falhou, senão o timer da fila reenvia o mesmo
+            # vídeo a cada 30s pra sempre. "Enviar selecionado agora" ainda
+            # tenta de novo, de propósito.
+            index = next(
+                (i for i, item in enumerate(self._tiktok_queue)
+                 if tiktok_upload.is_authorized(item.account)
+                 and (self.tt_queue_table.item(i, 3) is None
+                      or self.tt_queue_table.item(i, 3).text() != "Falhou")),
+                None)
+        if index is None or index >= len(self._tiktok_queue):
+            self._tiktok_queue_busy = False
+            return
+        item = self._tiktok_queue[index]
+        if not item.path.exists():
+            self.tt_queue_log.appendPlainText(
+                f"⚠️ {item.path.name} não existe mais no disco; removendo da fila.")
+            del self._tiktok_queue[index]
+            self._save_tiktok_queue()
+            self._reload_tiktok_queue_table()
+            self._send_next_due_tiktok_queue_item()
+            return
+        self._set_tiktok_queue_row_status(index, "Enviando…")
+        aviso_agendamento = f", agendado para {item.publish_at:%d/%m %H:%M}" if item.publish_at else ""
+        self.tt_queue_log.appendPlainText(
+            f"📤 Enviando {item.path.name} (conta '{item.account}'{aviso_agendamento})…")
+        worker = TikTokUploadWorker(
+            item.path, self._tiktok_full_description(item), item.account,
+            self.tt_queue_visibility.currentData(), item.publish_at,
+            self.tt_queue_headless.isChecked(), self)
+        worker.done.connect(lambda ok, msg, idx=index: self._on_tiktok_queue_item_done(ok, msg, idx))
+        worker.finished.connect(worker.deleteLater)
+        self._tiktok_queue_worker = worker
+        worker.start()
+
+    def _set_tiktok_queue_row_status(self, row: int, texto: str) -> None:
+        item = self.tt_queue_table.item(row, 3)
+        if item:
+            item.setText(texto)
+
+    def _on_tiktok_queue_item_done(self, ok: bool, message: str, index: int) -> None:
+        self.tt_queue_log.appendPlainText(("✅ " if ok else "⚠️ ") + message)
+        if ok:
+            if index < len(self._tiktok_queue):
+                del self._tiktok_queue[index]
+                self._save_tiktok_queue()
+                self._reload_tiktok_queue_table()
+            self._send_next_due_tiktok_queue_item()
+        else:
+            self._set_tiktok_queue_row_status(index, "Falhou")
+            self._tiktok_queue_busy = False
 
     # ──────────────────────────────────────────────────────────────
     #  Aba CSV — processamento em lote
@@ -1704,6 +3701,12 @@ class MainWindow(QMainWindow):
         self.csv_moments_list.itemSelectionChanged.connect(self._csv_on_moment_selected)
         self.csv_moments_list.setMinimumHeight(120)
         right_panel.addWidget(self.csv_moments_list, 0)
+
+        # Tira o trecho selecionado da lista (não mexe no CSV em disco).
+        self.csv_remove_moment_btn = QPushButton("🗑 Tirar este corte")
+        self.csv_remove_moment_btn.setEnabled(False)
+        self.csv_remove_moment_btn.clicked.connect(self._csv_remove_selected_moment)
+        right_panel.addWidget(self.csv_remove_moment_btn, 0)
 
         # Formato do trecho selecionado
         format_select_box = QGroupBox("Formato deste trecho")
@@ -1828,7 +3831,7 @@ class MainWindow(QMainWindow):
         self.csv_captions = QCheckBox("Gerar legendas com Whisper (sincronizadas por corte)")
         self.csv_captions.setChecked(True)
         overlay_form.addRow(self.csv_captions)
-        self.csv_use_cg = QCheckBox("Usar lower-third 'Informativo Nacional' (rodapé)")
+        self.csv_use_cg = QCheckBox(f"Usar tarja '{self.brand_name}' (rodapé)")
         self.csv_use_cg.setChecked(True if self.cg_icon_path else False)
         self.csv_use_cg.setEnabled(bool(self.cg_icon_path))
         overlay_form.addRow(self.csv_use_cg)
@@ -1997,8 +4000,13 @@ class MainWindow(QMainWindow):
             return
         self._csv_ai_busy(True)
         self.csv_log.appendPlainText("🤖 A IA está escolhendo os cortes…")
+        # A IA também escolhe a trilha de cada corte, a partir dos rótulos da
+        # pasta de trilhas (a mesma da aba Edição). Sem trilhas na pasta, a lista
+        # vai vazia e o campo "musica" volta em branco.
+        climas = [rotulo for rotulo, _ in trilhas.list_tracks(self.music_dir())]
         worker = CutsSuggestWorker(
-            transcript, self._ai_key(), self.ai_model.currentText().strip(), self)
+            transcript, self._ai_key(), self.ai_model.currentText().strip(),
+            climas, self)
         worker.done.connect(self._csv_apply_cuts)
         worker.finished.connect(worker.deleteLater)
         self._csv_cuts_worker = worker
@@ -2012,18 +4020,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, message)
             return
         duracao = self._live_probe_duration(self.video_path)
-        moments = cuts_to_moments(cortes, duracao, min_duration=MIN_CUT_SECONDS,
-                                  max_cut_duration=MAX_CUT_SECONDS)
+        moments = cuts_to_moments(cortes, duracao, max_cut_duration=MAX_CUT_SECONDS)
         fora = len(cortes) - len(moments)
         if fora > 0:
             self.csv_log.appendPlainText(
-                f"✂️ {fora} corte(s) fora da faixa 1min30–2min30 descartado(s).")
+                f"✂️ {fora} corte(s) longo(s) demais (acima de 2min30) descartado(s).")
         if not moments:
             QMessageBox.information(
                 self, APP_NAME,
-                "A IA não trouxe nenhum corte na faixa de 1min30 a 2min30 neste vídeo.\n\n"
-                "Melhor assim do que um short curto e fraco ou longo demais — pode ser "
-                "que o vídeo só tenha momentos rápidos, sem contexto para um short.")
+                "A IA não trouxe nenhum corte aproveitável neste vídeo.\n\n"
+                "Pode ser que o vídeo só tenha momentos rápidos, sem contexto "
+                "para sustentar um short.")
             return
         self._csv_moments = moments
         self.csv_label.setText(f"{len(moments)} cortes sugeridos pela IA")
@@ -2058,6 +4065,8 @@ class MainWindow(QMainWindow):
             self.csv_table.setItem(i, 4, QTableWidgetItem(m.get("subtitulo", "")))
             # Lista de momentos (clicável)
             item_text = f"{m['label']}\n{as_time(m['start_s'])} — {as_time(m['end_s'])}"
+            if m.get("musica"):
+                item_text += f"\n🎵 {m['musica']}"
             self.csv_moments_list.setItem(i, 0, QTableWidgetItem(item_text))
         self.csv_table.resizeColumnsToContents()
         self.csv_moments_list.resizeRowsToContents()
@@ -2077,14 +4086,29 @@ class MainWindow(QMainWindow):
         self._whisper_bin = whisper_path()
         self._csv_captions_on = self.csv_captions.isChecked()
         # Se o vídeo já tem legenda (ex.: baixada pelo yt-dlp), reaproveita-a e
-        # dispensa o Whisper. Só cai no Whisper quando não há legenda pronta.
-        self._csv_source_srt = find_video_subtitle(self.video_path) if self._csv_captions_on else None
+        # dispensa o Whisper. Mas não quando ela é auto-gerada (YouTube): essas
+        # "rolam" — a mesma fala reaparece em cues que se sobrepõem, crescendo
+        # palavra por palavra — e nem a limpeza deixa boas; cada corte sairia com
+        # falas repetidas na legenda. Mesma regra da aba Edição
+        # (generate_captions): se for automática e o Whisper estiver disponível,
+        # transcreve de novo em vez de reaproveitar.
+        raw_srt = find_video_subtitle(self.video_path) if self._csv_captions_on else None
+        self._csv_auto_caption = bool(raw_srt) and looks_like_auto_caption(parse_srt_segments(raw_srt))
+        self._csv_source_srt = None if (self._csv_auto_caption and self._whisper_bin) else raw_srt
         self._csv_use_whisper = self._csv_captions_on and self._whisper_bin is not None
         if self._csv_captions_on and not self._csv_source_srt and not self._whisper_bin:
             QMessageBox.warning(self, APP_NAME, "Sem legenda pronta e Whisper não encontrado. Os cortes serão gerados sem legendas.")
+        elif self._csv_auto_caption and self._csv_source_srt:
+            QMessageBox.warning(
+                self, APP_NAME,
+                f"{raw_srt.name} parece uma legenda automática (repetições, marcadores "
+                ">>). Vou limpar o que der, mas pode sair com falas repetidas — para "
+                "ficar impecável, instale o Whisper (veja o README).")
 
-        # Salva os cortes numa subpasta com o nome do vídeo de origem.
-        safe_dir = "".join(c for c in self.video_path.stem if c.isalnum() or c in " _-").strip()[:120] or "Cortes"
+        # Salva os cortes numa subpasta com o nome do perfil + nome do vídeo de origem.
+        video_name = "".join(c for c in self.video_path.stem if c.isalnum() or c in " _-").strip()[:120] or "Cortes"
+        profile_prefix = (self._current_profile or "sem_perfil")[:4]
+        safe_dir = f"{profile_prefix} - {video_name}"
         self._csv_output_dir = OUTPUT_DIR / safe_dir
         self._csv_output_dir.mkdir(parents=True, exist_ok=True)
         total = len(self._csv_moments)
@@ -2100,6 +4124,10 @@ class MainWindow(QMainWindow):
         else:
             legend_note = "sem legendas automáticas"
         self.csv_log.appendPlainText(f"Iniciando corte de {total} momentos ({legend_note})...\n")
+        if self._csv_auto_caption and not self._csv_source_srt:
+            self.csv_log.appendPlainText(
+                f"ℹ️ {raw_srt.name} parece uma legenda automática (repetições, marcadores "
+                ">>); transcrevendo cada corte com Whisper para sair limpo.\n")
 
         self._csv_batch_index = 0
         self._csv_clip_srt = None
@@ -2120,6 +4148,12 @@ class MainWindow(QMainWindow):
                 pass
             proc.kill()
             proc.waitForFinished(2000)
+        # Também mata a geração de thumbnail em andamento, se o cancelamento
+        # pegou o lote nessa fase (agora assíncrona, dá para clicar Cancelar ali).
+        for thumb_proc in list(self._thumbnail_procs):
+            if thumb_proc.state() != QProcess.ProcessState.NotRunning:
+                thumb_proc.kill()
+                thumb_proc.waitForFinished(2000)
         self.csv_process_btn.setDisabled(False)
         self.csv_cancel_btn.setEnabled(False)
         self.csv_progress.setRange(0, 1)
@@ -2130,6 +4164,7 @@ class MainWindow(QMainWindow):
         rows = self.csv_moments_list.selectionModel().selectedRows()
         if not rows:
             self._csv_selected_index = -1
+            self.csv_remove_moment_btn.setEnabled(False)
             self.csv_clip_format_label.setText("Nenhum trecho selecionado")
             self.csv_clip_format.blockSignals(True)
             self.csv_clip_format.setCurrentIndex(0)
@@ -2138,6 +4173,7 @@ class MainWindow(QMainWindow):
             return
         idx = rows[0].row()
         self._csv_selected_index = idx
+        self.csv_remove_moment_btn.setEnabled(True)
         m = self._csv_moments[idx]
         # Carrega no VLC
         if self.video_path:
@@ -2171,6 +4207,36 @@ class MainWindow(QMainWindow):
 
         # Mostra a imagem se formato for "imagem"
         self._csv_update_image_display()
+
+    def _csv_remove_selected_moment(self) -> None:
+        """Tira o trecho selecionado da lista de cortes (só na memória)."""
+        if self.csv_cancel_btn.isEnabled():
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Não dá para tirar um corte enquanto o lote está sendo processado. "
+                "Cancele o processamento primeiro.")
+            return
+        idx = self._csv_selected_index
+        if not (0 <= idx < len(self._csv_moments)):
+            return
+        m = self._csv_moments[idx]
+        if QMessageBox.question(
+                self, APP_NAME,
+                f"Tirar o corte \"{m['label']}\" "
+                f"({as_time(m['start_s'])} — {as_time(m['end_s'])}) da lista?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.csv_vlc_player.stop()
+        del self._csv_moments[idx]
+        self._populate_csv_table(self._csv_moments)
+        # Seleciona um vizinho para o usuário seguir revisando sem reclicar.
+        if self._csv_moments:
+            proximo = min(idx, len(self._csv_moments) - 1)
+            self.csv_moments_list.selectRow(proximo)
+        else:
+            self._csv_selected_index = -1
+            self.csv_remove_moment_btn.setEnabled(False)
+            self.csv_clip_format_label.setText("Nenhum trecho selecionado")
 
     def _csv_save_clip_format(self) -> None:
         if self._csv_selected_index < 0 or self._csv_selected_index >= len(self._csv_moments):
@@ -2391,7 +4457,8 @@ class MainWindow(QMainWindow):
         # Gera o lower-third (se ativado) antes de tudo, para saber se afasta a legenda.
         cg_path = None
         if self.csv_use_cg.isChecked() and self.cg_icon_path:
-            cg_path = create_lower_third(titulo, m.get("subtitulo", ""), self.work_dir, self.cg_icon_path)
+            cg_path = create_lower_third(titulo, m.get("subtitulo", ""), self.work_dir,
+                                         self.cg_icon_path, colors=self.brand_colors)
             if not cg_path:
                 self.csv_log.appendPlainText("   ⚠️ Erro ao gerar lower-third; continuando sem overlay.")
 
@@ -2438,37 +4505,99 @@ class MainWindow(QMainWindow):
 
         # 1) Frame de post: primeiro frame do corte, com GC e sem legenda escrita.
         thumb = thumbnail_path(output)
-        self._csv_post_frame = render_thumbnail(
-            ["ffmpeg", "-y", "-ss", str(start)] + inputs
-            + ["-filter_complex", build_chain(captions=False),
-               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
-            thumb,
+        # Se há imagem no CSV mas o mode não é "imagem", precisa incluir na thumb mesmo assim
+        thumb_has_image = has_image
+        thumb_image_input = 1
+        thumb_cg_input = thumb_image_input + (1 if thumb_has_image else 0)
+        thumb_inputs = inputs.copy()
+
+        if not has_image and m.get("image_path"):
+            thumb_image = m["image_path"]
+            if isinstance(thumb_image, (str, Path)) and Path(thumb_image).exists():
+                # Monta inputs com a imagem para a thumbnail
+                thumb_inputs = ["-i", str(self.video_path), "-loop", "1", "-i", str(thumb_image)]
+                thumb_has_image = True
+                thumb_image_input = 1
+                thumb_cg_input = 2
+                if cg_path:
+                    thumb_inputs += ["-loop", "1", "-i", str(cg_path)]
+
+        # Constrói o filter_complex para a thumbnail com a imagem correta
+        def build_thumb_chain(captions: bool) -> str:
+            chain = build_clip_filter(mode if has_image else ("imagem" if thumb_has_image else mode),
+                                      thumb_has_image, image_input=thumb_image_input)
+            current = "base"
+            if captions and srt_has_content(self._csv_clip_srt):
+                margin_v = LT_CAPTION_MARGIN_V if cg_path else 60
+                style = ("FontName=Montserrat,FontSize=18,Bold=-1,"
+                         "PrimaryColour=&H0000D7FF,OutlineColour=&H00000000,"
+                         f"BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,MarginV={margin_v}")
+                chain += (f";[{current}]subtitles=filename='{filter_path(self._csv_clip_srt)}':"
+                          f"fontsdir='{filter_path(FONT_DIR)}':force_style='{style}'[captioned]")
+                current = "captioned"
+            if cg_path:
+                chain += (f";[{current}][{thumb_cg_input}:v]"
+                          f"overlay=x=0:y=main_h-{LT_HEIGHT + LT_BOTTOM_MARGIN}[with_cg]")
+                current = "with_cg"
+            elif titulo.strip():
+                font = "C\\:/Windows/Fonts/arialbd.ttf"
+                text = format_title_for_video(titulo)
+                chain += f";[{current}]drawtext=fontfile='{font}':text='{text}':x=(w-text_w)/2:y=30:fontsize=40:fontcolor=white:borderw=3:bordercolor=black[text]"
+                current = "text"
+            chain, current = self._watermark_chain(chain, current)
+            return chain + f";[{current}]format=yuv420p[outv]"
+
+        thumb_command = (
+            ["ffmpeg", "-y", "-ss", str(start)] + thumb_inputs
+            + ["-filter_complex", build_thumb_chain(captions=False),
+               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)]
         )
-        # 2) Esse frame vira a capa: entra por cima do frame 0 do vídeo.
-        post_input = None
-        if self._csv_post_frame:
-            inputs += ["-loop", "1", "-i", str(thumb)]
-            post_input = n_inputs
 
-        command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start)] + inputs
-        command += [
-            "-filter_complex", build_chain(captions=True, post_input=post_input),
-            "-map", "[outv]", "-map", "0:a?",
-        ]
-        command += self._audio_censor_args(
-            self.apply_censorship(self._csv_clip_srt, self._csv_log_indent))
-        command += [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
-            str(output),
-        ]
+        def after_thumbnail(post_frame: Path | None) -> None:
+            if getattr(self, "_csv_cancelled", False):
+                return
+            self._csv_post_frame = post_frame
+            # 2) Esse frame vira a capa: entra por cima do frame 0 do vídeo.
+            post_input = None
+            if post_frame:
+                inputs.extend(["-loop", "1", "-i", str(thumb)])
+                post_input = n_inputs
 
-        self._csv_process = QProcess(self)
-        self._csv_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._csv_process.readyReadStandardOutput.connect(self._csv_read_process_output)
-        self._csv_process.finished.connect(lambda code, status: self._csv_on_finished(code, status, output, titulo))
-        self._csv_process_output = ""
-        self._csv_process.start(command[0], command[1:])
+            # Trilha de fundo escolhida pela IA para este corte (respeita a opção
+            # "Misturar trilha" da aba Edição). Entra como última entrada; quando há
+            # trilha, censura e mixagem vivem juntas no filter_complex.
+            censor_af = self.apply_censorship(self._csv_clip_srt, self._csv_log_indent)
+            video_chain = build_chain(captions=True, post_input=post_input)
+            music_track = self._csv_music_track(m)
+            music_in = None
+            if music_track and music_track.exists():
+                inputs.extend(["-i", str(music_track)])
+                music_in = n_inputs + (1 if post_input is not None else 0)
+                self._csv_log_indent(f"🎵 Trilha: {m.get('musica')} → {music_track.name}")
+            audio_chain, amap = self._audio_chain(video_chain, "0:a", censor_af, music_in, end - start)
+
+            command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start)] + inputs
+            command += ["-filter_complex", audio_chain, "-map", "[outv]", "-map", amap]
+            if amap == "0:a?":
+                command += self._audio_censor_args(censor_af)
+            command += [
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
+                str(output),
+            ]
+
+            self.csv_log.appendPlainText("   🎬 Convertendo o vídeo…")
+            self._csv_process = QProcess(self)
+            self._csv_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            self._csv_process.readyReadStandardOutput.connect(self._csv_read_process_output)
+            self._csv_process.finished.connect(
+                lambda code, status: self._csv_on_finished(
+                    code, status, output, titulo,
+                    m.get("musica", ""), m.get("subtitulo", "")))
+            self._csv_process_output = ""
+            self._csv_process.start(command[0], command[1:])
+
+        self._render_thumbnail_async(thumb_command, thumb, after_thumbnail)
 
     def _csv_log_indent(self, message: str) -> None:
         """Log do lote, alinhado com as demais mensagens do corte."""
@@ -2483,7 +4612,8 @@ class MainWindow(QMainWindow):
             output = data.decode("cp1252", errors="replace")
         self._csv_process_output += output
 
-    def _csv_on_finished(self, code: int, status: QProcess.ExitStatus, output: Path, label: str) -> None:
+    def _csv_on_finished(self, code: int, status: QProcess.ExitStatus, output: Path, label: str,
+                          musica: str = "", resumo: str = "") -> None:
         self._csv_batch_index += 1
         self.csv_progress.setValue(self._csv_batch_index)
         if code != 0 or status != QProcess.ExitStatus.NormalExit:
@@ -2506,6 +4636,7 @@ class MainWindow(QMainWindow):
                 # Legenda de Instagram (.txt ao lado do vídeo), gerada pela IA.
                 self.deliver_reels_caption(
                     self._csv_clip_srt, output, self._csv_log_indent)
+            log_video(label, musica, resumo)
             post = getattr(self, "_csv_post_frame", None)
             if post:
                 self.csv_log.appendPlainText(f"   🖼️ Post/capa → {post.name}")
@@ -2567,6 +4698,46 @@ class MainWindow(QMainWindow):
         offset_row.addWidget(self.live_seek_offset)
         offset_row.addStretch()
         left_col.addLayout(offset_row)
+
+        # Cookies do navegador. Numa live com --live-from-start o yt-dlp baixa
+        # os fragmentos DASH "manifestless" do YouTube, que hoje exigem um GVS
+        # PO Token — que o yt-dlp não gera sozinho. Sem ele os fragmentos dão
+        # HTTP 403 e são pulados (buracos na gravação). A saída sem instalar
+        # nada é ler os cookies de um navegador logado no YouTube e usar o
+        # player_client "tv" (que só vem sem DRM quando há cookies).
+        cookies_row = QHBoxLayout()
+        cookies_label = QLabel("Cookies do navegador:")
+        self.live_cookies_browser = QComboBox()
+        self.live_cookies_browser.addItem("Nenhum (pode dar 403)", "")
+        for _nome, _valor in (("Chrome", "chrome"), ("Edge", "edge"),
+                              ("Firefox", "firefox"), ("Brave", "brave"),
+                              ("Opera", "opera"), ("Vivaldi", "vivaldi"),
+                              ("Chromium", "chromium")):
+            self.live_cookies_browser.addItem(_nome, _valor)
+        self.live_cookies_browser.setCurrentIndex(1)  # Chrome por padrão
+        self.live_cookies_browser.setToolTip(
+            "Lê os cookies de uma sessão já logada no YouTube nesse navegador.\n"
+            "No Windows os navegadores Chromium (Chrome, Brave, Edge…) travam o\n"
+            "banco de cookies enquanto estão abertos e o yt-dlp não consegue lê-lo\n"
+            "(erro 'Could not copy Chrome cookie database'). Nesse caso use o botão\n"
+            "'Arquivo cookies.txt…' ao lado, que não sofre com esse bloqueio.")
+        # Alternativa à leitura direta do navegador: um cookies.txt exportado
+        # (mesma ideia da aba TikTok). É à prova do bloqueio do banco no Windows
+        # e, quando definido, tem prioridade sobre o navegador do dropdown.
+        self.live_cookies_file_btn = QPushButton("Arquivo cookies.txt…")
+        self.live_cookies_file_btn.setToolTip(
+            "Use um cookies.txt exportado do navegador (extensão 'Get cookies.txt', "
+            "logado no youtube.com). Não sofre com o bloqueio do banco de cookies "
+            "no Windows. Tem prioridade sobre o navegador selecionado ao lado.")
+        self.live_cookies_file_btn.clicked.connect(self._live_pick_cookies_file)
+        self.live_cookies_file_label = QLabel("")
+        self.live_cookies_file_label.setObjectName("muted")
+        cookies_row.addWidget(cookies_label)
+        cookies_row.addWidget(self.live_cookies_browser)
+        cookies_row.addWidget(self.live_cookies_file_btn)
+        cookies_row.addWidget(self.live_cookies_file_label, 1)
+        cookies_row.addStretch()
+        left_col.addLayout(cookies_row)
 
         self.live_status = QLabel("Cole a URL e clique em Gravar.")
         self.live_status.setObjectName("muted")
@@ -2755,13 +4926,38 @@ class MainWindow(QMainWindow):
         # acontece. Por isso rodamos DOIS yt-dlp em paralelo: um só para o
         # vídeo e outro só para o áudio. Sem -N: cada fragmento é colado no
         # arquivo assim que baixa, mantendo os arquivos sempre legíveis.
-        # --extractor-args: usa player_client=default,web_safari para evitar 403.
+        # --extractor-args: player_client=tv,web_safari. Numa live desde o
+        #   início os fragmentos DASH do cliente "web" exigem um GVS PO Token
+        #   (yt-dlp não gera) e dão HTTP 403; o cliente "tv" não precisa do
+        #   token e, com os cookies do navegador (abaixo), vem sem DRM.
+        # --cookies-from-browser: lê a sessão logada no YouTube — sem isso os
+        #   fragmentos da live são recusados (403) e ficam buracos na gravação.
         # --retries/--fragment-retries: tenta reconectar em caso de falha.
-        # -f: prioriza H.264 (mais estável em live) sobre AV1 (instável com fragmentos perdidos).
+        # -f: prioriza H.264 (mais estável em live) sobre AV1 (instável com
+        # fragmentos perdidos). ATENÇÃO: o YouTube reporta o codec como
+        # "avc1.*", não "h264" — por isso o filtro precisa ser vcodec^=avc1.
+        # Com vcodec=h264 nada casava e o yt-dlp caía no fallback (b[ext=mp4] =
+        # formato 18, 360p), gravando a live em qualidade baixíssima.
         base = [str(downloader), "--live-from-start", "--no-part", "--newline",
-                 "--extractor-args", "youtube:player_client=default,web_safari",
+                 "--extractor-args", "youtube:player_client=tv,web_safari",
                  "--retries", "10", "--fragment-retries", "10"]
-        video_cmd = base + ["-f", "bv*[vcodec=h264][ext=mp4]/bv*[ext=mp4]/b[ext=mp4]",
+        # cookies.txt tem prioridade: não sofre com o bloqueio do banco de
+        # cookies que os navegadores Chromium fazem no Windows (issue #7271).
+        cookies_browser = self.live_cookies_browser.currentData()
+        if self._live_cookies_file and self._live_cookies_file.exists():
+            base += ["--cookies", str(self._live_cookies_file)]
+            self.live_log.appendPlainText(f"🍪 Usando cookies.txt: {self._live_cookies_file.name}")
+        elif cookies_browser:
+            base += ["--cookies-from-browser", cookies_browser]
+            self.live_log.appendPlainText(
+                f"🍪 Lendo cookies do navegador ({cookies_browser}). Se der "
+                "'Could not copy cookie database', feche o navegador ou use o "
+                "botão 'Arquivo cookies.txt…'.")
+        else:
+            self.live_log.appendPlainText(
+                "⚠️ Sem cookies: o YouTube pode recusar os fragmentos da live "
+                "(HTTP 403). Escolha um navegador logado ou um cookies.txt.")
+        video_cmd = base + ["-f", "bv*[vcodec^=avc1][ext=mp4]/bv*[ext=mp4]/bv*/b",
                             "-o", str(self._live_dir / "video.%(ext)s"), url]
         audio_cmd = base + ["-f", "ba[ext=m4a]/ba",
                             "-o", str(self._live_dir / "audio.%(ext)s"), url]
@@ -2989,6 +5185,14 @@ class MainWindow(QMainWindow):
             self._live_fixed_image_path = Path(filename)
             self.live_image_label.setText(self._live_fixed_image_path.name)
 
+    def _live_pick_cookies_file(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar cookies.txt (logado no youtube.com)", "", "Cookies (*.txt)")
+        if not filename:
+            return
+        self._live_cookies_file = Path(filename)
+        self.live_cookies_file_label.setText(f"🍪 {self._live_cookies_file.name} (clique para trocar)")
+
     def _live_probe_duration(self, path: Path | None) -> float:
         """Duração (s) já gravada num arquivo em crescimento, via ffprobe."""
         if not path or not path.exists():
@@ -3021,6 +5225,7 @@ class MainWindow(QMainWindow):
 
     def _live_cancel_cut(self) -> None:
         """Cancela a exportação de corte em andamento na aba Live."""
+        self._live_cut_cancelled = True
         proc = self._live_cut_process
         if proc is not None and proc.state() != QProcess.ProcessState.NotRunning:
             try:
@@ -3029,6 +5234,12 @@ class MainWindow(QMainWindow):
                 pass
             proc.kill()
             proc.waitForFinished(2000)
+        # Também mata a geração de thumbnail em andamento, se o cancelamento
+        # pegou o corte nessa fase (agora assíncrona).
+        for thumb_proc in list(self._thumbnail_procs):
+            if thumb_proc.state() != QProcess.ProcessState.NotRunning:
+                thumb_proc.kill()
+                thumb_proc.waitForFinished(2000)
         self._live_cut_process = None
         wav = self._live_pending.get("wav")
         if wav:
@@ -3079,6 +5290,7 @@ class MainWindow(QMainWindow):
             "video": video, "audio": audio,
             "output": OUTPUT_DIR / f"{safe_label}.mp4",
         }
+        self._live_cut_cancelled = False
         self._live_cut_busy(True)
         self.live_cut_log.clear()
 
@@ -3195,36 +5407,42 @@ class MainWindow(QMainWindow):
         thumb_seek = ["-ss", str(start), "-i", str(video)]
         if audio is not None:
             thumb_seek += ["-ss", str(start), "-i", str(audio)]
-        self._live_post_frame = render_thumbnail(
+        thumb_command = (
             ["ffmpeg", "-y"] + thumb_seek + extra
             + ["-filter_complex", build_chain(captions=False),
-               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)],
-            thumb,
+               "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(thumb)]
         )
-        # 2) Esse frame vira a capa: entra por cima do frame 0 do vídeo.
-        post_input = None
-        if self._live_post_frame:
-            extra += ["-loop", "1", "-i", str(thumb)]
-            post_input = next_idx + (1 if has_image else 0)
 
-        audio_map = f"{audio_idx}:a?" if audio_idx is not None else "0:a?"
-        command = ["ffmpeg", "-y"] + seek + extra + [
-            "-filter_complex", build_chain(captions=True, post_input=post_input),
-            "-map", "[outv]", "-map", audio_map,
-        ] + self._audio_censor_args(
-            self.apply_censorship(srt_path, self.live_cut_log.appendPlainText)) + [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
-            str(output),
-        ]
+        def after_thumbnail(post_frame: Path | None) -> None:
+            if getattr(self, "_live_cut_cancelled", False):
+                return
+            self._live_post_frame = post_frame
+            # 2) Esse frame vira a capa: entra por cima do frame 0 do vídeo.
+            post_input = None
+            if post_frame:
+                extra.extend(["-loop", "1", "-i", str(thumb)])
+                post_input = next_idx + (1 if has_image else 0)
 
-        self.live_cut_log.appendPlainText(f"3/3 ✂️ Exportando corte {as_time(start)} — {as_time(end)} ({mode})…")
-        proc = QProcess(self)
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
-        proc.finished.connect(lambda code, status: self._live_on_cut_finished(code, status, output))
-        self._live_cut_process = proc
-        proc.start(command[0], command[1:])
+            audio_map = f"{audio_idx}:a?" if audio_idx is not None else "0:a?"
+            command = ["ffmpeg", "-y"] + seek + extra + [
+                "-filter_complex", build_chain(captions=True, post_input=post_input),
+                "-map", "[outv]", "-map", audio_map,
+            ] + self._audio_censor_args(
+                self.apply_censorship(srt_path, self.live_cut_log.appendPlainText)) + [
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-shortest",
+                str(output),
+            ]
+
+            self.live_cut_log.appendPlainText(f"3/3 ✂️ Exportando corte {as_time(start)} — {as_time(end)} ({mode})…")
+            proc = QProcess(self)
+            proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
+            proc.finished.connect(lambda code, status: self._live_on_cut_finished(code, status, output))
+            self._live_cut_process = proc
+            proc.start(command[0], command[1:])
+
+        self._render_thumbnail_async(thumb_command, thumb, after_thumbnail)
 
     def _live_on_cut_finished(self, code: int, status: QProcess.ExitStatus, output: Path) -> None:
         self._live_cut_busy(False)
@@ -3238,6 +5456,7 @@ class MainWindow(QMainWindow):
             self.deliver_reels_caption(
                 self._live_pending.get("srt"), output,
                 self.live_cut_log.appendPlainText)
+            log_video(self._live_pending.get("titulo", ""), "", "")
             post = getattr(self, "_live_post_frame", None)
             if post:
                 self.live_cut_log.appendPlainText(f"🖼️ Post/capa → {post.name}")

@@ -1,0 +1,47 @@
+[Unit]
+Description=Publicador - fila de envio de videos ao YouTube
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USUARIO__
+Group=__USUARIO__
+WorkingDirectory=__APP_DIR__
+Environment=PUBLICADOR_DATA=__DATA_DIR__
+Environment=TZ=__FUSO__
+Environment=PYTHONUNBUFFERED=1
+# O vídeo que está subindo passa por um arquivo temporário antes de ir para a
+# pasta final; no /tmp do sistema (que em Debian novo é RAM) isso comeria
+# memória, então o temporário fica no mesmo HD dos dados.
+Environment=TMPDIR=__DATA_DIR__/tmp
+# Os navegadores dos envios ao YouTube e ao TikTok (Playwright) esperam achar
+# o Chromium junto do próprio venv, não no cache do usuário — combina com o
+# "install" no instalar.sh, e evita depender do $HOME, que ProtectHome=yes
+# esconde.
+Environment=PLAYWRIGHT_BROWSERS_PATH=0
+# E-mail de aviso (opcional): se __DATA_DIR__/publicador.env existir, define
+# PUBLICADOR_EMAIL_PARA e as credenciais de SMTP de lá — veja o LEIA-ME. Fica
+# fora deste arquivo de propósito: este é reescrito a cada instalação, e
+# __DATA_DIR__ nunca é.  O "-" faz o serviço subir normalmente mesmo sem
+# esse arquivo (e-mail simplesmente desligado).
+EnvironmentFile=-__DATA_DIR__/publicador.env
+# Um processo só, com threads: assim existe exatamente um laço de envio e
+# nunca dois uploads na mesma conta ao mesmo tempo. xvfb-run dá aos
+# navegadores um display virtual — este Debian não tem tela de verdade.
+ExecStart=/usr/bin/xvfb-run -a --server-args="-screen 0 1920x1080x24" \
+    __APP_DIR__/venv/bin/waitress-serve \
+    --listen=0.0.0.0:__PORTA__ \
+    --threads=8 \
+    --max-request-body-size=12884901888 \
+    publicador:app
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=__DATA_DIR__
+
+[Install]
+WantedBy=multi-user.target

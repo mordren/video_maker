@@ -31,6 +31,10 @@ EXTENSIONS = (".mp3", ".m4a", ".wav", ".ogg", ".flac")
 # zero), mais presente a música. -27 deixa a fala mandando com folga.
 MUSIC_LUFS = -27
 
+# Ganho extra sobre esse volume normalizado (não é volume geral do vídeo, só
+# da trilha). 1.32 = +10% de antes, mais +20% em cima disso.
+MUSIC_VOLUME_BOOST = 1.32
+
 
 def label_for(path: Path) -> str:
     """Rótulo do clima a partir do nome do arquivo.
@@ -87,7 +91,7 @@ def mix_chain(speech_label: str, music_input: int, out_label: str = "aout",
     if duration > 4:
         fades += f",afade=t=out:st={duration - 3:.2f}:d=3"
     return (
-        f"[{music_input}:a]loudnorm=I={lufs}:TP=-9:LRA=11,{fades}[bg];"
+        f"[{music_input}:a]loudnorm=I={lufs}:TP=-9:LRA=11,volume={MUSIC_VOLUME_BOOST},{fades}[bg];"
         f"[bg][{speech_label}]sidechaincompress="
         f"threshold=0.03:ratio=8:attack=15:release=350[duck];"
         f"[{speech_label}][duck]amix=inputs=2:duration=first:normalize=0[premix];"

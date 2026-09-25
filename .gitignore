@@ -10,6 +10,7 @@ tiktok_cookies*.txt
 tiktok_queue.txt
 youtube_browser_cookies*.txt
 youtube_browser_queue.txt
+info_cokies.txt
 # Retrato da tela do Studio quando um envio falha: página logada inteira, com
 # identificadores da sessão dentro. Serve para depurar, nunca para o git.
 youtube_browser_falha.*

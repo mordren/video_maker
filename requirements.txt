@@ -2,3 +2,7 @@ PySide6>=6.8,<7
 openai-whisper>=20250625
 pyinstaller>=6.0
 python-vlc>=3.0
+google-auth>=2.35
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.145
+tiktok-uploader>=1.2

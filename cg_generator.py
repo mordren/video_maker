@@ -13,10 +13,31 @@ import subprocess
 
 from utils import escape_drawtext
 
-# Cores (identidade visual da bandeira brasileira)
+# Cores padrão (identidade visual da bandeira brasileira). São só os padrões:
+# a aba Configuração pode sobrescrever cada uma, e o app passa as escolhidas em
+# `colors` para create_lower_third.
 VERDE = "#1B7E3E"
 AMARELO = "#FDD835"
 BRANCO = "#FFFFFF"
+PRETO = "#000000"
+
+# Chaves de cor do lower-third e seus padrões. O FFmpeg aceita "#RRGGBB" tanto no
+# fundo (color=c=) quanto no drawtext (fontcolor=), então guardamos hex direto.
+DEFAULT_COLORS = {
+    "banner": BRANCO,     # fundo da tarja
+    "green": VERDE,       # acento vertical + chapéu (título pequeno)
+    "yellow": AMARELO,    # detalhe de acento
+    "headline": PRETO,    # manchete grande (subtítulo)
+}
+
+
+def merge_colors(colors: dict | None) -> dict:
+    """Completa o dict de cores com os padrões, ignorando valores vazios."""
+    merged = dict(DEFAULT_COLORS)
+    for key, value in (colors or {}).items():
+        if key in merged and value:
+            merged[key] = value
+    return merged
 
 CG_WIDTH = 1080
 LT_HEIGHT = 160  # altura do lower-third de fundo branco
@@ -127,7 +148,8 @@ def _fit_kicker(text: str, avail_w: int, max_size: int = 22) -> tuple[list[str],
     return [text], max(size, _MIN_SIZE)
 
 
-def _lower_third_chain(titulo: str, subtitulo: str, logo_w: int) -> str:
+def _lower_third_chain(titulo: str, subtitulo: str, logo_w: int,
+                       colors: dict | None = None) -> str:
     """Monta a cadeia de filtros do lower-third de fundo branco.
 
     Layout: logo à esquerda, faixa de acento verde/amarelo, e à direita o
@@ -139,6 +161,8 @@ def _lower_third_chain(titulo: str, subtitulo: str, logo_w: int) -> str:
     subtítulo quebra em duas linhas quando isso rende uma fonte maior. O bloco
     inteiro é centralizado na vertical.
     """
+    c = merge_colors(colors)
+    verde, amarelo, preto = c["green"], c["yellow"], c["headline"]
     titulo = titulo.upper().strip()
     subtitulo = subtitulo.upper().strip()
 
@@ -160,41 +184,44 @@ def _lower_third_chain(titulo: str, subtitulo: str, logo_w: int) -> str:
 
     parts = [
         # Faixa vertical verde separando o logo do texto
-        f"drawbox=x={logo_w + 8}:y=20:w=8:h={LT_HEIGHT - 40}:color={VERDE}@1:t=fill",
+        f"drawbox=x={logo_w + 8}:y=20:w=8:h={LT_HEIGHT - 40}:color={verde}@1:t=fill",
         # Faixa vertical amarela fininha colada na verde
-        f"drawbox=x={logo_w + 18}:y=20:w=4:h={LT_HEIGHT - 40}:color={AMARELO}@1:t=fill",
+        f"drawbox=x={logo_w + 18}:y=20:w=4:h={LT_HEIGHT - 40}:color={amarelo}@1:t=fill",
     ]
     head_y0 = top
     # Chapéu (verde, menor) no topo, com o detalhe amarelo abaixo dele.
     if kicker_lines:
         parts.append(
             f"drawtext=fontfile='{_FONT}':text='{escape_drawtext(kicker_lines[0])}':"
-            f"x={text_x}:y={top}:fontsize={kicker_size}:fontcolor={VERDE}"
+            f"x={text_x}:y={top}:fontsize={kicker_size}:fontcolor={verde}"
         )
         accent_y = top + kicker_h + 2
         head_y0 = accent_y + accent_gap
         parts.append(
-            f"drawbox=x={text_x}:y={accent_y}:w=90:h=5:color={AMARELO}@1:t=fill"
+            f"drawbox=x={text_x}:y={accent_y}:w=90:h=5:color={amarelo}@1:t=fill"
         )
-    # Manchete (grande, preta) embaixo.
+    # Manchete (grande) embaixo, na cor da manchete.
     for i, line in enumerate(head_lines):
         parts.append(
             f"drawtext=fontfile='{_FONT}':text='{escape_drawtext(line)}':"
             f"x={text_x}:y={head_y0 + i * head_line_h}:"
-            f"fontsize={head_size}:fontcolor=black"
+            f"fontsize={head_size}:fontcolor={preto}"
         )
     return ",".join(parts)
 
 
 def create_lower_third(titulo: str, subtitulo: str, output_dir: Path,
-                       logo_path: Path | None = None) -> Path | None:
-    """Gera um PNG do lower-third (fundo branco, logo à esquerda, título+subtítulo).
+                       logo_path: Path | None = None,
+                       colors: dict | None = None) -> Path | None:
+    """Gera um PNG do lower-third (tarja, logo à esquerda, título+subtítulo).
 
     Args:
-        titulo: Chapéu curto (linha pequena verde, no topo).
-        subtitulo: Manchete em destaque (linha grande, preta, embaixo).
+        titulo: Chapéu curto (linha pequena, no topo).
+        subtitulo: Manchete em destaque (linha grande, embaixo).
         output_dir: Diretório para salvar o PNG.
         logo_path: Caminho opcional do PNG do logo (fica à esquerda).
+        colors: cores da tarja (banner/green/yellow/headline); usa os padrões da
+            bandeira quando None ou parcial.
 
     Returns:
         Caminho do PNG gerado, ou None se falhar.
@@ -203,11 +230,12 @@ def create_lower_third(titulo: str, subtitulo: str, output_dir: Path,
     lt_path = output_dir / "lower_third.png"
     logo_w = 210 if (logo_path and logo_path.exists()) else 40
 
-    chain = _lower_third_chain(titulo, subtitulo, logo_w)
+    c = merge_colors(colors)
+    chain = _lower_third_chain(titulo, subtitulo, logo_w, c)
 
     command = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"color=c=white:s={CG_WIDTH}x{LT_HEIGHT}:d=1",
+        "-f", "lavfi", "-i", f"color=c={c['banner']}:s={CG_WIDTH}x{LT_HEIGHT}:d=1",
     ]
 
     if logo_path and logo_path.exists():

@@ -174,6 +174,97 @@ def save_config(config: dict) -> bool:
         return False
 
 
+def get_current_profile_name() -> str:
+    """Retorna o nome do perfil ativo (ou vazio se nenhum)."""
+    cfg = load_config()
+    return str(cfg.get("current_profile", "")).strip()
+
+
+def get_profiles_dict() -> tuple[dict, str]:
+    """Retorna (perfis_dict, nome_do_perfil_atual).
+
+    A estrutura em config.json é:
+    {
+      "current_profile": "info_nacional",
+      "profiles": {
+        "info_nacional": { brand_logo, brand_name, ... },
+        ...
+      }
+    }
+    """
+    cfg = load_config()
+    profiles = cfg.get("profiles", {})
+    if not isinstance(profiles, dict):
+        profiles = {}
+    current = get_current_profile_name()
+    return profiles, current
+
+
+def load_profile(name: str) -> dict:
+    """Carrega os dados de um perfil específico (chaves brand_*).
+
+    Retorna um dict vazio se o perfil não existir.
+    """
+    profiles, _ = get_profiles_dict()
+    profile_data = profiles.get(name, {})
+    return dict(profile_data) if isinstance(profile_data, dict) else {}
+
+
+def save_profile(name: str, data: dict, set_as_current: bool = False) -> bool:
+    """Salva ou atualiza um perfil com os dados fornecidos.
+
+    Args:
+        name: nome do perfil (ex.: "info_nacional")
+        data: dict com chaves brand_* a guardar
+        set_as_current: se True, torna este o perfil ativo
+
+    Returns:
+        True se bem-sucedido.
+    """
+    profiles, current = get_profiles_dict()
+    # Guarda o perfil
+    profiles[name] = dict(data)
+    # Salva tudo de volta
+    to_save = {
+        "profiles": profiles,
+        "current_profile": name if set_as_current else current,
+    }
+    return save_config(to_save)
+
+
+def delete_profile(name: str) -> bool:
+    """Deleta um perfil. Se for o atual, torna o primeiro da lista como padrão.
+
+    Returns:
+        False se o perfil não existir ou se for o último.
+    """
+    profiles, current = get_profiles_dict()
+    if name not in profiles:
+        return False
+    if len(profiles) <= 1:
+        return False  # não deixa deletar o único perfil
+    del profiles[name]
+    # Se era o atual, muda para o primeiro disponível
+    new_current = current if current in profiles else next(iter(profiles), "")
+    to_save = {
+        "profiles": profiles,
+        "current_profile": new_current,
+    }
+    return save_config(to_save)
+
+
+def set_current_profile(name: str) -> bool:
+    """Define qual perfil fica ativo.
+
+    Returns:
+        False se o perfil não existir.
+    """
+    profiles, _ = get_profiles_dict()
+    if name not in profiles:
+        return False
+    return save_config({"current_profile": name})
+
+
 def api_key_from_env() -> str:
     """Chave da variável de ambiente, para quem prefere não salvar em arquivo."""
     return (os.getenv("DEEPSEEK_API_KEY") or "").strip()
@@ -249,21 +340,21 @@ O que puxar (uma ou mais categorias por corte):
 - número ou afirmação forte que sozinha rende manchete.
 
 Como montar cada corte:
-- DURAÇÃO ENTRE 1MIN30 E 2MIN30. Isto é obrigatório: um corte com menos de 1min30 \
+- DURAÇÃO ENTRE 1MIN E 2MIN30. Isto é obrigatório: um corte com menos de 1min \
 ou mais de 2min30 não serve e não deve ser incluído. Um short longo demais não \
 funciona.
 - Para chegar a essa duração, pegue o RACIOCÍNIO INTEIRO em volta do momento forte, \
 não só a frase de efeito. Comece bem antes, quando a pessoa monta o assunto (o \
 gancho, o setup, a pergunta), passe pelo desenvolvimento e só termine depois de a \
 ideia fechar. A frase de efeito é o clímax do corte, não o corte inteiro.
-- Se um momento forte não tiver contexto suficiente em volta para sustentar 90 \
-segundos, NÃO o inclua — melhor deixar de fora do que entregar um corte curto.
+- Se um momento forte não tiver contexto suficiente em volta para sustentar 1 \
+minuto, NÃO o inclua — melhor deixar de fora do que entregar um corte curto.
 - Um assunto por corte; comece numa abertura que já prende e termine numa frase que \
 fecha, nunca no meio de um raciocínio.
 
 Responda APENAS com JSON, exatamente neste formato:
 {"cortes": [{"inicio": "m:ss", "fim": "m:ss", "titulo": "...", "subtitulo": "...", \
-"comentario": "..."}]}
+"musica": "...", "comentario": "..."}]}
 
 - inicio, fim: os tempos do trecho, no formato m:ss (ou h:mm:ss acima de 1h), \
 tirados da marcação da transcrição. Dê ~1s de folga antes e depois para não cortar \
@@ -272,6 +363,11 @@ a fala no talo.
 frase de efeito ou o bordão, não a descrição do tema. Em CAIXA ALTA.
 - subtitulo: a manchete em destaque, chamativa e fiel à fala, até ~60 caracteres, \
 sem ponto final.
+- musica: o clima da trilha de fundo deste corte, escolhido da lista que vem no fim \
+deste texto. Responda com o rótulo exatamente como aparece na lista, sem inventar \
+outro. Pense no tom do trecho: um bate-boca pede confronto, uma denúncia pede algo \
+grave, uma reflexão pede algo contido. Na dúvida, prefira a opção mais neutra. Se não \
+houver lista de trilhas, devolva "musica": "".
 - comentario: 1 ou 2 frases dizendo por que o trecho vira um bom short e a duração \
 estimada. Quando o trecho imputa crime a pessoa nomeada, acusa sobre a vida privada \
 ou xinga alguém identificável, comece o comentario com "⚠️ " e diga o risco \
@@ -287,18 +383,27 @@ Ordene os cortes do mais forte para o mais fraco, não em ordem cronológica. Es
 pelo potencial de audiência, sem tomar partido nem distorcer o sentido da fala."""
 
 
-def suggest_cuts(transcript: str, api_key: str, model: str = DEFAULT_MODEL
-                 ) -> tuple[list[dict], dict]:
+def suggest_cuts(transcript: str, api_key: str, model: str = DEFAULT_MODEL,
+                 musicas: list[str] | None = None) -> tuple[list[dict], dict]:
     """Escolhe cortes a partir da transcrição com tempos. Devolve (cortes, uso).
 
-    Cada corte é um dict com inicio, fim, titulo, subtitulo e comentario — como
-    veio da IA, em texto. Quem converte os tempos e monta os "moments" é a
+    Cada corte é um dict com inicio, fim, titulo, subtitulo, musica e comentario
+    — como veio da IA, em texto. Quem converte os tempos e monta os "moments" é a
     interface, para manter este módulo sem dependência do resto do app.
+
+    `musicas` são os rótulos de clima disponíveis (vindos dos nomes dos arquivos
+    da pasta de trilhas). Quando há lista, ela é colada no fim do prompt e a IA
+    escolhe uma por corte; sem lista, o campo `musica` volta vazio.
     """
     if not api_key:
         raise AiError("Informe a chave da API do DeepSeek.")
     if not transcript.strip():
         return [], {}
+    system = _CUTS_PROMPT
+    if musicas:
+        system += _MUSIC_LIST_HEADER + "\n- ".join(musicas)
+    else:
+        system += _NO_MUSIC_NOTE
     payload = {
         "model": model or DEFAULT_MODEL,
         "temperature": 0.4,
@@ -306,7 +411,7 @@ def suggest_cuts(transcript: str, api_key: str, model: str = DEFAULT_MODEL
         # meio, mas ainda segura uma resposta desgovernada.
         "max_tokens": 4000,
         "messages": [
-            {"role": "system", "content": _CUTS_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": transcript},
         ],
     }
@@ -321,6 +426,11 @@ def suggest_cuts(transcript: str, api_key: str, model: str = DEFAULT_MODEL
     if not isinstance(cortes, list):
         raise AiError("A IA não devolveu a lista de cortes.")
     limpos = [c for c in cortes if isinstance(c, dict) and c.get("inicio") and c.get("fim")]
+    # A trilha só vale se for uma das oferecidas; qualquer invenção vira "".
+    validos = {m.lower() for m in (musicas or [])}
+    for c in limpos:
+        musica = str(c.get("musica") or "").strip()
+        c["musica"] = musica if musica.lower() in validos else ""
     return limpos, usage
 
 

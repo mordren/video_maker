@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -22,6 +24,11 @@ YTDLP_BUNDLED = PROJECT_DIR / "tools" / "yt-dlp.exe"
 YTDLP_SYSTEM = Path(r"C:\Program Files (x86)\ytdlp\yt-dlp.exe")
 FONT_DIR = PROJECT_DIR / "assets" / "fonts"
 DOWNLOAD_DIR = OUTPUT_DIR / "Downloads"
+
+# Histórico de vídeos exportados e mudanças no app, para cruzar depois com o
+# desempenho de cada vídeo (ex.: "a partir de tal mudança, os vídeos com tal
+# trilha foram melhor/pior").
+HISTORY_PATH = OUTPUT_DIR / "historico.json"
 
 # ---------------------------------------------------------------------------
 # Funções utilitárias
@@ -211,9 +218,18 @@ def caption_groups(text: str, duration: float) -> list[str]:
 # "»"). Não são fala, e ficam visíveis na tela se não forem tirados.
 _SPEAKER_MARKERS = re.compile(r"\s*(?:>>+|»+)\s*")
 
+# Lixo que sobra de uma conversão VTT -> SRT malfeita (bug conhecido do
+# yt-dlp com legenda automática): tags tipo "<c>", "<00:00:01.240>" e
+# configurações de cue ("align:start position:63%") que deveriam ter ficado
+# só no cabeçalho do cue, não no texto.
+_VTT_TAGS = re.compile(r"<[^>]*>")
+_VTT_CUE_SETTINGS = re.compile(r"\b(?:align|position|line|size|vertical):\S+")
+
 
 def strip_speaker_markers(text: str) -> str:
-    """Tira os ">>"/"»" de troca de locutor e normaliza os espaços."""
+    """Tira lixo de legenda automática: tags/config de VTT e ">>"/"»" de troca de locutor."""
+    text = _VTT_TAGS.sub(" ", text)
+    text = _VTT_CUE_SETTINGS.sub(" ", text)
     text = _SPEAKER_MARKERS.sub(" ", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -243,13 +259,23 @@ def clean_caption_segments(segments: list[tuple[float, float, str]]
             continue
         norm = _norm_caption(t)
         # Já apareceu num bloco dos últimos ~6s? Então é a legenda rolando de
-        # novo: estende o bloco original em vez de repetir.
+        # novo: estende o bloco original em vez de repetir. A legenda do
+        # YouTube costuma crescer cue a cue ("não" -> "não dá" -> "não dá pra
+        # negociar") em vez de repetir o texto idêntico, então prefixo/sufixo
+        # também conta como a mesma fala rolando — só o texto mais completo
+        # fica.
         dup = None
         for i in range(len(limpos) - 1, -1, -1):
             if limpos[i][1] < start - 6.0:
                 break
-            if _norm_caption(limpos[i][2]) == norm:
+            prev_norm = _norm_caption(limpos[i][2])
+            if prev_norm == norm:
                 dup = i
+                break
+            if prev_norm and norm and (prev_norm.startswith(norm) or norm.startswith(prev_norm)):
+                dup = i
+                if len(t) > len(limpos[i][2]):
+                    limpos[i][2] = t
                 break
         if dup is not None:
             limpos[dup][1] = max(limpos[dup][1], end)
@@ -276,12 +302,18 @@ def looks_like_auto_caption(segments: list[tuple[float, float, str]]) -> bool:
     marcadores = sum(1 for _, _, t in segments if ">>" in t or "»" in t)
     micro = sum(1 for s, e, _ in segments if e - s < 0.15)
     dups = 0
-    vistos: dict[str, float] = {}
+    # Janela dos últimos ~6s: a legenda rolante do YouTube costuma crescer cue a
+    # cue ("não" -> "não dá" -> "não dá pra negociar") em vez de repetir o texto
+    # idêntico, então prefixo/sufixo também conta como a mesma fala rolando —
+    # senão a detecção erra o alvo justamente no caso mais comum.
+    recent: list[tuple[float, str]] = []
     for start, end, text in segments:
         norm = _norm_caption(strip_speaker_markers(text))
-        if norm and vistos.get(norm, -99) >= start - 6.0:
+        recent = [(e, n) for e, n in recent if e >= start - 6.0]
+        if norm and any(n == norm or n.startswith(norm) or norm.startswith(n) for _, n in recent):
             dups += 1
-        vistos[norm] = end
+        if norm:
+            recent.append((end, norm))
     return bool(marcadores) or micro > total * 0.2 or dups > total * 0.2
 
 
@@ -310,6 +342,34 @@ def shorten_srt_captions(path: Path) -> int:
     return removidos
 
 
+def clean_srt_file(path: Path) -> int:
+    """Limpa um SRT baixado (yt-dlp) sem picar as frases em blocos.
+
+    A legenda automática do YouTube é "rolante": a mesma frase reaparece em
+    vários blocos enquanto sobe na tela, e ainda vêm micro-blocos de 10ms que
+    repetem a linha anterior. Aberto num player ou editor, parece "bugado", cheio
+    de falas duplicadas. Esta função tira essas repetições e os marcadores ">>",
+    mas — ao contrário de shorten_srt_captions — mantém o fraseado natural (não
+    reparte em blocos de poucas palavras, que é só para o vídeo vertical). É o que
+    se quer num .srt de transcrição, para ler ou legendar o vídeo inteiro.
+
+    Devolve quantos blocos a limpeza removeu (0 se a legenda já estava limpa,
+    caso em que o arquivo não é reescrito).
+    """
+    segments = parse_srt_segments(path)
+    if not segments:
+        return 0
+    limpos = clean_caption_segments(segments)
+    removidos = len(segments) - len(limpos)
+    if removidos <= 0:
+        return 0
+    lines: list[str] = []
+    for i, (s, e, text) in enumerate(limpos, start=1):
+        lines.extend([str(i), f"{srt_timestamp(s)} --> {srt_timestamp(e)}", text, ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return removidos
+
+
 # Formatos de saída reconhecidos e seus apelidos na coluna "formato" do CSV.
 FORMAT_ALIASES = {
     "estender": {"estender", "preencher", "crop", "fill", "short", "9:16"},
@@ -327,6 +387,7 @@ _COLUMN_ALIASES = {
     "legenda": {"legenda", "caption", "texto"},
     "formato": {"formato", "format", "modo", "mode", "tipo"},
     "imagem": {"imagem", "image", "img", "capa", "foto"},
+    "musica": {"musica", "música", "trilha", "music", "som"},
 }
 
 
@@ -414,6 +475,7 @@ def parse_csv_moments(csv_path: Path) -> list[dict]:
             "label": titulo,
             "subtitulo": cell(row, "subtitulo").strip("'\""),
             "legenda": cell(row, "legenda"),
+            "musica": cell(row, "musica"),
             "formato": normalize_format(cell(row, "formato")),
             "image_path": image_path,
         })
@@ -461,6 +523,7 @@ def cuts_to_moments(cuts: list[dict], max_duration: float = 0.0,
             "subtitulo": str(c.get("subtitulo", "")).strip("'\" "),
             "legenda": str(c.get("legenda", "")).strip(),
             "comentario": str(c.get("comentario", "")).strip(),
+            "musica": str(c.get("musica", "")).strip(),
             "formato": "",
             "image_path": None,
         })
@@ -743,16 +806,16 @@ def render_thumbnail(command: list[str], thumb_path: Path) -> Path | None:
 
 
 class TimestampInput(QLineEdit):
-    """Campo de tempo no formato MM:SS, armazenado internamente em segundos."""
+    """Campo de tempo no formato HH:MM:SS, armazenado internamente em segundos."""
 
     secondsChanged = Signal(float)
 
     def __init__(self) -> None:
-        super().__init__("00:00")
+        super().__init__("00:00:00")
         self._seconds = 0.0
         self._maximum = 0.0
-        self.setPlaceholderText("00:00")
-        self.setToolTip("Formato MM:SS, por exemplo 30:10 para 30 minutos e 10 segundos.")
+        self.setPlaceholderText("00:00:00")
+        self.setToolTip("Formato HH:MM:SS, por exemplo 01:30:10 para 1 hora, 30 minutos e 10 segundos.")
         self.editingFinished.connect(self.commit)
 
     def value(self) -> float:
@@ -767,18 +830,72 @@ class TimestampInput(QLineEdit):
         changed = value != self._seconds
         self._seconds = value
         total = int(round(value))
-        minutes, remainder = divmod(total, 60)
-        self.setText(f"{minutes:02d}:{remainder:02d}")
+        hours, remainder = divmod(total, 3600)
+        minutes, secs = divmod(remainder, 60)
+        self.setText(f"{hours:02d}:{minutes:02d}:{secs:02d}")
         if changed:
             self.secondsChanged.emit(value)
 
     def commit(self) -> None:
         raw = self.text().strip()
         try:
-            minutes_text, seconds_text = raw.split(":", 1)
-            minutes, seconds = int(minutes_text), int(seconds_text)
-            if minutes < 0 or not 0 <= seconds < 60:
+            parts = raw.split(":")
+            if len(parts) == 2:
+                minutes_text, seconds_text = parts
+                minutes, seconds = int(minutes_text), int(seconds_text)
+                if minutes < 0 or not 0 <= seconds < 60:
+                    raise ValueError
+                self.setValue(minutes * 60 + seconds)
+            elif len(parts) == 3:
+                hours_text, minutes_text, seconds_text = parts
+                hours, minutes, seconds = int(hours_text), int(minutes_text), int(seconds_text)
+                if hours < 0 or minutes < 0 or not 0 <= seconds < 60 or not 0 <= minutes < 60:
+                    raise ValueError
+                self.setValue(hours * 3600 + minutes * 60 + seconds)
+            else:
                 raise ValueError
-            self.setValue(minutes * 60 + seconds)
         except ValueError:
             self.setValue(self._seconds)
+
+
+# ---------------------------------------------------------------------------
+# Histórico (vídeos exportados + mudanças no app)
+# ---------------------------------------------------------------------------
+
+
+def _load_history() -> list[dict]:
+    if not HISTORY_PATH.exists():
+        return []
+    try:
+        data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _append_history(entry: dict) -> None:
+    entry = {"data": datetime.now().astimezone().isoformat(timespec="seconds"), **entry}
+    historico = _load_history()
+    historico.append(entry)
+    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HISTORY_PATH.write_text(
+        json.dumps(historico, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def log_change(descricao: str) -> None:
+    """Registra uma mudança no app/config em `historico.json`.
+
+    Serve pra depois cruzar "a partir de tal data, os vídeos foram
+    melhor/pior" com o que mudou no app (trilha nova, volume, etc.).
+    """
+    _append_history({"tipo": "mudanca", "descricao": descricao})
+
+
+def log_video(titulo: str, musica: str, resumo: str) -> None:
+    """Registra um vídeo exportado em `historico.json`: título, trilha e resumo."""
+    _append_history({
+        "tipo": "video",
+        "titulo": titulo or "",
+        "musica": musica or "",
+        "resumo": resumo or "",
+    })
