@@ -6,7 +6,23 @@ Dois pipelines na mesma pasta, um alimenta o outro:
   trechos para virar corte, com timestamp exato, ranqueados. Não corta o vídeo.
 - **`pipeline_cortes.py`** — recebe esse `blocos_finais.json` e gera, para cada bloco, um
   `.mp4` pronto: pausas longas encolhidas, recomeço de frase removido, silêncio de borda
-  aparado, volume normalizado. Sem IA — regra determinística sobre o áudio.
+  aparado, volume normalizado, abertura de ~2-3s. Sem IA além da abertura.
+
+## Rodar tudo de uma vez
+
+```
+python fase1/rodar_tudo.py "caminho/do/video.mp4"
+```
+
+Roda a seleção e, se sair pelo menos um bloco, já corta cada um em seguida — um comando só.
+Se o vídeo não tiver nenhum trecho forte o bastante, para depois da seleção (não tem sentido
+chamar o corte sem nada para cortar).
+
+No Windows, `Cortar.bat` faz o mesmo com duplo clique: pede o caminho do vídeo, ou arraste o
+arquivo de vídeo por cima do `.bat` que ele já roda com esse caminho.
+
+Rodar cada parte separada (útil para conferir os candidatos antes de gastar tempo com o
+corte, ou para reprocessar só uma das duas) está documentado abaixo, em cada parte.
 
 ## Configurar
 
