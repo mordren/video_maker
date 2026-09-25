@@ -8,7 +8,8 @@ set "VM=C:\VideoMaker"
 for %%i in ("%~dp0..") do set "REPO=%%~fi"
 if exist "%REPO%\venv\Scripts\python.exe" (set "PY=%REPO%\venv\Scripts") else (set "PY=%REPO%\.venv\Scripts")
 
-set "PATH=%VM%\ffmpeg;%PY%;%PATH%"
+rem deno: o yt-dlp precisa de um runtime de JavaScript para baixar do YouTube.
+set "PATH=%VM%\ffmpeg;%VM%\deno;%PY%;%PATH%"
 set "PYTHONPATH=%REPO%"
 set "PYTHONUTF8=1"
 set "PYTHONUNBUFFERED=1"

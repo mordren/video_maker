@@ -21,6 +21,9 @@ foreach ($p in "estudio", "estudio\transicoes", "publicador", "publicador\videos
 if (-not (Test-Path "$VM\ffmpeg\ffmpeg.exe")) {
     Write-Warning "Falta o ffmpeg em $VM\ffmpeg (ffmpeg.exe, ffprobe.exe e as DLLs)."
 }
+if (-not (Test-Path "$VM\deno\deno.exe")) {
+    Write-Warning "Falta o deno em $VM\deno\deno.exe - sem ele o yt-dlp nao baixa do YouTube (HTTP 403)."
+}
 
 Write-Output "==> Bibliotecas do Python (Publicador + Estudio)"
 & $py -m pip install --quiet -r "$repo\servidor\requirements.txt" -r "$repo\fase1\requirements_crop.txt" requests

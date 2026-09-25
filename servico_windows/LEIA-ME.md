@@ -24,6 +24,7 @@ C:\VideoMaker\
   CortaLegenda\config.json    perfis visuais, lista de censura, chave do DeepSeek (a mesma do app)
   marcas\  trilhas\           logos dos perfis e trilhas de fundo
   ffmpeg\                     ffmpeg.exe, ffprobe.exe e DLLs
+  deno\deno.exe               runtime de JavaScript que o yt-dlp exige para baixar do YouTube
   cache\                      modelos do Whisper
   logs\                       estudio.log, publicador.log
 ```

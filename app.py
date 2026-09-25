@@ -1065,7 +1065,7 @@ class MainWindow(QMainWindow):
         if self._dl_attempt >= 3:
             try:
                 idx = command.index("--extractor-args")
-                # Troca "default,web_safari" por "web_embedded" (clientes diferentes)
+                # Troca "mweb,tv_simply" por "web_embedded" (clientes diferentes)
                 command[idx + 1] = "youtube:player_client=web_embedded"
                 self.log.appendPlainText("   → Tentando com outro player (web_embedded)…")
             except (ValueError, IndexError):
@@ -1816,11 +1816,13 @@ class MainWindow(QMainWindow):
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         # --match-filter "!is_live": recusa lives que não usem /live/ na URL —
         # nelas o download roda em tempo real (1x) e parece "travado".
-        # --extractor-args player_client: o cliente "android_vr" às vezes entrega
-        #   URLs de mídia que dão HTTP 403; "default,web_safari" é mais estável.
+        # --extractor-args player_client: em 25/09/2026 o "default" (que cai no
+        #   android_vr) passou a dar HTTP 403 no vídeo e o web_safari não achava
+        #   formato; "mweb,tv_simply" baixou normal. Os dois precisam de um
+        #   runtime de JavaScript (deno) no PATH para o desafio "n" do YouTube.
         # --*-retries: reenfileira automaticamente falhas transitórias (403/429).
         command = [str(downloader), "--no-playlist", "--match-filter", "!is_live",
-                   "--extractor-args", "youtube:player_client=default,web_safari",
+                   "--extractor-args", "youtube:player_client=mweb,tv_simply",
                    "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
                    "-N", str(self.fragment_count.value()), "-f", "bv*+ba/b",
                    "--merge-output-format", "mp4", "-P", str(DOWNLOAD_DIR),

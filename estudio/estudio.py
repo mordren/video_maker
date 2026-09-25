@@ -193,17 +193,19 @@ def _rodar(tid: str, cmd: list[str]) -> None:
         finally:
             _processo = None
     if p.returncode != 0:
-        raise RuntimeError(f"{Path(cmd[1]).name if len(cmd) > 1 else cmd[0]} terminou com erro "
-                           f"(código {p.returncode}) — veja o log")
+        programa = Path(cmd[1] if Path(cmd[0]).stem.lower().startswith("python") else cmd[0]).name
+        raise RuntimeError(f"{programa} terminou com erro (código {p.returncode}) — veja o log")
 
 
 def _baixar(tid: str, url: str, destino: Path) -> Path:
     destino.mkdir(parents=True, exist_ok=True)
     # Mesmas opções do programa de desktop (download_video): legenda do próprio
     # YouTube em pt ao lado do vídeo — a Fase 1 usa ela e pula o Whisper do
-    # vídeo inteiro.
-    cmd = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live",
-           "--extractor-args", "youtube:player_client=default,web_safari",
+    # vídeo inteiro. Clientes mweb/tv_simply: o "default" dava HTTP 403 (ver
+    # app.py); precisam do deno no PATH (servico_windows/ambiente.cmd).
+    # --progress-delta: uma linha de progresso a cada 20 s, não a cada pedaço.
+    cmd = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
+           "--extractor-args", "youtube:player_client=mweb,tv_simply",
            "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
            "-N", "8", "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mp4",
            "-P", str(destino), "-o", "%(title).150B.%(ext)s",
