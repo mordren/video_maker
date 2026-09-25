@@ -24,7 +24,6 @@ import yaml
 
 import crop_dinamico
 import falantes
-from transcricao import rodar_whisper
 
 AQUI = Path(__file__).resolve().parent
 log = logging.getLogger("fase1")
@@ -37,6 +36,20 @@ def etapa(nome: str):
     log.info("   %s: %.1fs", nome, time.perf_counter() - t0)
 
 
+_whisper_cache: dict = {}
+
+
+def transcrever_palavras(wav: Path, modelo: str, idioma: str) -> list[dict]:
+    """Whisper em processo (não o CLI): o modelo carrega uma vez só para a
+    pasta inteira, e evita ~30s de subir o executável a cada clipe."""
+    import whisper
+    if modelo not in _whisper_cache:
+        _whisper_cache[modelo] = whisper.load_model(modelo)
+    r = _whisper_cache[modelo].transcribe(str(wav), language=idioma, word_timestamps=True)
+    return [{"word": w["word"].strip(), "start": round(w["start"], 3), "end": round(w["end"], 3)}
+            for s in r["segments"] for w in s.get("words", []) if w.get("word", "").strip()]
+
+
 def turnos_de_fala(video: Path, cfg: dict) -> list[dict]:
     cf = cfg["falantes"]
     if not cf["ativo"]:
@@ -46,8 +59,7 @@ def turnos_de_fala(video: Path, cfg: dict) -> list[dict]:
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-ac", "1",
                         "-ar", "16000", str(wav)], check=True)
         with etapa("whisper"):
-            segs = rodar_whisper(wav, Path(tmp), cf["whisper_modelo"], cf["idioma"])
-        palavras = [w for s in segs for w in s.get("words", [])]
+            palavras = transcrever_palavras(wav, cf["whisper_modelo"], cf["idioma"])
         with etapa("falantes"):
             turnos = falantes.detectar(wav, palavras, n_falantes=cf["n_falantes"], limiar=cf["limiar"])
     for t in turnos:

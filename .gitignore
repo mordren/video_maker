@@ -24,3 +24,6 @@ fase1/teste_*/
 fase1/workspace_*/
 fase1/*/cortes/
 fase1/resultados/
+
+# modelo de reconhecimento facial (37MB), baixado sozinho pelo crop_dinamico.py
+fase1/models/face_recognition_sface_2021dec.onnx

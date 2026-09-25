@@ -27,10 +27,13 @@ TAXA = 16000
 
 
 def carregar_wav(caminho: Path) -> np.ndarray:
-    from resemblyzer import preprocess_wav
-    # preprocess_wav normaliza volume e reamostra para 16k; NÃO usa o corte de
-    # silêncio dele (trim_long_silences=False), senão os tempos deslocam.
-    return preprocess_wav(caminho, source_sr=None, normalize=True, trim_long_silences=False)
+    import librosa
+    from resemblyzer.audio import normalize_volume
+    from resemblyzer.hparams import audio_norm_target_dBFS
+    # Não usa o preprocess_wav do Resemblyzer: ele sempre corta os silêncios
+    # longos, o que desloca os tempos em relação às palavras do Whisper.
+    wav, _ = librosa.load(str(caminho), sr=TAXA)
+    return normalize_volume(wav, audio_norm_target_dBFS, increase_only=True)
 
 
 def embeddings_no_tempo(wav: np.ndarray, passo_seg: float, device: str | None = None):

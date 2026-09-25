@@ -1,6 +1,6 @@
 deteccao:
   passo_seg: 0.1          # rosto/boca a cada 0.1s (boca precisa de resolução p/ ver quem fala)
-  confianca_minima: 0.5
+  confianca_minima: 0.75   # YuNet; abaixo disso aparecem rostos falsos (quadro na parede etc.)
   max_rostos: 4
   limiar_corte: 10.0      # scdet do FFmpeg: sensibilidade para achar troca de câmera
 

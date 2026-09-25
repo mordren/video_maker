@@ -35,6 +35,24 @@ log = logging.getLogger("fase1")
 MODELO_PADRAO = Path(__file__).resolve().parent / "models" / "face_landmarker.task"
 URL_MODELO = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
               "face_landmarker/float16/latest/face_landmarker.task")
+MODELO_DETECTOR = Path(__file__).resolve().parent / "models" / "face_detection_yunet_2023mar.onnx"
+URL_DETECTOR = ("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
+                "face_detection_yunet_2023mar.onnx")
+# 37MB — fora do git, baixado sozinho na primeira execução
+MODELO_IDENTIDADE = Path(__file__).resolve().parent / "models" / "face_recognition_sface_2021dec.onnx"
+URL_IDENTIDADE = ("https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/"
+                  "face_recognition_sface_2021dec.onnx")
+
+
+def garantir_modelo(caminho: Path, url: str) -> Path:
+    if not caminho.exists():
+        import urllib.request
+        log.info("   baixando modelo %s ...", caminho.name)
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        parcial = caminho.with_suffix(caminho.suffix + ".parcial")
+        urllib.request.urlretrieve(url, parcial)
+        parcial.replace(caminho)
+    return caminho
 
 
 def resolucao_de(arquivo: Path) -> tuple[int, int, float, float]:
@@ -65,34 +83,53 @@ def cortes_de_cena(video: Path, limiar: float = 10.0) -> list[float]:
 # Etapa 2 — rostos (posição + abertura da boca) ao longo do tempo
 # ---------------------------------------------------------------------------
 
-def detectar_rostos(video: Path, passo_seg: float = 0.1, confianca_minima: float = 0.5,
-                    max_rostos: int = 4, modelo: Path = MODELO_PADRAO) -> tuple[list[float], list[list[dict]]]:
+def detectar_rostos(video: Path, passo_seg: float = 0.1, confianca_minima: float = 0.75,
+                    max_rostos: int = 4, modelo: Path = MODELO_PADRAO,
+                    modelo_detector: Path = MODELO_DETECTOR) -> tuple[list[float], list[list[dict]]]:
     """Lê o vídeo em sequência (sem seek — seek do OpenCV em H.264 é
-    impreciso) e roda o Face Landmarker a cada `passo_seg`. Devolve
-    (tempos, rostos_por_amostra); cada rosto é {cx, cy, tamanho, boca} em
-    frações do frame, boca = jawOpen (0 fechada .. 1 aberta)."""
+    impreciso) e, a cada `passo_seg`, acha os rostos e mede a boca de cada
+    um. Devolve (tempos, rostos_por_amostra); cada rosto é {cx, cy, tamanho,
+    boca} em frações do frame, boca = jawOpen (0 fechada .. 1 aberta).
+
+    Dois modelos, porque nenhum faz as duas coisas bem:
+    - YuNet (OpenCV) acha os rostos no quadro inteiro, inclusive pequenos
+      (plano aberto com duas pessoas: ~45px de rosto num vídeo 480p). O
+      detector embutido do Face Landmarker reduz o quadro para 128px e não vê
+      esses rostos.
+    - Face Landmarker, rodado num recorte ampliado de cada rosto achado, dá o
+      jawOpen (movimento da boca) para saber quem está falando. Só é confiável
+      em rosto grande (plano fechado); em rosto pequeno volta ~0.
+    - SFace (OpenCV) dá uma "impressão digital" do rosto (`vetor`), para
+      reconhecer a mesma pessoa em planos diferentes — é o que liga a voz à
+      pessoa no plano aberto, onde a boca não é legível.
+    """
     import cv2
     import mediapipe as mp
+    import numpy as np
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision as mp_vision
 
-    if not modelo.exists():
-        raise FileNotFoundError(f"Modelo não encontrado em {modelo}. Baixe com:\n"
-                                f"  curl -L -o \"{modelo}\" {URL_MODELO}")
+    garantir_modelo(modelo, URL_MODELO)
+    garantir_modelo(modelo_detector, URL_DETECTOR)
+    reconhecedor = cv2.FaceRecognizerSF.create(str(garantir_modelo(MODELO_IDENTIDADE, URL_IDENTIDADE)), "")
 
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise RuntimeError(f"não consegui abrir {video} com OpenCV")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     passo_frames = max(1, round(passo_seg * fps))
+    largura = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    altura = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    detector = cv2.FaceDetectorYN.create(str(modelo_detector), "", (largura, altura), confianca_minima)
+    detector.setTopK(max_rostos)
 
     opcoes = mp_vision.FaceLandmarkerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(modelo)),
-        running_mode=mp_vision.RunningMode.VIDEO, num_faces=max_rostos,
-        min_face_detection_confidence=confianca_minima, output_face_blendshapes=True)
+        running_mode=mp_vision.RunningMode.IMAGE, num_faces=1,
+        min_face_detection_confidence=0.3, output_face_blendshapes=True)
     tempos: list[float] = []
     amostras: list[list[dict]] = []
-    with mp_vision.FaceLandmarker.create_from_options(opcoes) as detector:
+    with mp_vision.FaceLandmarker.create_from_options(opcoes) as landmarker:
         indice = 0
         while True:
             ok = cap.grab()
@@ -102,12 +139,17 @@ def detectar_rostos(video: Path, passo_seg: float = 0.1, confianca_minima: float
                 ok, frame = cap.retrieve()
                 if not ok:
                     break
-                t = indice / fps
-                imagem = mp.Image(image_format=mp.ImageFormat.SRGB,
-                                  data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                res = detector.detect_for_video(imagem, int(round(t * 1000)))
-                tempos.append(t)
-                amostras.append(_rostos(res))
+                tempos.append(indice / fps)
+                _, caixas = detector.detect(frame)
+                rostos = []
+                for c in (caixas if caixas is not None else [])[:max_rostos]:
+                    x, y, w, h = (float(v) for v in c[:4])
+                    vetor = reconhecedor.feature(reconhecedor.alignCrop(frame, c)).flatten()
+                    rostos.append({"cx": (x + w / 2) / largura, "cy": (y + h / 2) / altura,
+                                   "tamanho": w / largura,
+                                   "boca": _boca(landmarker, mp, cv2, frame, x, y, w, h),
+                                   "vetor": vetor / (np.linalg.norm(vetor) or 1.0)})
+                amostras.append(rostos)
             indice += 1
     cap.release()
     com = sum(1 for a in amostras if a)
@@ -118,17 +160,67 @@ def detectar_rostos(video: Path, passo_seg: float = 0.1, confianca_minima: float
     return tempos, amostras
 
 
-def _rostos(res) -> list[dict]:
-    saida = []
-    for i, pontos in enumerate(res.face_landmarks):
-        xs = [p.x for p in pontos]
-        ys = [p.y for p in pontos]
-        boca = 0.0
-        if res.face_blendshapes:
-            boca = next((c.score for c in res.face_blendshapes[i] if c.category_name == "jawOpen"), 0.0)
-        saida.append({"cx": (min(xs) + max(xs)) / 2, "cy": (min(ys) + max(ys)) / 2,
-                      "tamanho": max(xs) - min(xs), "boca": boca})
-    return saida
+def _boca(landmarker, mp, cv2, frame, x: float, y: float, w: float, h: float) -> float:
+    """jawOpen do rosto na caixa (x,y,w,h): recorta com folga, amplia para
+    256px (o Face Landmarker precisa do rosto grande no quadro) e mede."""
+    alt, larg = frame.shape[:2]
+    lado = max(w, h) * 1.8
+    cx, cy = x + w / 2, y + h / 2
+    x0, y0 = int(max(0, cx - lado / 2)), int(max(0, cy - lado / 2))
+    x1, y1 = int(min(larg, cx + lado / 2)), int(min(alt, cy + lado / 2))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return 0.0
+    recorte = cv2.resize(frame[y0:y1, x0:x1], (256, 256), interpolation=cv2.INTER_CUBIC)
+    imagem = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(recorte, cv2.COLOR_BGR2RGB))
+    res = landmarker.detect(imagem)
+    if not res.face_blendshapes:
+        return 0.0
+    return next((c.score for c in res.face_blendshapes[0] if c.category_name == "jawOpen"), 0.0)
+
+
+def identificar_pessoas(amostras: list[list[dict]], limiar: float = 0.363) -> int:
+    """Agrupa todos os rostos do vídeo por semelhança (SFace) e grava
+    `rosto["pessoa"]` (0, 1, ...). `limiar` = similaridade de cosseno mínima
+    para ser a mesma pessoa (0.363 é o valor de referência do SFace)."""
+    import numpy as np
+    from sklearn.cluster import AgglomerativeClustering
+
+    todos = [r for a in amostras for r in a]
+    if len(todos) < 2:
+        for r in todos:
+            r["pessoa"] = 0
+        return len(todos)
+    rotulos = AgglomerativeClustering(n_clusters=None, distance_threshold=1 - limiar, metric="cosine",
+                                      linkage="average").fit_predict(np.stack([r["vetor"] for r in todos]))
+    for r, p in zip(todos, rotulos):
+        r["pessoa"] = int(p)
+    n = len(set(rotulos))
+    log.info("   pessoas reconhecidas: %d", n)
+    return n
+
+
+def mapear_falantes(tempos: list[float], amostras: list[list[dict]], turnos: list[dict],
+                    tamanho_minimo: float = 0.08) -> dict[int, int]:
+    """Qual pessoa (rosto) é cada falante (voz). Durante os turnos de uma
+    voz, a pessoa cuja boca mais se mexe é a dona da voz. Só usa rostos
+    grandes (plano fechado): em rosto pequeno a boca não é legível."""
+    bocas: dict[tuple[int, int], list[float]] = {}
+    for t in turnos:
+        for i, tt in enumerate(tempos):
+            if t["inicio"] <= tt <= t["fim"]:
+                for r in amostras[i]:
+                    if r["tamanho"] >= tamanho_minimo:
+                        bocas.setdefault((t["falante"], r["pessoa"]), []).append(r["boca"])
+    pontos = {k: statistics.pstdev(v) for k, v in bocas.items() if len(v) >= 5}
+    mapa: dict[int, int] = {}
+    usadas: set[int] = set()
+    # guloso pelo par (voz, pessoa) mais forte primeiro; uma pessoa por voz
+    for (falante, pessoa), _ in sorted(pontos.items(), key=lambda kv: -kv[1]):
+        if falante not in mapa and pessoa not in usadas:
+            mapa[falante] = pessoa
+            usadas.add(pessoa)
+    log.info("   voz -> pessoa: %s", mapa or "(sem plano fechado suficiente para ligar)")
+    return mapa
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +255,29 @@ def _movimento_boca(trilha: dict[int, dict], indices: list[int]) -> float:
     return statistics.pstdev(valores)
 
 
+def _pessoa_da_trilha(trilha: dict[int, dict]) -> int | None:
+    pessoas = [r.get("pessoa") for r in trilha.values() if r.get("pessoa") is not None]
+    return statistics.mode(pessoas) if pessoas else None
+
+
+def _falante_dominante(turnos: list[dict], a: float, b: float) -> int | None:
+    sobreposicao: dict[int, float] = {}
+    for t in turnos:
+        s = min(b, t["fim"]) - max(a, t["inicio"])
+        if s > 0:
+            sobreposicao[t["falante"]] = sobreposicao.get(t["falante"], 0.0) + s
+    return max(sobreposicao, key=sobreposicao.get) if sobreposicao else None
+
+
 def escolher_alvos(tempos: list[float], amostras: list[list[dict]], planos: list[tuple[float, float]],
-                   turnos: list[dict], turno_minimo: float) -> list[tuple[float, float] | None]:
-    """Para cada amostra, o (cx, cy) do rosto a enquadrar (ou None)."""
+                   turnos: list[dict], turno_minimo: float,
+                   mapa: dict[int, int] | None = None) -> list[tuple[float, float] | None]:
+    """Para cada amostra, o (cx, cy) do rosto a enquadrar (ou None).
+
+    Num plano com mais de um rosto, em ordem de preferência: (1) o rosto da
+    pessoa ligada à voz que fala naquele trecho (`mapa`, voz -> pessoa);
+    (2) quem mexe mais a boca; (3) fica onde estava / o maior rosto."""
+    mapa = mapa or {}
     alvos: list[tuple[float, float] | None] = [None] * len(tempos)
     for ini, fim in planos:
         idx = [i for i, t in enumerate(tempos) if ini <= t < fim]
@@ -187,8 +299,12 @@ def escolher_alvos(tempos: list[float], amostras: list[list[dict]], planos: list
             idx_trecho = [i for i in idx if a <= tempos[i] < b]
             if not idx_trecho:
                 continue
+            falante = _falante_dominante(turnos, a, b)
+            da_voz = [tr for tr in trilhas if falante in mapa and _pessoa_da_trilha(tr) == mapa[falante]]
             if len(trilhas) == 1:
                 escolhida = trilhas[0]
+            elif da_voz:
+                escolhida = max(da_voz, key=len)
             else:
                 em_fala = [i for i in idx_trecho if any(t["inicio"] <= tempos[i] <= t["fim"] for t in turnos)]
                 base = em_fala or idx_trecho
@@ -332,7 +448,9 @@ def processar(video: Path, destino: Path, turnos: list[dict], cfg: dict,
 
     tempos, amostras = detectar_rostos(video, cd["passo_seg"], cd["confianca_minima"],
                                        cd["max_rostos"], modelo)
-    alvos = escolher_alvos(tempos, amostras, planos, turnos, cc["turno_minimo"])
+    identificar_pessoas(amostras)
+    mapa = mapear_falantes(tempos, amostras, turnos)
+    alvos = escolher_alvos(tempos, amostras, planos, turnos, cc["turno_minimo"], mapa)
     keys = trajetoria_camera(tempos, alvos, planos, fps, cc["zona_morta"], cc["tempo_fora"],
                              cc["tempo_pan"], cc["segura_minimo"])
     renderizar(video, destino, gerar_comandos(keys, largura, altura, crop_w, crop_h),
