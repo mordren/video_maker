@@ -42,6 +42,7 @@ import gancho
 import recomeco
 import renderiza
 import silencio
+import transicao
 from jev_client import JEV
 from openrouter import APIError, api_key
 from transcricao import rodar_whisper  # reaproveita o wrapper do Whisper da Fase 1
@@ -147,9 +148,24 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
                     renderiza.renderizar(clipe_bruto, abertura, [(escolhido["inicio"], escolhido["fim"])],
                                          tem_video=True, cfg_loud=cfg["loudness"], crossfade_ms=0,
                                          escala_de_cinza=ca["escala_de_cinza"])
-                    renderiza.concatenar([abertura, principal], destino)
                     abertura_info = {"inicio": escolhido["inicio"], "fim": escolhido["fim"],
-                                     "texto": escolhido["texto"]}
+                                     "texto": escolhido["texto"], "transicao": None}
+
+                    ct = cfg["transicao"]
+                    if ct["ativo"]:
+                        som = transicao.sortear_som(Path(ct["pasta_sons"]))
+                        if som:
+                            try:
+                                with etapa("transição (slow motion + som)"):
+                                    transicao.aplicar(abertura, som, ct["fator_slow"],
+                                                      ct["volume_whoosh"], ct["volume_voz_no_slow"])
+                                abertura_info["transicao"] = som.name
+                            except Exception as exc:  # noqa: BLE001 — sem transição, segue com a abertura seca
+                                log.warning("   %s: transição falhou (%s); abertura sem efeito", bid, exc)
+                        else:
+                            log.warning("   %s: nenhum som em %s", bid, ct["pasta_sons"])
+
+                    renderiza.concatenar([abertura, principal], destino)
                 except Exception as exc:  # noqa: BLE001 — sem abertura não é motivo de falhar o bloco
                     log.warning("   %s: abertura falhou (%s); seguindo sem ela", bid, exc)
             else:
@@ -164,19 +180,22 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
     for intermediario in (clipe_bruto, principal, pbloco / "abertura.mp4"):
         intermediario.unlink(missing_ok=True)
 
+    # Normalmente encolhe (cortes de silêncio/recomeço); pode crescer quando a
+    # transição estica o final da abertura em slow motion — por isso é uma
+    # variação com sinal, não um "removido" sempre positivo.
+    variacao = round(duracao_final - duracao_bruta, 3)
     relatorio = {
         "id": bid,
         "duracao_antes": round(duracao_bruta, 3),
         "duracao_depois": round(duracao_final, 3),
-        "removido": round(duracao_bruta - duracao_final, 3),
+        "variacao": variacao,
         "apara_bordas": {"inicio": inicio_ok, "fim": fim_ok},
         "cortes": todos_cortes,
         "abertura": abertura_info,
     }
     gravar_json(pbloco / "relatorio.json", relatorio)
-    log.info("   %s: %.1fs -> %.1fs (-%.1fs, %d cortes%s)", bid, duracao_bruta, duracao_final,
-             duracao_bruta - duracao_final, len(todos_cortes),
-             ", com abertura" if abertura_info else "")
+    log.info("   %s: %.1fs -> %.1fs (%+.1fs, %d cortes%s)", bid, duracao_bruta, duracao_final,
+             variacao, len(todos_cortes), ", com abertura" if abertura_info else "")
     return relatorio
 
 

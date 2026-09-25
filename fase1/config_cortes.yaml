@@ -51,6 +51,20 @@ jev:
   timeout: 30
   tentativas: 3
 
+# Transição entre a abertura e o corte principal: um som (sorteado da pasta,
+# um por bloco) toca sobre o final da abertura desacelerado — o slow motion
+# estica o vídeo até caber exatamente o tempo do som, cobrindo a junção sem
+# deixar buraco (as pausas longas foram cortadas, não sobra vídeo "neutro"
+# para esconder um corte seco). Só entra se a abertura tiver sido gerada.
+transicao:
+  ativo: true
+  pasta_sons: "C:\\Users\\joaor\\Videos\\CortaLegenda\\transition"
+  fator_slow: 2.0            # quanto mais devagar fica o trecho final da abertura
+                              # (limite técnico: até 2x nesta implementação, por causa
+                              # do filtro atempo do FFmpeg — ver transicao.py)
+  volume_whoosh: 1.3         # ganho do efeito sonoro
+  volume_voz_no_slow: 0.25   # o quanto abafar a voz original enquanto o efeito toca
+
 saida:
   pasta: "cortes"
   crossfade_ms: 15   # suaviza o ponto de corte de áudio (evita "clique")

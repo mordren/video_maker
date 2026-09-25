@@ -269,12 +269,20 @@ Se `abertura.ativo: true` (padrão), depois de calcular os cortes de silêncio/r
    segmentação (Parte A) como contexto do que se espera encontrar.
 3. Esse trecho é renderizado à parte — em escala de cinza por padrão
    (`abertura.escala_de_cinza`, filtro `hue=s=0`), para diferenciar visualmente do corte
-   principal, que segue colorido — com o mesmo `loudnorm`, sem fade (a transição é o próprio
-   corte do vídeo, não uma junção interna), e colado na frente do corte principal com o
-   demuxer concat do FFmpeg (sem reencode: os dois já saíram do mesmo codec).
+   principal, que segue colorido — com o mesmo `loudnorm`.
+4. **Transição** (`transicao.py`, se `transicao.ativo: true`): sorteia um som da pasta
+   `transicao.pasta_sons` (ex.: `C:\Users\joaor\Videos\CortaLegenda\transition`, sons de
+   "whoosh"/câmera) e desacelera o FINAL da abertura em `fator_slow`x até durar exatamente o
+   tempo desse som — a voz original nesse trecho é abafada (`volume_voz_no_slow`) e o efeito
+   entra por cima (`volume_whoosh`). Existe porque as pausas longas já foram cortadas: sem
+   isso, não sobra vídeo "neutro" para cobrir o tempo de um som de transição sem parecer um
+   buraco — o vídeo estica visualmente em vez disso.
+5. A abertura (já com a transição) é colada na frente do corte principal com o demuxer
+   concat do FFmpeg (sem reencode: os dois já saíram do mesmo codec).
 
 Sem `OPENROUTER_API_KEY` configurada, ou com `abertura.ativo: false`, o pipeline segue
-normal e só não gera a abertura — não é obrigatória para o resto funcionar.
+normal e só não gera a abertura (nem a transição, que depende dela) — nenhuma das duas é
+obrigatória para o resto funcionar.
 
 Testado com vídeo real: de 20 candidatos, o JEV escolheu "Eduardo Bolsonaro é um imbecil
 completo. O papel dele é justamente..." (a frase de efeito do bloco) em ~2s.
