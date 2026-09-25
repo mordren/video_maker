@@ -263,7 +263,10 @@ Se `abertura.ativo: true` (padrão), depois de calcular os cortes de silêncio/r
 1. `gancho.py` gera candidatos de 1,8-3,2s, ancorados em início de palavra e preferindo
    terminar em pontuação de frase, **sempre fora dos trechos já cortados** — um candidato
    que cruzasse um corte mostraria, na abertura, algo que depois "some" quando o corte
-   principal começa.
+   principal começa. Regra dura adicional (`abertura.margem_inicio`, 5s por padrão): nenhum
+   candidato pode começar nos primeiros segundos do bloco — sem isso, a abertura podia
+   coincidir com o próprio começo do corte principal, mostrando a mesma fala duas vezes
+   seguidas (achado testando com vídeo real).
 2. O JEV (`jev_client.escolher_gancho`) escolhe, entre até `max_candidatos` opções, o trecho
    que mais impacta sozinho — recebe o `gancho`/`comentario` que o DeepSeek escreveu na
    segmentação (Parte A) como contexto do que se espera encontrar.
@@ -277,8 +280,10 @@ Se `abertura.ativo: true` (padrão), depois de calcular os cortes de silêncio/r
    entra por cima (`volume_whoosh`). Existe porque as pausas longas já foram cortadas: sem
    isso, não sobra vídeo "neutro" para cobrir o tempo de um som de transição sem parecer um
    buraco — o vídeo estica visualmente em vez disso.
-5. A abertura (já com a transição) é colada na frente do corte principal com o demuxer
-   concat do FFmpeg (sem reencode: os dois já saíram do mesmo codec).
+5. A abertura (já com a transição sonora) é colada na frente do corte principal com um
+   **crossfade de vídeo+áudio** (`renderiza.concatenar_com_fade`, filtro `xfade`/`acrossfade`
+   do FFmpeg, `transicao.duracao_fade`/`tipo_fade`) — não um corte seco. É a única etapa que
+   sempre reencoda (as outras concatenações do pipeline usam o demuxer concat, sem reencode).
 
 Sem `OPENROUTER_API_KEY` configurada, ou com `abertura.ativo: false`, o pipeline segue
 normal e só não gera a abertura (nem a transição, que depende dela) — nenhuma das duas é

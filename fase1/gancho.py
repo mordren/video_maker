@@ -21,13 +21,22 @@ def _cabe_fora_dos_cortes(inicio: float, fim: float, cortes: list[dict]) -> bool
 
 
 def candidatos(palavras: list[dict], cortes: list[dict], duracao_min: float,
-               duracao_max: float, max_candidatos: int) -> list[dict]:
+               duracao_max: float, max_candidatos: int, margem_inicio: float = 0.0) -> list[dict]:
     """Janelas de `duracao_min`..`duracao_max` segundos, ancoradas em início de
-    palavra, que não cruzam nenhum corte já decidido (silêncio/recomeço)."""
+    palavra, que não cruzam nenhum corte já decidido (silêncio/recomeço).
+
+    `margem_inicio`: nenhum candidato pode começar antes disso (segundos,
+    relativo ao início do bloco). Regra dura, não preferência — sem ela, a
+    abertura pode coincidir com o próprio início do corte principal, e o
+    espectador vê a mesma fala duas vezes seguidas (uma em P&B, outra em
+    cores) sem nenhum motivo.
+    """
     saida: list[dict] = []
     n = len(palavras)
     for i in range(n):
         inicio = palavras[i]["start"]
+        if inicio < margem_inicio:
+            continue
         melhor: dict | None = None
         for j in range(i, n):
             fim = palavras[j]["end"]

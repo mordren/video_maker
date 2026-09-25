@@ -139,7 +139,8 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
     if ca["ativo"] and jev is not None:
         with etapa("abertura (candidatos + JEV)"):
             candidatos = gancho.candidatos(palavras, todos_cortes, ca["duracao_minima"],
-                                           ca["duracao_maxima"], ca["max_candidatos"])
+                                           ca["duracao_maxima"], ca["max_candidatos"],
+                                           ca["margem_inicio"])
             if candidatos:
                 try:
                     escolhido = jev.escolher_gancho(candidatos, bloco.get("gancho", ""),
@@ -165,7 +166,8 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
                         else:
                             log.warning("   %s: nenhum som em %s", bid, ct["pasta_sons"])
 
-                    renderiza.concatenar([abertura, principal], destino)
+                    renderiza.concatenar_com_fade(abertura, principal, destino,
+                                                  duracao_fade=ct["duracao_fade"], tipo=ct["tipo_fade"])
                 except Exception as exc:  # noqa: BLE001 — sem abertura não é motivo de falhar o bloco
                     log.warning("   %s: abertura falhou (%s); seguindo sem ela", bid, exc)
             else:

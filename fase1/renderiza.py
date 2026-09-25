@@ -92,10 +92,39 @@ def renderizar(origem: Path, destino: Path, manter: list[tuple[float, float]],
     subprocess.run(cmd, check=True, capture_output=True)
 
 
+def duracao_de(arquivo: Path) -> float:
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", str(arquivo)],
+                       capture_output=True, text=True, check=True)
+    return float(r.stdout.strip())
+
+
+def concatenar_com_fade(clipe1: Path, clipe2: Path, destino: Path, duracao_fade: float = 0.35,
+                        tipo: str = "fade") -> None:
+    """Cola `clipe2` depois de `clipe1` com um crossfade de vídeo+áudio, não um
+    corte seco — `xfade` sobrepõe os últimos `duracao_fade` segundos de um com
+    os primeiros do outro (a duração final é dur1+dur2-fade). `tipo` é
+    qualquer transição do filtro `xfade` do FFmpeg ("fade" é o dissolve
+    clássico). Reencode: precisa, o corte seco anterior (demuxer concat) não
+    permite misturar os dois clipes."""
+    dur1 = duracao_de(clipe1)
+    dur2 = duracao_de(clipe2)
+    fade = max(0.05, min(duracao_fade, dur1 * 0.9, dur2 * 0.9))
+    offset = max(0.0, dur1 - fade)
+    filtro = (
+        f"[0:v][1:v]xfade=transition={tipo}:duration={fade}:offset={offset}[vout];"
+        f"[0:a][1:a]acrossfade=d={fade}[aout]"
+    )
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe1), "-i", str(clipe2),
+                    "-filter_complex", filtro, "-map", "[vout]", "-map", "[aout]",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                    "-c:a", "aac", "-b:a", "192k", str(destino)], check=True, capture_output=True)
+
+
 def concatenar(clipes: list[Path], destino: Path) -> None:
     """Concatena clipes JÁ RENDERIZADOS com o mesmo codec (ex.: gancho + corte
     principal) sem reencode — usa o demuxer concat do FFmpeg, que só copia os
-    streams."""
+    streams. Sem crossfade — ver `concatenar_com_fade` para isso."""
     lista = destino.with_suffix(".txt")
     lista.write_text("".join(f"file '{c.resolve().as_posix()}'\n" for c in clipes), encoding="utf-8")
     try:
