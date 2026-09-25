@@ -90,9 +90,15 @@ def escape_drawtext(text: str) -> str:
     """
     # Escape order: backslash first, then outros
     text = text.replace("\\", "\\\\")  # \ -> \\
-    text = text.replace("'", "\\'")    # ' -> \'
+    # Aspa simples: dentro de text='...' o "\'" NÃO escapa — a aspa fecha o
+    # texto no meio e o filtro inteiro falha (o GC sumia em silêncio quando a
+    # manchete da IA vinha com 'aspas', medido em 25/09/2026). O apóstrofo
+    # tipográfico tem a mesma cara no vídeo e não precisa de escape nenhum.
+    text = text.replace("'", "’")
     text = text.replace(":", "\\:")    # : -> \:
-    text = text.replace("%", "\\%")    # % -> \%
+    # "%" abre variável do drawtext (%{...}); precisa de DUAS barras no filtro
+    # final — com uma só dá "Stray %" e o filtro inteiro falha em silêncio.
+    text = text.replace("%", "\\\\%")  # % -> \\%
     return text
 
 

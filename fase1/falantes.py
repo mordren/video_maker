@@ -107,9 +107,34 @@ def turnos(palavras: list[dict], rotulo_palavra: list[int], turno_minimo: float)
     return ts
 
 
+def absorver_grupos_pequenos(embs: np.ndarray, rotulos: np.ndarray, fracao_minima: float) -> np.ndarray:
+    """Grupos com menos de `fracao_minima` das janelas de fala viram parte do
+    grupo grande mais parecido (centroide mais próximo).
+
+    Com áudio ruim (vídeo baixado em 360p, AAC a 44 kbps) a mesma pessoa às
+    vezes racha em 2-3 grupos — medido em 25/09/2026: trechos com 2 pessoas
+    saindo com "3 ou 4 vozes". Um grupo que fala tão pouco quase nunca é uma
+    pessoa de verdade; e voz a mais atrapalha o crop (vira uma troca de pessoa
+    que não existe).
+
+    O limite padrão é baixo (5%) de propósito: com 15%, uma pergunta de 11s
+    da entrevistadora num corte de 111s (conferido na imagem: era ela, em
+    close) foi engolida como se fosse o entrevistado."""
+    rotulos = rotulos.copy()
+    contagem = {r: int((rotulos == r).sum()) for r in set(rotulos.tolist())}
+    grandes = [r for r, n in contagem.items() if n >= fracao_minima * len(rotulos)]
+    if not grandes or len(grandes) == len(contagem):
+        return rotulos
+    centroides = {r: embs[rotulos == r].mean(axis=0) for r in grandes}
+    for i, r in enumerate(rotulos):
+        if r not in centroides:
+            rotulos[i] = max(grandes, key=lambda g: float(embs[i] @ centroides[g]))
+    return rotulos
+
+
 def detectar(wav_path: Path, palavras: list[dict], n_falantes: int | None = None,
              limiar: float = 0.35, passo_seg: float = 0.25, turno_minimo: float = 1.0,
-             device: str | None = None) -> list[dict]:
+             device: str | None = None, fracao_minima: float = 0.05) -> list[dict]:
     """Turnos de fala: [{inicio, fim, falante, texto}], falante = 0, 1, ...
     numerado por ordem de primeira aparição."""
     if not palavras:
@@ -122,6 +147,8 @@ def detectar(wav_path: Path, palavras: list[dict], n_falantes: int | None = None
                  "texto": "".join(p["word"] for p in palavras).strip()}]
     tempos, embs = tempos[mascara], embs[mascara]
     rotulos = agrupar(embs, n_falantes, limiar)
+    if not n_falantes:
+        rotulos = absorver_grupos_pequenos(embs, rotulos, fracao_minima)
 
     rotulo_palavra = []
     for p in palavras:
