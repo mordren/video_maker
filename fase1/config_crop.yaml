@@ -1,14 +1,22 @@
-# Configuração do crop dinâmico 9:16 (crop_dinamico.py / pipeline_crop.py).
-# Roda nos clipes já prontos da Fase 2 (pipeline_cortes.py), não no vídeo bruto.
-
 deteccao:
-  passo_seg: 0.2            # intervalo entre amostras de detecção de rosto —
-                             # menor = mais preciso e mais lento
-  confianca_minima: 0.5     # abaixo disso o MediaPipe não conta como rosto
+  passo_seg: 0.1          # rosto/boca a cada 0.1s (boca precisa de resolução p/ ver quem fala)
+  confianca_minima: 0.5
+  max_rostos: 4
+  limiar_corte: 10.0      # scdet do FFmpeg: sensibilidade para achar troca de câmera
 
-suavizacao:
-  janela_seg: 1.0            # janela da média móvel sobre a trajetória do crop —
-                              # maior = câmera mais "lenta"/estável, menor = mais reativa
+camera:
+  zona_morta: 0.10        # rosto pode andar até 10% da largura do frame sem a câmera mexer
+  tempo_fora: 0.8         # s fora da zona morta antes de re-enquadrar
+  tempo_pan: 0.5          # s de duração do re-enquadramento
+  segura_minimo: 2.0      # s mínimos parada entre dois movimentos
+  turno_minimo: 1.5       # turno de fala mais curto que isso não troca de pessoa
+
+falantes:
+  ativo: true
+  whisper_modelo: small
+  idioma: pt
+  n_falantes: null        # null = descobre sozinho; ou fixe (ex.: 2)
+  limiar: 0.35            # distância de cosseno p/ separar vozes quando n_falantes é null
 
 saida:
   largura: 1080
