@@ -277,8 +277,14 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
 
     srt, palavras = transcrever(clipe, pasta, cf.get("whisper_modelo", "small"), cf.get("idioma", "pt"))
 
+    # A Fase 2 já faz o crop no bloco inteiro, antes da abertura (config_cortes
+    # crop.ativo) — aí o clipe chega vertical e não se corta de novo. O crop
+    # daqui só vale como reserva, para um clipe que chegou em 16:9.
+    largura, altura, _fps, _dur = crop_dinamico.resolucao_de(clipe)
+    ja_vertical = altura > largura
+
     turnos: list[dict] = []
-    if cf.get("ativo", True) and palavras:
+    if not ja_vertical and cf.get("ativo", True) and palavras:
         wav = pasta / "audio.wav"
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe), "-ac", "1",
                         "-ar", "16000", str(wav)], check=True)
@@ -288,8 +294,9 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
         finally:
             wav.unlink(missing_ok=True)
 
-    vertical = pasta / "vertical.mp4"
-    crop_dinamico.processar(clipe, vertical, turnos, cfg_crop)
+    vertical = clipe if ja_vertical else pasta / "vertical.mp4"
+    if not ja_vertical:
+        crop_dinamico.processar(clipe, vertical, turnos, cfg_crop)
 
     # A IA revisa com a frase inteira; só depois a legenda é picada em blocos
     # curtos (mesma ordem do app: "a IA lida melhor com frases inteiras").
@@ -311,7 +318,8 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
     final = pasta / "final.mp4"
     info = renderizar_final(vertical, final, srt, titulo, subtitulo, perfil,
                             palavras_censuradas(ia["sensiveis"]), trilha, pasta)
-    vertical.unlink(missing_ok=True)
+    if not ja_vertical:
+        vertical.unlink(missing_ok=True)
     return {
         "arquivo": final.name,
         "capa": info["capa"].name if info["capa"] else "",

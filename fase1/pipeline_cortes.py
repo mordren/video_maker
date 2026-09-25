@@ -88,6 +88,37 @@ def duracao_de(arquivo: Path) -> float:
     return float(r.stdout.strip())
 
 
+def crop_vertical(clipe: Path, palavras: list[dict], pasta: Path, cfg_crop: dict) -> Path:
+    """Crop dinâmico 9:16 do clipe bruto do bloco (crop_dinamico.py).
+
+    Roda ANTES do corte principal e da abertura, no bloco inteiro: com o
+    contexto todo (planos de câmera, turnos de fala), o enquadramento de cada
+    trecho sai certo — e a abertura, recortada depois deste vídeo já vertical,
+    herda esse enquadramento. Cropar depois, com a abertura já colada na frente
+    (2-3s fora de contexto, em câmera lenta, com dissolvência), deixava o crop
+    perdido no começo: caía na parede de um plano aberto sem ninguém.
+    """
+    import crop_dinamico
+    import falantes
+
+    turnos: list[dict] = []
+    cf = cfg_crop.get("falantes", {})
+    if cf.get("ativo", True) and palavras:
+        wav = pasta / "audio_falantes.wav"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe), "-ac", "1",
+                        "-ar", "16000", str(wav)], check=True)
+        try:
+            turnos = falantes.detectar(wav, palavras, n_falantes=cf.get("n_falantes"),
+                                       limiar=cf.get("limiar", 0.35))
+        except Exception as exc:  # noqa: BLE001 — sem saber quem fala, o crop ainda segue os rostos
+            log.warning("   quem fala: não deu (%s); crop segue só os rostos", exc)
+        finally:
+            wav.unlink(missing_ok=True)
+    vertical = pasta / "bruto_vertical.mp4"
+    crop_dinamico.processar(clipe, vertical, turnos, cfg_crop)
+    return vertical
+
+
 def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | None) -> dict:
     bid = bloco["id"]
     pbloco = pasta / bid
@@ -108,6 +139,15 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
         clipe_bruto.unlink(missing_ok=True)
         return {"id": bid, "duracao_antes": duracao_bruta, "duracao_depois": duracao_bruta,
                "cortes": [], "aviso": "sem transcrição por palavra"}
+
+    horizontal = clipe_bruto
+    cc = cfg.get("crop") or {}
+    if cc.get("ativo"):
+        caminho_cfg = Path(cc.get("config", "config_crop.yaml"))
+        cfg_crop = yaml.safe_load((caminho_cfg if caminho_cfg.is_absolute() else AQUI / caminho_cfg)
+                                  .read_text(encoding="utf-8"))
+        with etapa("crop dinâmico 9:16 (bloco inteiro, antes da abertura)"):
+            clipe_bruto = crop_vertical(horizontal, palavras, pbloco, cfg_crop)
 
     cs = cfg["silencio"]
     with etapa("detecção de silêncio"):
@@ -179,7 +219,7 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
     # Limpa os intermediários (bruto/principal/abertura) — só o .mp4 final, o
     # relatório e a transcrição (bruto.json, pequena e útil para auditoria)
     # ficam. Sem isso, cada bloco deixa 3-4 cópias de dezenas de MB para trás.
-    for intermediario in (clipe_bruto, principal, pbloco / "abertura.mp4"):
+    for intermediario in (horizontal, clipe_bruto, principal, pbloco / "abertura.mp4"):
         intermediario.unlink(missing_ok=True)
 
     # Normalmente encolhe (cortes de silêncio/recomeço); pode crescer quando a

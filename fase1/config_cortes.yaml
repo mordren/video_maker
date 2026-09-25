@@ -77,6 +77,14 @@ transicao:
                               # ("fade" = dissolve clássico; outras: fadeblack, wipeleft,
                               # slideup, circlecrop, distance...)
 
+crop:
+  # Crop dinâmico 9:16 (segue quem fala) no bloco inteiro, ANTES do corte e da
+  # abertura — a abertura herda o enquadramento feito com o contexto todo.
+  # Precisa de mediapipe/opencv/resemblyzer (requirements_crop.txt); sem eles,
+  # deixe false e o bloco sai em 16:9.
+  ativo: true
+  config: "config_crop.yaml"   # relativo a esta pasta (fase1)
+
 saida:
   pasta: "cortes"
   crossfade_ms: 15   # suaviza o ponto de corte de áudio (evita "clique")
