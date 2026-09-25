@@ -10,8 +10,16 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QLineEdit
+try:
+    from PySide6.QtCore import Signal
+    from PySide6.QtWidgets import QLineEdit
+except ImportError:
+    # O estúdio web (estudio/) reaproveita as funções daqui sem ter interface
+    # Qt instalada; só o widget TimestampInput depende dela.
+    QLineEdit = object
+
+    def Signal(*_tipos):  # noqa: N802 — imita o nome do PySide6
+        return None
 
 # ---------------------------------------------------------------------------
 # Constantes

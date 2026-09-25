@@ -1,0 +1,4 @@
+# cmd.exe e PowerShell no Windows: CRLF sempre (label/goto do .cmd quebram com LF)
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf

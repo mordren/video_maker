@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estúdio de cortes</title>
+<style>
+  :root {
+    --fundo: #16181d; --caixa: #1e2128; --linha: #2b2f38;
+    --texto: #e7e9ee; --fraco: #9aa1ad; --destaque: #4f8cff;
+    --ok: #37c871; --erro: #ff6b6b; --aviso: #ffc95c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 60px; background: var(--fundo); color: var(--texto);
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .fraco { color: var(--fraco); }
+  section {
+    background: var(--caixa); border: 1px solid var(--linha); border-radius: 10px;
+    padding: 16px; margin-top: 16px;
+  }
+  button {
+    background: #2a2f3a; color: var(--texto); border: 1px solid var(--linha);
+    border-radius: 7px; padding: 7px 12px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--destaque); }
+  button.principal { background: var(--destaque); border-color: var(--destaque); color: #fff; font-weight: 600; }
+  button.perigo { color: #ffb4b4; }
+  button.mini { padding: 3px 8px; font-size: 13px; }
+  button:disabled { opacity: .45; cursor: default; }
+  input, select {
+    background: #14161b; color: var(--texto); border: 1px solid var(--linha);
+    border-radius: 7px; padding: 7px 9px; font: inherit; width: 100%;
+  }
+  label { display: block; font-size: 13px; color: var(--fraco); margin-bottom: 4px; }
+  a { color: var(--destaque); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--linha); vertical-align: middle; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--fraco); }
+  .topo { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; }
+  .acoes { display: flex; flex-wrap: wrap; gap: 6px; }
+  .grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .abas { display: flex; gap: 6px; margin-bottom: 12px; }
+  .abas button.ativa { border-color: var(--destaque); color: #fff; background: #25324d; }
+  .ou { align-self: end; padding-bottom: 8px; text-align: center; color: var(--fraco); }
+  .pilula { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--linha); white-space: nowrap; }
+  .aguardando { color: var(--fraco); }
+  .processando { color: var(--aviso); border-color: var(--aviso); }
+  .pronto, .na_fila { color: var(--ok); border-color: var(--ok); }
+  .erro, .cancelado { color: var(--erro); border-color: var(--erro); }
+  .descartado { color: var(--fraco); }
+  progress { width: 100%; height: 8px; margin-top: 10px; }
+  .recado { margin-top: 10px; font-size: 14px; min-height: 20px; }
+  .recado.erro { color: var(--erro); } .recado.ok { color: var(--ok); }
+  #aviso-conexao { background: #3a1f1f; border: 1px solid var(--erro); color: #ffd3d3; border-radius: 8px; padding: 10px 14px; margin-top: 10px; }
+  .cortes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  .corte { border: 1px solid var(--linha); border-radius: 10px; padding: 10px; background: #191c22; display: flex; flex-direction: column; gap: 8px; }
+  .corte video { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 6px; }
+  .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
+  .corte .meta b { color: var(--texto); font-weight: 600; }
+  pre#log { margin: 10px 0 0; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--fraco); white-space: pre-wrap; background: #14161b; border-radius: 8px; padding: 10px; }
+  td.etapa { font-size: 13px; color: var(--fraco); }
+  @media (max-width: 600px) { .esconde-celular { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="topo">
+    <h1>🎬 Estúdio de cortes</h1>
+    <span class="fraco">Publicação: <a id="link-publicador" href="#" target="_blank" rel="noopener">abrir o Publicador ↗</a></span>
+  </div>
+  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → crop 9:16 que segue quem fala → legenda, GC, trilha → revisão → fila de publicação.</p>
+  <div id="aviso-conexao" hidden></div>
+
+  <section>
+    <div class="abas">
+      <button id="aba-auto" class="ativa">⚡ Automático</button>
+      <button id="aba-csv">📊 Lote CSV</button>
+    </div>
+    <p class="fraco" id="explica-auto" style="margin:0 0 10px">A IA escolhe os melhores trechos do vídeo sozinha.</p>
+    <p class="fraco" id="explica-csv" style="margin:0 0 10px" hidden>Você diz os trechos num CSV (colunas <code>inicio, fim, titulo</code>; opcionais <code>subtitulo, musica</code>). Cada linha vira um corte, com o mesmo acabamento.</p>
+    <div class="grade">
+      <div style="grid-column: span 2; min-width: 0">
+        <label for="url">Link do YouTube</label>
+        <input id="url" placeholder="https://www.youtube.com/watch?v=…">
+      </div>
+      <div class="ou">ou</div>
+      <div>
+        <label for="video">Arquivo de vídeo</label>
+        <input type="file" id="video" accept=".mp4,.mov,.mkv,.avi,.webm">
+      </div>
+      <div id="campo-csv" hidden>
+        <label for="csv">Arquivo CSV</label>
+        <input type="file" id="csv" accept=".csv">
+      </div>
+    </div>
+    <div class="grade" style="margin-top:12px">
+      <div>
+        <label for="canal">Canal (para onde vai depois da revisão)</label>
+        <select id="canal"></select>
+      </div>
+      <div>
+        <label for="perfil">Visual (logo, cores, marca d'água)</label>
+        <select id="perfil"></select>
+      </div>
+      <div style="align-self:end">
+        <button id="btn-produzir" class="principal" style="width:100%">▶ Produzir cortes</button>
+      </div>
+    </div>
+    <progress id="progresso" value="0" max="100" hidden></progress>
+    <div class="recado" id="recado"></div>
+  </section>
+
+  <section>
+    <div class="topo">
+      <h2 id="titulo-revisar">Revisar</h2>
+      <span class="fraco" style="font-size:13px">Assista, ajuste o título (vira o título no YouTube) e mande para a fila.</span>
+    </div>
+    <div class="cortes" id="cortes"></div>
+    <p class="fraco" id="sem-cortes">Nenhum corte esperando revisão.</p>
+  </section>
+
+  <section>
+    <h2>Trabalhos</h2>
+    <table>
+      <thead><tr>
+        <th>Vídeo</th><th style="width:110px">Situação</th><th class="esconde-celular">Etapa</th>
+        <th style="width:70px">Cortes</th><th style="width:210px">Ações</th>
+      </tr></thead>
+      <tbody id="trabalhos"></tbody>
+    </table>
+    <p class="fraco" id="sem-trabalhos">Nenhum trabalho ainda.</p>
+    <div id="caixa-log" hidden>
+      <div class="topo" style="margin-top:12px">
+        <b id="log-titulo">Log</b>
+        <button class="mini" id="btn-fechar-log">fechar</button>
+      </div>
+      <pre id="log"></pre>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let estado = null, modo = "auto", logAberto = null, assinaturaCortes = "";
+
+function escapar(t) {
+  return String(t ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function recado(texto, tipo) { const r = $("recado"); r.textContent = texto; r.className = "recado " + (tipo || ""); }
+
+async function api(url, corpo) {
+  const opcoes = corpo === undefined ? {method: "POST"}
+    : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(corpo)};
+  const r = await fetch(url, opcoes);
+  const dados = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(dados.erro || ("erro " + r.status));
+  return dados;
+}
+
+function trocarModo(novo) {
+  modo = novo;
+  $("aba-auto").classList.toggle("ativa", modo === "auto");
+  $("aba-csv").classList.toggle("ativa", modo === "csv");
+  $("campo-csv").hidden = modo !== "csv";
+  $("explica-auto").hidden = modo !== "auto";
+  $("explica-csv").hidden = modo !== "csv";
+  $("btn-produzir").textContent = modo === "csv" ? "▶ Produzir lote" : "▶ Produzir cortes";
+}
+$("aba-auto").onclick = () => trocarModo("auto");
+$("aba-csv").onclick = () => trocarModo("csv");
+
+function preencherSelect(sel, opcoes, atual, vazio) {
+  const valor = sel.value || atual || "";
+  sel.innerHTML = (vazio ? `<option value="">${escapar(vazio)}</option>` : "")
+    + opcoes.map(o => `<option value="${escapar(o)}">${escapar(o)}</option>`).join("");
+  if (opcoes.includes(valor)) sel.value = valor;
+}
+
+$("canal").onchange = () => {
+  const p = (estado?.canal_perfil || {})[$("canal").value];
+  if (p && estado.perfis.includes(p)) $("perfil").value = p;
+};
+
+$("btn-produzir").onclick = () => {
+  const url = $("url").value.trim(), video = $("video").files[0], csv = $("csv").files[0];
+  if (!url && !video) return recado("Cole um link ou escolha um arquivo de vídeo.", "erro");
+  if (modo === "csv" && !csv) return recado("Escolha o arquivo CSV com os trechos.", "erro");
+  const form = new FormData();
+  form.append("url", url); form.append("canal", $("canal").value); form.append("perfil", $("perfil").value);
+  if (video) form.append("video", video);
+  if (modo === "csv") form.append("csv", csv);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/trabalhos");
+  $("btn-produzir").disabled = true;
+  if (video) { $("progresso").hidden = false; $("progresso").value = 0; }
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) $("progresso").value = 100 * e.loaded / e.total; };
+  xhr.onload = () => {
+    $("btn-produzir").disabled = false; $("progresso").hidden = true;
+    let dados = {}; try { dados = JSON.parse(xhr.responseText); } catch (e) {}
+    if (xhr.status !== 200) return recado(dados.erro || "Erro " + xhr.status, "erro");
+    recado("Trabalho criado — acompanhe em Trabalhos, abaixo.", "ok");
+    $("url").value = ""; $("video").value = ""; $("csv").value = "";
+    atualizar();
+  };
+  xhr.onerror = () => { $("btn-produzir").disabled = false; $("progresso").hidden = true; recado("Sem conexão com o servidor.", "erro"); };
+  xhr.send(form);
+};
+
+const NOMES = {aguardando: "na fila", processando: "processando", pronto: "pronto", erro: "erro", cancelado: "cancelado"};
+
+function desenharTrabalhos() {
+  const ts = estado.trabalhos;
+  $("sem-trabalhos").hidden = ts.length > 0;
+  $("trabalhos").innerHTML = ts.map(t => {
+    const n = (t.cortes || []).filter(c => c.status !== "erro").length;
+    const acoes = [`<button class="mini" data-log="${t.id}">log</button>`];
+    if (t.status === "aguardando" || t.status === "processando") acoes.push(`<button class="mini perigo" data-cancelar="${t.id}">cancelar</button>`);
+    if (t.status === "erro" || t.status === "cancelado") acoes.push(`<button class="mini" data-repetir="${t.id}">tentar de novo</button>`);
+    if (t.status !== "processando") acoes.push(`<button class="mini perigo" data-remover="${t.id}">apagar</button>`);
+    const etapa = t.status === "processando" ? t.etapa : (t.mensagem || "");
+    return `<tr>
+      <td><div>${escapar(t.titulo_video || t.url)}</div><div class="fraco" style="font-size:12px">${escapar(t.tipo === "csv" ? "lote CSV" : "automático")} · ${escapar(t.canal || "sem canal")} · ${escapar(t.perfil)} · ${escapar((t.criado_em || "").replace("T", " "))}</div></td>
+      <td><span class="pilula ${t.status}">${escapar(NOMES[t.status] || t.status)}</span></td>
+      <td class="etapa esconde-celular">${escapar(etapa)}</td>
+      <td>${n}</td>
+      <td><div class="acoes">${acoes.join("")}</div></td></tr>`;
+  }).join("");
+}
+
+function desenharCortes() {
+  const lista = [];
+  for (const t of estado.trabalhos) for (const c of (t.cortes || [])) if (c.status === "revisar") lista.push([t, c]);
+  $("titulo-revisar").textContent = `Revisar (${lista.length})`;
+  $("sem-cortes").hidden = lista.length > 0;
+  // Só redesenha quando a lista muda: senão o vídeo tocando e o título sendo
+  // digitado seriam apagados a cada atualização.
+  const assinatura = lista.map(([t, c]) => t.id + c.id).join("|") + "#" + estado.canais.join(",");
+  if (assinatura === assinaturaCortes) return;
+  assinaturaCortes = assinatura;
+  $("cortes").innerHTML = lista.map(([t, c]) => {
+    const base = `/midia/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}/`;
+    const canais = estado.canais.map(n => `<option ${n === c.canal ? "selected" : ""}>${escapar(n)}</option>`).join("");
+    const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.trilha ? `trilha ${escapar(c.trilha.replace(/\.\w+$/, ""))}` : "",
+                    c.silenciados ? `${c.silenciados} censura(s)` : "", c.falantes > 1 ? `${c.falantes} vozes` : ""].filter(Boolean).join(" · ");
+    return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
+      <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) : ""}" src="${base + encodeURIComponent(c.arquivo)}"></video>
+      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras}<br>de: ${escapar(t.titulo_video || "")}</div>
+      <div><label>Título no YouTube</label><input class="titulo" maxlength="100" value="${escapar(c.titulo_publicacao || "")}"></div>
+      <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
+      <div class="acoes">
+        <button class="principal enviar">📤 Enviar para a fila</button>
+        <button class="perigo descartar">descartar</button>
+        <a class="fraco" style="align-self:center;font-size:13px" href="${base + encodeURIComponent(c.arquivo)}" download>baixar</a>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+$("cortes").addEventListener("change", async (e) => {
+  const card = e.target.closest(".corte"); if (!card) return;
+  const campo = e.target.classList.contains("titulo") ? {titulo_publicacao: e.target.value}
+    : e.target.classList.contains("canal") ? {canal: e.target.value} : null;
+  if (campo) api(`/api/cortes/${card.dataset.t}/${card.dataset.c}`, campo).catch(err => recado(err.message, "erro"));
+});
+$("cortes").addEventListener("click", async (e) => {
+  const card = e.target.closest(".corte"); if (!card) return;
+  const url = `/api/cortes/${card.dataset.t}/${card.dataset.c}`;
+  try {
+    if (e.target.classList.contains("enviar")) {
+      e.target.disabled = true; e.target.textContent = "enviando…";
+      await api(url, {titulo_publicacao: card.querySelector(".titulo").value, canal: card.querySelector(".canal").value});
+      await api(url + "/enviar");
+      recado("Corte na fila do Publicador.", "ok");
+    } else if (e.target.classList.contains("descartar")) {
+      await api(url + "/descartar");
+    } else return;
+    assinaturaCortes = ""; atualizar();
+  } catch (err) {
+    recado(err.message, "erro"); e.target.disabled = false; e.target.textContent = "📤 Enviar para a fila";
+  }
+});
+
+$("trabalhos").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  try {
+    if (b.dataset.log) return abrirLog(b.dataset.log);
+    if (b.dataset.cancelar) await api(`/api/trabalhos/${b.dataset.cancelar}/cancelar`);
+    if (b.dataset.repetir) await api(`/api/trabalhos/${b.dataset.repetir}/repetir`);
+    if (b.dataset.remover) {
+      if (!confirm("Apagar este trabalho e os arquivos dele (inclusive os cortes ainda não enviados)?")) return;
+      await api(`/api/trabalhos/${b.dataset.remover}/remover`);
+    }
+    atualizar();
+  } catch (err) { recado(err.message, "erro"); }
+});
+
+async function abrirLog(id) {
+  logAberto = id; $("caixa-log").hidden = false;
+  const t = estado.trabalhos.find(x => x.id === id);
+  $("log-titulo").textContent = "Log — " + (t?.titulo_video || id);
+  await carregarLog();
+}
+async function carregarLog() {
+  if (!logAberto) return;
+  const r = await fetch(`/api/trabalhos/${logAberto}/log`); const d = await r.json();
+  const pre = $("log"), noFim = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+  pre.textContent = (d.linhas || []).join("\n");
+  if (noFim) pre.scrollTop = pre.scrollHeight;
+}
+$("btn-fechar-log").onclick = () => { logAberto = null; $("caixa-log").hidden = true; };
+
+async function atualizar() {
+  try {
+    const r = await fetch("/api/estado"); estado = await r.json();
+    $("aviso-conexao").hidden = estado.publicador_ok;
+    $("aviso-conexao").textContent = "O Publicador não respondeu — dá para produzir e revisar, mas enviar para a fila e a lista de canais dependem dele.";
+    $("link-publicador").href = `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
+    preencherSelect($("canal"), estado.canais, "", estado.canais.length ? "" : "(Publicador sem canais)");
+    preencherSelect($("perfil"), estado.perfis, estado.perfis[0]);
+    desenharTrabalhos(); desenharCortes();
+    if (logAberto) carregarLog();
+  } catch (e) {
+    $("aviso-conexao").hidden = false; $("aviso-conexao").textContent = "Sem conexão com o Estúdio — tentando de novo…";
+  }
+}
+atualizar();
+setInterval(atualizar, 4000);
+</script>
+</body>
+</html>
