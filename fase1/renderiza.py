@@ -41,13 +41,16 @@ def trechos_a_manter(cortes: list[dict], inicio: float, fim: float,
 
 
 def _filtro_corte(manter: list[tuple[float, float]], tem_video: bool, cfg_loud: dict,
-                  crossfade_ms: int = 15) -> tuple[str, list[str]]:
+                  crossfade_ms: int = 15, escala_de_cinza: bool = False) -> tuple[str, list[str]]:
     n = len(manter)
     fade_s = crossfade_ms / 1000
     partes = []
     for idx, (ini, fim) in enumerate(manter):
         if tem_video:
-            partes.append(f"[0:v]trim=start={ini}:end={fim},setpts=PTS-STARTPTS[v{idx}]")
+            cadeia_v = f"[0:v]trim=start={ini}:end={fim},setpts=PTS-STARTPTS"
+            if escala_de_cinza:
+                cadeia_v += ",hue=s=0"  # dessatura sem trocar o pixel format (mais seguro que format=gray)
+            partes.append(f"{cadeia_v}[v{idx}]")
         cadeia = f"[0:a]atrim=start={ini}:end={fim},asetpts=PTS-STARTPTS"
         # fade só nas junções internas (não no começo/fim do clipe inteiro) — evita
         # o "clique" audível no ponto de corte sem perder o início/fim reais do bloco.
@@ -74,10 +77,11 @@ def _filtro_corte(manter: list[tuple[float, float]], tem_video: bool, cfg_loud: 
 
 
 def renderizar(origem: Path, destino: Path, manter: list[tuple[float, float]],
-               tem_video: bool, cfg_loud: dict, crossfade_ms: int = 15) -> None:
+               tem_video: bool, cfg_loud: dict, crossfade_ms: int = 15,
+               escala_de_cinza: bool = False) -> None:
     if not manter:
         raise ValueError("nada sobrou para renderizar (todos os trechos foram cortados)")
-    filtro, mapas = _filtro_corte(manter, tem_video, cfg_loud, crossfade_ms)
+    filtro, mapas = _filtro_corte(manter, tem_video, cfg_loud, crossfade_ms, escala_de_cinza)
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(origem), "-filter_complex", filtro,
            *mapas]
     if tem_video:

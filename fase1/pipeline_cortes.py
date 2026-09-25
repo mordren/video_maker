@@ -145,7 +145,8 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
                                                     bloco.get("comentario", ""))
                     abertura = pbloco / "abertura.mp4"
                     renderiza.renderizar(clipe_bruto, abertura, [(escolhido["inicio"], escolhido["fim"])],
-                                         tem_video=True, cfg_loud=cfg["loudness"], crossfade_ms=0)
+                                         tem_video=True, cfg_loud=cfg["loudness"], crossfade_ms=0,
+                                         escala_de_cinza=ca["escala_de_cinza"])
                     renderiza.concatenar([abertura, principal], destino)
                     abertura_info = {"inicio": escolhido["inicio"], "fim": escolhido["fim"],
                                      "texto": escolhido["texto"]}

@@ -43,6 +43,8 @@ abertura:
   duracao_minima: 1.8
   duracao_maxima: 3.2
   max_candidatos: 20   # teto de opções mandadas ao JEV (mais opções = decisão pior/mais lenta)
+  escala_de_cinza: true  # a abertura sai em P&B — diferencia visualmente do corte principal,
+                          # que continua colorido
 
 jev:
   modelo: "~typesafe/jev-latest"

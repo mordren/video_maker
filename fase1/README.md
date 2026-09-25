@@ -267,8 +267,10 @@ Se `abertura.ativo: true` (padrão), depois de calcular os cortes de silêncio/r
 2. O JEV (`jev_client.escolher_gancho`) escolhe, entre até `max_candidatos` opções, o trecho
    que mais impacta sozinho — recebe o `gancho`/`comentario` que o DeepSeek escreveu na
    segmentação (Parte A) como contexto do que se espera encontrar.
-3. Esse trecho é renderizado à parte (mesmo `loudnorm`, sem fade — a transição é o próprio
-   corte do vídeo, não uma junção interna) e colado na frente do corte principal com o
+3. Esse trecho é renderizado à parte — em escala de cinza por padrão
+   (`abertura.escala_de_cinza`, filtro `hue=s=0`), para diferenciar visualmente do corte
+   principal, que segue colorido — com o mesmo `loudnorm`, sem fade (a transição é o próprio
+   corte do vídeo, não uma junção interna), e colado na frente do corte principal com o
    demuxer concat do FFmpeg (sem reencode: os dois já saíram do mesmo codec).
 
 Sem `OPENROUTER_API_KEY` configurada, ou com `abertura.ativo: false`, o pipeline segue
