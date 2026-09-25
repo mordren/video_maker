@@ -244,7 +244,10 @@ function desenharCortes() {
   assinaturaCortes = assinatura;
   $("cortes").innerHTML = lista.map(([t, c]) => {
     const base = `/midia/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}/`;
-    const canais = estado.canais.map(n => `<option ${n === c.canal ? "selected" : ""}>${escapar(n)}</option>`).join("");
+    // O canal gravado no corte aparece mesmo que o Publicador ainda não o
+    // tenha conectado (sem cookies) — senão o seletor mostraria "(escolha)".
+    const nomes = c.canal && !estado.canais.includes(c.canal) ? [...estado.canais, c.canal] : estado.canais;
+    const canais = nomes.map(n => `<option ${n === c.canal ? "selected" : ""}>${escapar(n)}</option>`).join("");
     const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.trilha ? `trilha ${escapar(c.trilha.replace(/\.\w+$/, ""))}` : "",
                     c.silenciados ? `${c.silenciados} censura(s)` : "", c.falantes > 1 ? `${c.falantes} vozes` : ""].filter(Boolean).join(" · ");
     return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
@@ -321,7 +324,7 @@ async function atualizar() {
     $("aviso-conexao").textContent = "O Publicador não respondeu — dá para produzir e revisar, mas enviar para a fila e a lista de canais dependem dele.";
     $("link-publicador").href = `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
     preencherSelect($("canal"), estado.canais, "", estado.canais.length ? "" : "(Publicador sem canais)");
-    preencherSelect($("perfil"), estado.perfis, estado.perfis[0]);
+    preencherSelect($("perfil"), estado.perfis, estado.perfil_padrao || estado.perfis[0]);
     desenharTrabalhos(); desenharCortes();
     if (logAberto) carregarLog();
   } catch (e) {

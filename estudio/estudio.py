@@ -426,6 +426,7 @@ def estado():
     return jsonify({
         "trabalhos": list(reversed(carregar_trabalhos())),
         "perfis": finalizar.perfis(),
+        "perfil_padrao": ai_srt.get_current_profile_name(),   # o perfil ativo no app
         "canais": [c["nome"] for c in pub.get("canais", [])],
         "publicador_ok": bool(pub),
         "publicador_porta": cfg["publicador_url"].rsplit(":", 1)[-1],
