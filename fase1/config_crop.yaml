@@ -1,0 +1,16 @@
+# Configuração do crop dinâmico 9:16 (crop_dinamico.py / pipeline_crop.py).
+# Roda nos clipes já prontos da Fase 2 (pipeline_cortes.py), não no vídeo bruto.
+
+deteccao:
+  passo_seg: 0.2            # intervalo entre amostras de detecção de rosto —
+                             # menor = mais preciso e mais lento
+  confianca_minima: 0.5     # abaixo disso o MediaPipe não conta como rosto
+
+suavizacao:
+  janela_seg: 1.0            # janela da média móvel sobre a trajetória do crop —
+                              # maior = câmera mais "lenta"/estável, menor = mais reativa
+
+saida:
+  largura: 1080
+  altura: 1920
+  pasta: "crop_vertical"

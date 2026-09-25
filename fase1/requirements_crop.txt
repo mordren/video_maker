@@ -1,0 +1,11 @@
+# Só para pipeline_crop.py (crop dinâmico 9:16) — não é dependência das
+# outras duas partes (pipeline.py, pipeline_cortes.py).
+mediapipe
+opencv-python
+# Identificação de quem está falando (impressão digital de voz):
+librosa
+scikit-learn
+webrtcvad-wheels
+# resemblyzer instala à parte, SEM dependências (a dependência "webrtcvad"
+# dele não compila no Windows; o webrtcvad-wheels acima substitui):
+#   pip install resemblyzer --no-deps
