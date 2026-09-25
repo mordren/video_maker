@@ -79,25 +79,49 @@ log = logging.getLogger("estudio")
 # ──────────────────────────────────────────────────────────────────
 
 def _ler_json(caminho: Path, padrao):
-    try:
-        return json.loads(caminho.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return deepcopy(padrao)
+    """Lê o estado. Só devolve o padrão se o arquivo NÃO EXISTE.
+
+    No Windows, ler no mesmo instante em que o arquivo é trocado (o .tmp
+    substituindo o original) dá "arquivo em uso" — tratar isso como "vazio"
+    fazia a API responder "corte não existe" (medido em 25/09/2026) e, pior,
+    quem gravasse em cima dessa leitura apagaria todos os trabalhos. Então
+    tenta de novo, e se não conseguir, falha em vez de fingir que está vazio.
+    """
+    for tentativa in range(20):
+        try:
+            return json.loads(caminho.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return deepcopy(padrao)
+        except (OSError, ValueError):
+            if tentativa == 19:
+                raise
+            time.sleep(0.05)
 
 
 def _gravar_json(caminho: Path, dados) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
     tmp = caminho.with_suffix(caminho.suffix + ".tmp")
     tmp.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(caminho)
+    for tentativa in range(20):
+        try:
+            tmp.replace(caminho)
+            return
+        except PermissionError:  # alguém lendo o arquivo neste instante (Windows)
+            if tentativa == 19:
+                raise
+            time.sleep(0.05)
 
 
 def carregar_trabalhos() -> list[dict]:
-    return _ler_json(ESTADO_PATH, [])
+    # A trava (reentrante) também na leitura: dentro deste processo, ler nunca
+    # cruza com a troca do arquivo por uma gravação.
+    with _TRAVA:
+        return _ler_json(ESTADO_PATH, [])
 
 
 def salvar_trabalhos(trabalhos: list[dict]) -> None:
-    _gravar_json(ESTADO_PATH, trabalhos)
+    with _TRAVA:
+        _gravar_json(ESTADO_PATH, trabalhos)
 
 
 def carregar_config() -> dict:
@@ -378,7 +402,9 @@ def _publicador_estado() -> dict:
 
 def _nome_arquivo(titulo: str) -> str:
     """O Publicador usa o nome do arquivo como título do vídeo no YouTube."""
-    nome = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', " ", titulo).strip(" .")
+    nome = re.sub(r'[\x00-\x1f<>"/\\|?*]+', " ", titulo)
+    nome = re.sub(r"\s*:\s*", " - ", nome)          # "Teste: x" -> "Teste - x"
+    nome = re.sub(r"\s+", " ", nome).strip(" .")
     return (nome[:100] or "corte") + ".mp4"
 
 
