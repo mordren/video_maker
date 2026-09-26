@@ -83,6 +83,31 @@ def _queue_path() -> Path:
 
 _COOKIES_PREFIX = "youtube_browser_cookies_"
 _COOKIES_SUFFIX = ".txt"
+_PERFIL_PREFIX = "youtube_browser_perfil_"
+
+# Argumentos do Chromium usados tanto no login manual quanto no envio
+# automático — mesma janela, mesmo comportamento.
+_ARGS_CHROMIUM = [
+    "--disable-blink-features=AutomationControlled",
+    # Sem isso, a janela do Chromium abre e fica com a tela toda preta e
+    # travada no Windows (medido rodando de dentro do app Qt/VLC, que já
+    # desativa decodificação de vídeo por hardware — os dois parecem disputar
+    # a mesma GPU). Desliga a aceleração só deste navegador automatizado; não
+    # afeta o app em si.
+    "--disable-gpu",
+    "--disable-gpu-compositing",
+    "--disable-software-rasterizer",
+    # Mesmo ajuste que o tiktok_upload.py precisou no servidor: o resolvedor
+    # de DNS embutido do Chromium falha nessas máquinas (ERR_NETWORK_CHANGED/
+    # ERR_NAME_NOT_RESOLVED) mesmo com o sistema resolvendo os mesmos
+    # domínios normalmente. Inofensivo — só faz o Chromium usar o DNS do
+    # sistema.
+    "--disable-features=AsyncDns,DnsOverHttps",
+    # Idem: parte da combinação que fez o Chromium rodar estável no servidor
+    # (veja o LEIA-ME de servidor/). Quem isola este serviço lá é o systemd,
+    # não o sandbox do navegador.
+    "--no-sandbox",
+]
 
 
 @dataclass
@@ -99,22 +124,37 @@ class QueueItem:
 
 
 def list_accounts() -> list[str]:
-    """Apelidos das contas (um por youtube_browser_cookies_<apelido>.txt)."""
-    apelidos = []
-    for arquivo in sorted(_base_dir().glob(f"{_COOKIES_PREFIX}*{_COOKIES_SUFFIX}")):
+    """Apelidos das contas: um por cookies.txt importado OU por perfil logado
+    manualmente (veja `login_manual`)."""
+    apelidos = set()
+    for arquivo in _base_dir().glob(f"{_COOKIES_PREFIX}*{_COOKIES_SUFFIX}"):
         apelido = arquivo.stem[len(_COOKIES_PREFIX):]
         if apelido:
-            apelidos.append(apelido)
-    return apelidos
+            apelidos.add(apelido)
+    for pasta in _base_dir().glob(f"{_PERFIL_PREFIX}*"):
+        if pasta.is_dir():
+            apelidos.add(pasta.name[len(_PERFIL_PREFIX):])
+    return sorted(apelidos)
 
 
 def cookies_path(account: str) -> Path:
     return _base_dir() / f"{_COOKIES_PREFIX}{account}{_COOKIES_SUFFIX}"
 
 
+def profile_dir(account: str) -> Path:
+    """Perfil persistente do Chromium (cookies, localStorage, IndexedDB) desta
+    conta — criado por `login_manual`. Preferido sobre `cookies_path`: o
+    Google gira cookies de segurança (ex.: __Secure-1PSIDTS) a cada visita
+    autenticada, e um cookies.txt é só uma foto congelada que sempre acaba
+    ficando pra trás. Com um perfil de verdade sendo reaberto sempre, essas
+    trocas acontecem e ficam salvas sozinhas, do jeito que um navegador usado
+    de verdade se comporta — sem precisar reexportar nada."""
+    return _base_dir() / f"{_PERFIL_PREFIX}{account}"
+
+
 def is_authorized(account: str) -> bool:
-    """Já existem cookies importados para essa conta?"""
-    return bool(account) and cookies_path(account).exists()
+    """Já existem credenciais para essa conta (perfil persistente ou cookies.txt)?"""
+    return bool(account) and (profile_dir(account).is_dir() or cookies_path(account).exists())
 
 
 def import_cookies(account: str, source: Path) -> None:
@@ -257,6 +297,35 @@ def _salvar_cookies_atualizados(context, cookies_file: Path, log=None) -> None:
         _emit(log, "Cookies da sessão salvos de volta no arquivo (login deve durar mais na próxima vez).")
     except Exception:
         pass
+
+
+def login_manual(account: str) -> None:
+    """Abre um Chromium de verdade, com janela, para logar uma vez à mão —
+    depois disso o envio (`upload_video`) reaproveita esse mesmo perfil
+    persistente sozinho, sem cookies.txt e sem precisar reexportar nada.
+
+    Rode isto direto no desktop da máquina (não por SSH/Xvfb): a tela precisa
+    aparecer de verdade para você digitar a senha e passar por qualquer
+    verificação em duas etapas.
+
+        python youtube_browser_upload.py --login <apelido-da-conta>
+    """
+    from playwright.sync_api import sync_playwright
+
+    pasta = profile_dir(account)
+    pasta.mkdir(parents=True, exist_ok=True)
+    print(f"Abrindo o Chromium para logar a conta '{account}'…")
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(pasta), headless=False,
+            locale="pt-BR", viewport={"width": 1366, "height": 900},
+            args=_ARGS_CHROMIUM)
+        page = context.new_page()
+        page.goto("https://studio.youtube.com/", wait_until="domcontentloaded")
+        print("Faça login normalmente na janela que abriu (email, senha, 2FA se pedir).")
+        input("Depois que o YouTube Studio carregar logado, volte aqui e aperte Enter... ")
+        context.close()
+    print(f"Perfil salvo em {pasta}. A conta '{account}' já pode ser usada nos envios.")
 
 
 # ── Diagnóstico ──────────────────────────────────────────────────────────────
@@ -700,11 +769,24 @@ def upload_video(
     video_path = Path(video_path)
     if not video_path.exists():
         raise YoutubeBrowserUploadError(f"Vídeo não encontrado: {video_path}")
-    cookies_file = cookies_path(account)
-    if not cookies_file.exists():
-        raise YoutubeBrowserUploadError(
-            f"A conta '{account}' ainda não tem cookies importados. Exporte o "
-            "cookies.txt logado em studio.youtube.com e importe antes de enviar.")
+
+    # Perfil persistente (login manual, `login_manual`) é preferido: o Google
+    # gira cookies de segurança a cada visita autenticada, e isso só se
+    # sustenta sozinho com um perfil de verdade sendo reaberto — um
+    # cookies.txt estático sempre acaba ficando pra trás e vencendo (veja o
+    # comentário em `profile_dir`). cookies.txt continua funcionando para
+    # quem ainda não migrou.
+    usa_perfil = profile_dir(account).is_dir()
+    cookies_file = None
+    cookies = None
+    if not usa_perfil:
+        cookies_file = cookies_path(account)
+        if not cookies_file.exists():
+            raise YoutubeBrowserUploadError(
+                f"A conta '{account}' ainda não tem credenciais. Rode "
+                f"'python youtube_browser_upload.py --login {account}' (login manual, "
+                "recomendado) ou exporte um cookies.txt logado em studio.youtube.com e importe.")
+        cookies = _parse_netscape_cookies(cookies_file.read_text(encoding="utf-8", errors="replace"))
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as error:
@@ -717,43 +799,31 @@ def upload_video(
     resumo_agendamento = f"agendado para {publish_at:%d/%m/%Y %H:%M}" if publish_at else f"visibilidade '{visibility}'"
     _log(f"Plano do envio: arquivo '{video_path.name}', conta '{account}', "
          f"título '{titulo_final}', {resumo_agendamento}.")
-
-    cookies = _parse_netscape_cookies(cookies_file.read_text(encoding="utf-8", errors="replace"))
-    _log(f"Cookies carregados: {len(cookies)} do arquivo {cookies_file.name}.")
+    if cookies is not None:
+        _log(f"Cookies carregados: {len(cookies)} do arquivo {cookies_file.name}.")
+    else:
+        _log(f"Usando o perfil persistente da conta (login manual em {profile_dir(account)}).")
 
     etapa = "iniciando navegador"
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless, args=[
-            "--disable-blink-features=AutomationControlled",
-            # Sem isso, a janela do Chromium abre e fica com a tela toda
-            # preta e travada no Windows (medido rodando de dentro do app
-            # Qt/VLC, que já desativa decodificação de vídeo por hardware —
-            # os dois parecem disputar a mesma GPU). Desliga a aceleração só
-            # deste navegador automatizado; não afeta o app em si.
-            "--disable-gpu",
-            "--disable-gpu-compositing",
-            "--disable-software-rasterizer",
-            # Mesmo ajuste que o tiktok_upload.py precisou no servidor Debian
-            # da rede: o resolvedor de DNS embutido do Chromium falha nessa
-            # máquina (ERR_NETWORK_CHANGED/ERR_NAME_NOT_RESOLVED) mesmo com o
-            # sistema resolvendo os mesmos domínios normalmente. Inofensivo
-            # no Windows — só faz o Chromium usar o DNS do sistema.
-            "--disable-features=AsyncDns,DnsOverHttps",
-            # Idem: parte da combinação que fez o Chromium rodar estável
-            # nesse servidor (veja o LEIA-ME de servidor/). Quem isola este
-            # serviço lá é o systemd, não o sandbox do navegador.
-            "--no-sandbox",
-        ])
+        if usa_perfil:
+            browser = None
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir(account)), headless=headless,
+                locale="pt-BR", viewport={"width": 1366, "height": 900},
+                args=_ARGS_CHROMIUM)
+        else:
+            browser = p.chromium.launch(headless=headless, args=_ARGS_CHROMIUM)
+            context = browser.new_context(locale="pt-BR", viewport={"width": 1366, "height": 900})
+            try:
+                context.add_cookies(cookies)
+            except Exception as error:
+                browser.close()
+                raise YoutubeBrowserUploadError(f"Cookies inválidos para o Playwright: {error}") from error
         _log(f"Navegador aberto ({'headless' if headless else 'com janela visível'}).")
-        context = browser.new_context(
-            locale="pt-BR",
-            viewport={"width": 1366, "height": 900},
-        )
-        try:
-            context.add_cookies(cookies)
-        except Exception as error:
-            browser.close()
-            raise YoutubeBrowserUploadError(f"Cookies inválidos para o Playwright: {error}") from error
+
+        def _fechar() -> None:
+            (browser or context).close()
 
         page = context.new_page()
         page.set_default_timeout(_ESPERA)
@@ -763,13 +833,15 @@ def upload_video(
             page.goto("https://studio.youtube.com/", wait_until="domcontentloaded", timeout=_ESPERA)
             _log(f"Página carregada: {page.url}")
             _dispensar_consentimento(page, log=_log)
-            # Se os cookies não autenticaram, o Studio redireciona para o login.
+            # Se a sessão não autenticou, o Studio redireciona para o login.
             if "accounts.google.com" in page.url or "signin" in page.url.lower():
-                raise YoutubeBrowserUploadError(
-                    "O Studio pediu login — os cookies expiraram ou são de outra "
-                    "conta. Reexporte o cookies.txt logado em studio.youtube.com.")
-            _log("Login confirmado (cookies válidos).")
-            _salvar_cookies_atualizados(context, cookies_file, log=_log)
+                dica = (f"Rode 'python youtube_browser_upload.py --login {account}' de novo."
+                        if usa_perfil else
+                        "Reexporte o cookies.txt logado em studio.youtube.com.")
+                raise YoutubeBrowserUploadError(f"O Studio pediu login — a sessão expirou. {dica}")
+            _log("Login confirmado.")
+            if cookies_file is not None:
+                _salvar_cookies_atualizados(context, cookies_file, log=_log)
 
             etapa = "abrindo o formulário de upload"
             _log("Selecionando o arquivo de vídeo…")
@@ -820,25 +892,36 @@ def upload_video(
             # Salva de novo no final: a espera das verificações pode levar
             # bastante tempo, e o Google pode ter renovado o token de sessão
             # durante esse período — este é o cookie mais fresco que se
-            # consegue capturar de toda a execução.
-            _salvar_cookies_atualizados(context, cookies_file, log=_log)
+            # consegue capturar de toda a execução. Com perfil persistente
+            # isso já acontece sozinho ao fechar o contexto.
+            if cookies_file is not None:
+                _salvar_cookies_atualizados(context, cookies_file, log=_log)
         except YoutubeBrowserUploadError:
             dica = _retrato_da_tela(page, etapa)
             _log(f"Falhou na etapa '{etapa}'. {dica}")
-            browser.close()
+            _fechar()
             raise
         except Exception as error:  # noqa: BLE001 — a tela do Studio pode mudar
             dica = _retrato_da_tela(page, etapa)
             _log(f"Falhou na etapa '{etapa}' com erro inesperado: "
                  f"{type(error).__name__}: {str(error).strip()[:300]}. {dica}")
-            browser.close()
+            _fechar()
             raise YoutubeBrowserUploadError(
                 f"Falha na {dica}. Erro: {type(error).__name__}: {str(error).strip()[:300]}. "
                 f"Veja {FALHA_PNG}/{FALHA_HTML} na pasta de dados."
             ) from error
-        browser.close()
+        _fechar()
         _log("Navegador fechado.")
 
     if publish_at:
         return url or f"Agendado para {publish_at:%d/%m/%Y %H:%M} na conta '{account}' (upload enviado)."
     return url or f"Enviado como '{visibility}' na conta '{account}'."
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    if len(_sys.argv) == 3 and _sys.argv[1] == "--login":
+        login_manual(_sys.argv[2])
+    else:
+        print("Uso: python youtube_browser_upload.py --login <apelido-da-conta>")
+        _sys.exit(1)
