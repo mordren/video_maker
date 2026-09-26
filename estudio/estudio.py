@@ -460,6 +460,7 @@ def novo_trabalho():
     canal = str(dados.get("canal") or "").strip()
     perfil = str(dados.get("perfil") or "").strip()
     arquivo = request.files.get("video")
+    legenda = request.files.get("legenda")
     csv = request.files.get("csv")
     if not url and not (arquivo and arquivo.filename):
         return jsonify({"erro": "Cole um link do YouTube ou escolha um arquivo de vídeo."}), 400
@@ -481,6 +482,12 @@ def novo_trabalho():
             return jsonify({"erro": "Formato de vídeo não aceito."}), 400
         arquivo.save(entrada / nome)
         t["titulo_video"] = Path(nome).stem
+        # Legenda opcional junto do arquivo (sem link, não tem a legenda que o
+        # YouTube daria de graça no download) — mesmo nome-base do vídeo, para
+        # a Fase 1 achar sozinha (fase1/transcricao.py:candidatos_srt) e pular
+        # o Whisper do vídeo inteiro.
+        if legenda and legenda.filename and Path(legenda.filename).suffix.lower() == ".srt":
+            legenda.save(entrada / f"{Path(nome).stem}.srt")
     if csv and csv.filename:
         csv.save(entrada / "cortes.csv")
         t["tipo"], t["csv"] = "csv", "cortes.csv"

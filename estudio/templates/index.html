@@ -93,6 +93,11 @@
         <label for="video">Arquivo de vídeo</label>
         <input type="file" id="video" accept=".mp4,.mov,.mkv,.avi,.webm">
       </div>
+      <div id="campo-legenda" hidden>
+        <label for="legenda">Legenda (.srt) — opcional</label>
+        <input type="file" id="legenda" accept=".srt">
+        <p class="fraco" style="margin:4px 0 0">Sem ela, a Fase 1 transcreve o vídeo inteiro com o Whisper do zero.</p>
+      </div>
       <div id="campo-csv" hidden>
         <label for="csv">Arquivo CSV</label>
         <input type="file" id="csv" accept=".csv">
@@ -186,13 +191,17 @@ $("canal").onchange = () => {
   if (p && estado.perfis.includes(p)) $("perfil").value = p;
 };
 
+$("video").onchange = () => { $("campo-legenda").hidden = !$("video").files[0]; };
+
 $("btn-produzir").onclick = () => {
   const url = $("url").value.trim(), video = $("video").files[0], csv = $("csv").files[0];
+  const legenda = $("legenda").files[0];
   if (!url && !video) return recado("Cole um link ou escolha um arquivo de vídeo.", "erro");
   if (modo === "csv" && !csv) return recado("Escolha o arquivo CSV com os trechos.", "erro");
   const form = new FormData();
   form.append("url", url); form.append("canal", $("canal").value); form.append("perfil", $("perfil").value);
   if (video) form.append("video", video);
+  if (video && legenda) form.append("legenda", legenda);
   if (modo === "csv") form.append("csv", csv);
   const xhr = new XMLHttpRequest();
   xhr.open("POST", "/api/trabalhos");
@@ -204,7 +213,8 @@ $("btn-produzir").onclick = () => {
     let dados = {}; try { dados = JSON.parse(xhr.responseText); } catch (e) {}
     if (xhr.status !== 200) return recado(dados.erro || "Erro " + xhr.status, "erro");
     recado("Trabalho criado — acompanhe em Trabalhos, abaixo.", "ok");
-    $("url").value = ""; $("video").value = ""; $("csv").value = "";
+    $("url").value = ""; $("video").value = ""; $("csv").value = ""; $("legenda").value = "";
+    $("campo-legenda").hidden = true;
     atualizar();
   };
   xhr.onerror = () => { $("btn-produzir").disabled = false; $("progresso").hidden = true; recado("Sem conexão com o servidor.", "erro"); };
