@@ -48,11 +48,17 @@ def command_exists(name: str) -> bool:
 
 
 def yt_dlp_path() -> Path | None:
-    """Prefere a cópia atualizada que acompanha o projeto."""
-    if YTDLP_BUNDLED.exists():
-        return YTDLP_BUNDLED
-    if YTDLP_SYSTEM.exists():
-        return YTDLP_SYSTEM
+    """Prefere a cópia atualizada que acompanha o projeto.
+
+    tools/yt-dlp.exe fica versionado no repo — existe como arquivo em
+    qualquer SO, mas só roda no Windows; noutro SO isso derrubava o download
+    com "Permission denied" (tentava executar um .exe binário do Windows).
+    """
+    if sys.platform.startswith("win"):
+        if YTDLP_BUNDLED.exists():
+            return YTDLP_BUNDLED
+        if YTDLP_SYSTEM.exists():
+            return YTDLP_SYSTEM
     found = shutil.which("yt-dlp")
     return Path(found) if found else None
 

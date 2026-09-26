@@ -4,3 +4,6 @@ pyyaml>=6.0
 # ter timestamp por palavra — mesmo quando a Fase 1 leu de um .srt.
 openai-whisper>=20250625
 # FFmpeg (com ffprobe) precisa estar no PATH — usado pelas duas fases.
+# yt-dlp: no Windows o app usa o tools/yt-dlp.exe versionado no repo; em
+# qualquer outro SO (Estúdio no Linux) vem daqui, via utils.yt_dlp_path().
+yt-dlp>=2025.1.1
