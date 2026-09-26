@@ -50,13 +50,15 @@ sys.path.insert(0, str(AQUI))
 
 import finalizar  # noqa: E402  (também põe RAIZ e fase1 no sys.path)
 import ai_srt  # noqa: E402
-from utils import parse_csv_moments  # noqa: E402
+from utils import parse_csv_moments, yt_dlp_path  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("ESTUDIO_DATA") or r"C:\VideoMaker\estudio")
 TRABALHOS_DIR = DATA_DIR / "trabalhos"
 ESTADO_PATH = DATA_DIR / "trabalhos.json"
 CONFIG_PATH = DATA_DIR / "config.json"
-YTDLP = RAIZ / "tools" / "yt-dlp.exe"
+# yt_dlp_path() já resolve certo em qualquer SO: bundled .exe no Windows,
+# senão o "yt-dlp" instalado no venv (pip) ou no PATH do sistema.
+YTDLP = yt_dlp_path() or "yt-dlp"
 EXTENSOES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 TAMANHO_MAXIMO = 12 * 1024 * 1024 * 1024
 
