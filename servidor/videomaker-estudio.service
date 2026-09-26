@@ -1,0 +1,25 @@
+[Unit]
+Description=VideoMaker - Estudio (producao de cortes pelo navegador)
+After=network.target
+
+[Service]
+Type=simple
+User=mordren
+Group=mordren
+WorkingDirectory=/home/mordren/video_maker/estudio
+Environment=ESTUDIO_DATA=/home/mordren/VideoMaker/estudio
+Environment=HOME=/home/mordren
+Environment=TMPDIR=/home/mordren/VideoMaker/tmp
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/mordren/video_maker
+Environment=PATH=/home/mordren/video_maker/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+ExecStart=/home/mordren/video_maker/venv/bin/waitress-serve \
+    --listen=0.0.0.0:8090 \
+    --threads=4 \
+    --max-request-body-size=12884901888 \
+    estudio:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

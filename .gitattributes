@@ -2,3 +2,8 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 *.ps1 text eol=crlf
+
+# Scripts e unidades do Linux (Arch, .133): LF sempre — CRLF quebra o
+# shebang (#!/usr/bin/env bash\r) e o parser do systemd.
+*.sh text eol=lf
+*.service text eol=lf

@@ -1,0 +1,33 @@
+[Unit]
+Description=VideoMaker - Publicador (fila de envio ao YouTube/TikTok)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mordren
+Group=mordren
+WorkingDirectory=/home/mordren/video_maker/servidor
+Environment=PUBLICADOR_DATA=/home/mordren/VideoMaker/publicador
+Environment=HOME=/home/mordren
+Environment=TMPDIR=/home/mordren/VideoMaker/tmp
+Environment=PYTHONUNBUFFERED=1
+# O Chromium do Playwright (envios ao YouTube/TikTok) foi instalado dentro do
+# próprio venv (PLAYWRIGHT_BROWSERS_PATH=0 no momento do "pip install"),
+# não no cache do usuário.
+Environment=PLAYWRIGHT_BROWSERS_PATH=0
+Environment=PATH=/home/mordren/video_maker/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+# rodar_com_xvfb.sh dá um display virtual ao Chromium — esta máquina não tem
+# tela. Um processo só, com threads: nunca dois envios da mesma conta ao
+# mesmo tempo.
+ExecStart=/home/mordren/video_maker/servidor/rodar_com_xvfb.sh \
+    /home/mordren/video_maker/venv/bin/waitress-serve \
+    --listen=0.0.0.0:8080 \
+    --threads=8 \
+    --max-request-body-size=12884901888 \
+    publicador:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
