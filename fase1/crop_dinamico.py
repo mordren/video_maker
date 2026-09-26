@@ -411,7 +411,9 @@ def gerar_comandos(keys: list[tuple[float, float, float]], largura_orig: int, al
 
 
 def renderizar(video: Path, destino: Path, comandos: str, crop_w: int, crop_h: int,
-               largura_saida: int, altura_saida: int) -> None:
+               largura_saida: int, altura_saida: int, nvenc: bool = False) -> None:
+    """`nvenc`: codifica na placa (arquivo intermediário — o acabamento
+    recodifica depois; na GTX 1650 é várias vezes mais rápido que o x264)."""
     arquivo_comandos = destino.with_suffix(".cmds.txt")
     arquivo_comandos.write_text(comandos, encoding="utf-8")
     try:
@@ -424,7 +426,8 @@ def renderizar(video: Path, destino: Path, comandos: str, crop_w: int, crop_h: i
             f"scale={largura_saida}:{altura_saida}"
         )
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vf", filtro,
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                        *(["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "18"] if nvenc else
+                          ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]),
                         "-c:a", "copy", str(destino)], check=True, capture_output=True)
     finally:
         arquivo_comandos.unlink(missing_ok=True)

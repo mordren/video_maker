@@ -6,10 +6,10 @@ Mesma receita da exportação do programa de desktop (app.py, `_csv_export_clip`
 censura (áudio + legenda), trilha com ducking e o frame de capa —, só que sem
 a interface Qt, para rodar no serviço web. A única troca de propósito é o
 formato: em vez do crop central fixo ("estender"), o crop dinâmico que segue
-quem está falando (fase1/crop_dinamico.py).
+quem está falando (fase1/falante_ativo.py, LR-ASD; reserva: crop_dinamico.py).
 
-Um Whisper só por corte: as palavras servem para saber quem fala (crop), para
-a legenda e para os tempos exatos da censura. O crop não mexe no tempo do
+Um Whisper só por corte: as palavras servem para a legenda e para os tempos
+exatos da censura (e para o crop antigo saber quem fala, se o LR-ASD falhar). O crop não mexe no tempo do
 vídeo, então a transcrição do clipe 16:9 vale para o 9:16.
 """
 
@@ -83,31 +83,44 @@ def carregar_perfil(nome: str) -> Perfil:
 # Transcrição (uma por corte)
 # ---------------------------------------------------------------------------
 
-_modelos_whisper: dict = {}
+def liberar_modelos() -> None:
+    """Devolve a VRAM ao sistema entre cortes.
+
+    O Whisper agora roda pela API (sem custo de GPU local) ou, na reserva, um
+    processo à parte por corte (transcricao.rodar_whisper) — nenhum dos dois
+    fica com modelo carregado neste processo. Isto ainda importa pelo crop
+    antigo (MediaPipe) e por qualquer torch que sobre alocado aqui."""
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
 
 
 def transcrever(video: Path, pasta: Path, modelo: str = "small", idioma: str = "pt") -> tuple[Path, list[dict]]:
-    """Whisper com tempo por palavra. Grava <pasta>/legenda.srt (encurtada em
-    blocos curtos, como o app faz) e legenda.json (formato do Whisper, que a
-    censura usa para achar o segundo exato de cada palavra). Devolve (srt,
-    palavras)."""
-    import whisper
-    if modelo not in _modelos_whisper:
-        _modelos_whisper[modelo] = whisper.load_model(modelo)
-    r = _modelos_whisper[modelo].transcribe(str(video), language=idioma, word_timestamps=True)
+    """Tempo por palavra: tenta a API (whisper-large-v3-turbo via OpenRouter —
+    ~10x mais rápido, custo trivial), cai pro Whisper local sem chave ou se a
+    API falhar (fase1/transcricao.py:transcrever_audio). Grava <pasta>/
+    legenda.srt (encurtada em blocos curtos, como o app faz) e legenda.json
+    (formato do Whisper, que a censura usa para achar o segundo exato de cada
+    palavra). Devolve (srt, palavras)."""
+    import transcricao
+    segs, fonte = transcricao.transcrever_audio(video, pasta, modelo, idioma)
+    log.info("   transcrição: %s", fonte)
     srt = pasta / "legenda.srt"
-    (pasta / "legenda.json").write_text(json.dumps({"segments": r["segments"]}, ensure_ascii=False),
-                                        encoding="utf-8")
+    (pasta / "legenda.json").write_text(json.dumps({"segments": segs}, ensure_ascii=False), encoding="utf-8")
     linhas = []
     n = 0
-    for s in r["segments"]:
+    for s in segs:
         texto = s["text"].strip()
         if texto:
             n += 1
             linhas += [str(n), f"{srt_timestamp(s['start'])} --> {srt_timestamp(s['end'])}", texto, ""]
     srt.write_text("\n".join(linhas), encoding="utf-8")
-    palavras = [{"word": w["word"].strip(), "start": round(w["start"], 3), "end": round(w["end"], 3)}
-                for s in r["segments"] for w in s.get("words", []) if w.get("word", "").strip()]
+    palavras = [w for s in segs for w in s.get("words", [])]
     return srt, palavras
 
 
@@ -261,41 +274,88 @@ def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: st
 # Ponta a ponta de um corte
 # ---------------------------------------------------------------------------
 
+def para_transparente(clipe: Path, destino: Path) -> None:
+    """16:9 inteiro, centralizado sobre ele mesmo desfocado — o formato
+    "Transparente (9:16 fundo desfocado)" do programa de desktop."""
+    from utils import build_clip_filter
+    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe), "-filter_complex",
+                        build_clip_filter("transparente", False), "-map", "[base]", "-map", "0:a?",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "copy",
+                        str(destino)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg falhou no transparente: {r.stderr[-600:]}")
+
+
+def crop_falante_ativo(clipe: Path, destino: Path, cfg_crop: dict, pasta: Path) -> bool:
+    """Crop 9:16 pelo LR-ASD (fase1/falante_ativo.py), num processo à parte:
+    quando ele sai, a VRAM e a RAM (~3 GB por minuto de vídeo) voltam inteiras.
+    Devolve False se não deu (sem os pesos, sem GPU, erro) — aí vale o crop antigo."""
+    script = RAIZ / "fase1" / "falante_ativo.py"
+    pesos = [RAIZ / "fase1" / "models" / n for n in ("det_10g.onnx", "lrasd_finetuning_TalkSet.model")]
+    if not all(p.exists() for p in pesos):
+        log.warning("   crop LR-ASD: faltam os pesos em fase1/models; usando o crop antigo")
+        return False
+    liberar_modelos()           # o Whisper de um corte anterior não pode dividir a placa com ele
+    cfg = pasta / "config_crop.yaml"
+    import yaml
+    cfg.write_text(yaml.safe_dump(cfg_crop, allow_unicode=True), encoding="utf-8")
+    r = subprocess.run([sys.executable, str(script), str(clipe), str(destino), "--config", str(cfg)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       cwd=str(RAIZ / "fase1"))
+    cfg.unlink(missing_ok=True)
+    resumo = next((l[7:] for l in r.stdout.splitlines() if l.startswith("RESUMO ")), None)
+    if r.returncode != 0 or resumo is None or not destino.exists():
+        log.warning("   crop LR-ASD falhou (%s); usando o crop antigo", (r.stderr or r.stdout)[-400:])
+        return False
+    log.info("   crop LR-ASD: %s", resumo)
+    return True
+
+
 def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, contexto: str = "",
                     titulo_sugerido: str = "", manchete_sugerida: str = "",
                     pasta_trilhas: Path | None = None, preferir_sugeridos: bool = False,
-                    musica_sugerida: str = "") -> dict:
+                    musica_sugerida: str = "", formato: str = "dinamico") -> dict:
     """Clipe da Fase 2 -> <pasta>/final.mp4 (9:16 pronto). Devolve os metadados
     do corte para a tela de revisão.
 
     `preferir_sugeridos` (lote CSV): título, manchete e trilha escritos no CSV
     valem mais que os da IA, como no programa de desktop; no automático é o
     contrário — a IA leu a fala do corte e o sugerido é só o gancho da Fase 1.
+
+    `formato`: "dinamico" (crop 9:16 que segue quem fala) ou "transparente"
+    (16:9 inteiro sobre fundo desfocado). Só vale para clipe que chega 16:9.
     """
     pasta.mkdir(parents=True, exist_ok=True)
     cf = cfg_crop.get("falantes", {})
 
-    srt, palavras = transcrever(clipe, pasta, cf.get("whisper_modelo", "small"), cf.get("idioma", "pt"))
-
-    # A Fase 2 já faz o crop no bloco inteiro, antes da abertura (config_cortes
-    # crop.ativo) — aí o clipe chega vertical e não se corta de novo. O crop
-    # daqui só vale como reserva, para um clipe que chegou em 16:9.
+    # Clipe que já chega vertical (upload em 9:16) não se corta de novo.
     largura, altura, _fps, _dur = crop_dinamico.resolucao_de(clipe)
     ja_vertical = altura > largura
-
-    turnos: list[dict] = []
-    if not ja_vertical and cf.get("ativo", True) and palavras:
-        wav = pasta / "audio.wav"
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe), "-ac", "1",
-                        "-ar", "16000", str(wav)], check=True)
-        try:
-            turnos = falantes.detectar(wav, palavras, n_falantes=cf.get("n_falantes"),
-                                       limiar=cf.get("limiar", 0.35))
-        finally:
-            wav.unlink(missing_ok=True)
-
     vertical = clipe if ja_vertical else pasta / "vertical.mp4"
-    if not ja_vertical:
+
+    # O crop vem ANTES do Whisper: roda num processo à parte e precisa da
+    # placa livre (4 GB).
+    feito = ja_vertical
+    if not feito and formato == "transparente":
+        para_transparente(clipe, vertical)
+        feito = True
+    if not feito and cfg_crop.get("falante_ativo", {}).get("ativo", True):
+        feito = crop_falante_ativo(clipe, vertical, cfg_crop, pasta)
+
+    srt, palavras = transcrever(clipe, pasta, cf.get("whisper_modelo", "small"), cf.get("idioma", "pt"))
+
+    # Reserva: o crop antigo (MediaPipe + quem fala pela voz)
+    turnos: list[dict] = []
+    if not feito:
+        if cf.get("ativo", True) and palavras:
+            wav = pasta / "audio.wav"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe), "-ac", "1",
+                            "-ar", "16000", str(wav)], check=True)
+            try:
+                turnos = falantes.detectar(wav, palavras, n_falantes=cf.get("n_falantes"),
+                                           limiar=cf.get("limiar", 0.35))
+            finally:
+                wav.unlink(missing_ok=True)
         crop_dinamico.processar(clipe, vertical, turnos, cfg_crop)
 
     # A IA revisa com a frase inteira; só depois a legenda é picada em blocos

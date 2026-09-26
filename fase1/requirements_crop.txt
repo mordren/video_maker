@@ -9,3 +9,9 @@ webrtcvad-wheels
 # resemblyzer instala à parte, SEM dependências (a dependência "webrtcvad"
 # dele não compila no Windows; o webrtcvad-wheels acima substitui):
 #   pip install resemblyzer --no-deps
+# Crop que segue quem fala pela boca + voz (falante_ativo.py, LR-ASD), na GPU.
+# torchvision e torchcodec têm que casar com o torch/CUDA instalado — no .133:
+#   pip install --no-deps torchvision==0.29.0 torchcodec==0.16.0 --index-url https://download.pytorch.org/whl/cu130
+onnx
+onnx2torch
+python_speech_features

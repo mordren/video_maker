@@ -60,6 +60,9 @@
   .cortes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
   .corte { border: 1px solid var(--linha); border-radius: 10px; padding: 10px; background: #191c22; display: flex; flex-direction: column; gap: 8px; }
   .corte video { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 6px; }
+  .propostas { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .propostas .corte video { aspect-ratio: 16/9; }
+  .corte.escolhido { border-color: var(--aviso); }
   .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
   .corte .meta b { color: var(--texto); font-weight: 600; }
   pre#log { margin: 10px 0 0; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--fraco); white-space: pre-wrap; background: #14161b; border-radius: 8px; padding: 10px; }
@@ -73,7 +76,7 @@
     <h1>🎬 Estúdio de cortes</h1>
     <span class="fraco">Publicação: <a id="link-publicador" href="#" target="_blank" rel="noopener">abrir o Publicador ↗</a></span>
   </div>
-  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → crop 9:16 que segue quem fala → legenda, GC, trilha → revisão → fila de publicação.</p>
+  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16 que segue quem fala ou transparente, legenda, GC, trilha → revisão → fila de publicação.</p>
   <div id="aviso-conexao" hidden></div>
 
   <section>
@@ -122,6 +125,15 @@
 
   <section>
     <div class="topo">
+      <h2 id="titulo-propostas">Propostas</h2>
+      <span class="fraco" style="font-size:13px">O corte em 16:9, como no vídeo original. Produza só os que valem a pena — o acabamento é a parte demorada.</span>
+    </div>
+    <div class="propostas" id="propostas"></div>
+    <p class="fraco" id="sem-propostas">Nenhuma proposta esperando.</p>
+  </section>
+
+  <section>
+    <div class="topo">
       <h2 id="titulo-revisar">Revisar</h2>
       <span class="fraco" style="font-size:13px">Assista, ajuste o título (vira o título no YouTube) e mande para a fila.</span>
     </div>
@@ -151,7 +163,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let estado = null, modo = "auto", logAberto = null, assinaturaCortes = "";
+let estado = null, modo = "auto", logAberto = null, assinaturaCortes = "", assinaturaPropostas = "";
 
 function escapar(t) {
   return String(t ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -249,7 +261,7 @@ function desenharCortes() {
   $("sem-cortes").hidden = lista.length > 0;
   // Só redesenha quando a lista muda: senão o vídeo tocando e o título sendo
   // digitado seriam apagados a cada atualização.
-  const assinatura = lista.map(([t, c]) => t.id + c.id).join("|") + "#" + estado.canais.join(",");
+  const assinatura = lista.map(([t, c]) => t.id + c.id + c.status + (c.versao || 0)).join("|") + "#" + estado.canais.join(",");
   if (assinatura === assinaturaCortes) return;
   assinaturaCortes = assinatura;
   $("cortes").innerHTML = lista.map(([t, c]) => {
@@ -260,19 +272,73 @@ function desenharCortes() {
     const canais = nomes.map(n => `<option ${n === c.canal ? "selected" : ""}>${escapar(n)}</option>`).join("");
     const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.trilha ? `trilha ${escapar(c.trilha.replace(/\.\w+$/, ""))}` : "",
                     c.silenciados ? `${c.silenciados} censura(s)` : "", c.falantes > 1 ? `${c.falantes} vozes` : ""].filter(Boolean).join(" · ");
+    const v = c.versao ? `?v=${c.versao}` : "";
+    const formato = c.formato === "transparente" ? "transparente" : "crop que segue quem fala";
+    const outro = c.formato === "transparente" ? "dinamico" : "transparente";
     return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
-      <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) : ""}" src="${base + encodeURIComponent(c.arquivo)}"></video>
-      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras}<br>de: ${escapar(t.titulo_video || "")}</div>
+      <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
+      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
       <div><label>Título no YouTube</label><input class="titulo" maxlength="100" value="${escapar(c.titulo_publicacao || "")}"></div>
       <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
       <div class="acoes">
         <button class="principal enviar">📤 Enviar para a fila</button>
         <button class="perigo descartar">descartar</button>
+        <button class="refazer" data-formato="${outro}">↺ refazer em ${outro === "transparente" ? "transparente" : "crop"}</button>
         <a class="fraco" style="align-self:center;font-size:13px" href="${base + encodeURIComponent(c.arquivo)}" download>baixar</a>
       </div>
     </div>`;
   }).join("");
 }
+
+const FORMATOS = {dinamico: "crop que segue quem fala", transparente: "transparente"};
+
+function desenharPropostas() {
+  const lista = [];
+  for (const t of estado.trabalhos) for (const c of (t.cortes || [])) if (c.status === "proposta" || c.status === "produzindo") lista.push([t, c]);
+  const agora = estado.produzindo_agora || [];
+  const fila = lista.filter(([, c]) => c.status === "produzindo").length;
+  $("titulo-propostas").textContent = `Propostas (${lista.length - fila})` + (fila ? ` · ${fila} produzindo` : "");
+  $("sem-propostas").hidden = lista.length > 0;
+  const assinatura = lista.map(([t, c]) => t.id + c.id + c.status + (c.mensagem || "")).join("|") + "#" + agora.join("/");
+  if (assinatura === assinaturaPropostas) return;
+  assinaturaPropostas = assinatura;
+  $("propostas").innerHTML = lista.map(([t, c]) => {
+    const produzindo = c.status === "produzindo";
+    const rodando = agora[0] === t.id && agora[1] === c.id;
+    const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : ""].filter(Boolean).join(" · ");
+    const sugerido = c.formato_sugerido === "transparente" ? "transparente" : "dinamico";
+    const acoes = produzindo
+      ? `<span class="fraco">${rodando ? "⚙️ produzindo agora" : "⏳ na fila de produção"} (${FORMATOS[c.formato_pedido] || ""})</span>
+         ${rodando ? "" : `<button class="mini cancelar">cancelar</button>`}`
+      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">
+           <option value="dinamico" ${sugerido === "dinamico" ? "selected" : ""}>${sugerido === "dinamico" ? "🤖 " : ""}crop que segue quem fala</option>
+           <option value="transparente" ${sugerido === "transparente" ? "selected" : ""}>${sugerido === "transparente" ? "🤖 " : ""}transparente</option>
+         </select>
+         <button class="principal produzir">✂ Produzir</button>
+         <button class="perigo descartar">descartar</button>`;
+    return `<div class="corte ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
+      <video controls preload="metadata" src="/previa/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}"></video>
+      <div class="meta"><b>${escapar(c.gancho || c.id)}</b><br>${extras} · de: ${escapar(t.titulo_video || "")}${c.comentario ? `<br>${escapar(c.comentario)}` : ""}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
+      <div class="acoes">${acoes}</div>
+    </div>`;
+  }).join("");
+}
+
+$("propostas").addEventListener("click", async (e) => {
+  const card = e.target.closest(".corte"); if (!card) return;
+  const url = `/api/cortes/${card.dataset.t}/${card.dataset.c}`;
+  try {
+    if (e.target.classList.contains("produzir")) {
+      e.target.disabled = true;
+      await api(url + "/produzir", {formato: card.querySelector(".formato").value});
+    } else if (e.target.classList.contains("descartar")) {
+      await api(url + "/descartar");
+    } else if (e.target.classList.contains("cancelar")) {
+      await api(url + "/voltar");
+    } else return;
+    assinaturaPropostas = ""; atualizar();
+  } catch (err) { recado(err.message, "erro"); e.target.disabled = false; }
+});
 
 $("cortes").addEventListener("change", async (e) => {
   const card = e.target.closest(".corte"); if (!card) return;
@@ -291,6 +357,10 @@ $("cortes").addEventListener("click", async (e) => {
       recado("Corte na fila do Publicador.", "ok");
     } else if (e.target.classList.contains("descartar")) {
       await api(url + "/descartar");
+    } else if (e.target.classList.contains("refazer")) {
+      e.target.disabled = true;
+      await api(url + "/produzir", {formato: e.target.dataset.formato});
+      recado("Refazendo — o corte aparece em Propostas até terminar e volta para a revisão.", "ok");
     } else return;
     assinaturaCortes = ""; atualizar();
   } catch (err) {
@@ -335,7 +405,7 @@ async function atualizar() {
     $("link-publicador").href = `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
     preencherSelect($("canal"), estado.canais, "", estado.canais.length ? "" : "(Publicador sem canais)");
     preencherSelect($("perfil"), estado.perfis, estado.perfil_padrao || estado.perfis[0]);
-    desenharTrabalhos(); desenharCortes();
+    desenharTrabalhos(); desenharPropostas(); desenharCortes();
     if (logAberto) carregarLog();
   } catch (e) {
     $("aviso-conexao").hidden = false; $("aviso-conexao").textContent = "Sem conexão com o Estúdio — tentando de novo…";

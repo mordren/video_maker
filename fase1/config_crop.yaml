@@ -1,3 +1,10 @@
+falante_ativo:
+  # Quem fala visto pela boca + voz (LR-ASD, fase1/falante_ativo.py), na GPU.
+  # Precisa de torchcodec, torchvision, onnx2torch, python_speech_features e
+  # dos pesos em fase1/models (det_10g.onnx, lrasd_finetuning_TalkSet.model).
+  # false (ou se falhar) = crop antigo abaixo (MediaPipe + voz, falantes.py).
+  ativo: true
+
 deteccao:
   passo_seg: 0.1          # rosto/boca a cada 0.1s (boca precisa de resolução p/ ver quem fala)
   confianca_minima: 0.75   # YuNet; abaixo disso aparecem rostos falsos (quadro na parede etc.)

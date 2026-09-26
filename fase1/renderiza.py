@@ -85,7 +85,7 @@ def renderizar(origem: Path, destino: Path, manter: list[tuple[float, float]],
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(origem), "-filter_complex", filtro,
            *mapas]
     if tem_video:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k"]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
     else:
         cmd += ["-c:a", "aac", "-b:a", "192k"]
     cmd.append(str(destino))
@@ -117,7 +117,7 @@ def concatenar_com_fade(clipe1: Path, clipe2: Path, destino: Path, duracao_fade:
     )
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe1), "-i", str(clipe2),
                     "-filter_complex", filtro, "-map", "[vout]", "-map", "[aout]",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k", str(destino)], check=True, capture_output=True)
 
 

@@ -1,19 +1,30 @@
 """Estúdio: a produção dos cortes pelo navegador, rodando na máquina da GPU.
 
-Cola o link do YouTube (ou manda o arquivo) e o serviço faz o processo
-inteiro sozinho, um trabalho por vez:
+Cola o link do YouTube (ou manda o arquivo) e o serviço propõe os cortes,
+um trabalho por vez:
 
     1. baixa o vídeo (yt-dlp, com a legenda do YouTube quando houver)
-    2. Fase 1 — escolhe os melhores trechos (fase1/pipeline.py: DeepSeek + JEV)
-       ou, no lote CSV, usa os tempos do CSV
-    3. Fase 2 — corte mecânico (silêncio, recomeço, loudness) com a abertura
-       em preto e branco + transição (fase1/pipeline_cortes.py)
-    4. acabamento de cada corte (finalizar.py): crop dinâmico 9:16 que segue
-       quem fala, legenda, GC, marca d'água, censura, trilha e capa
+    2. Fase 1 — escolhe os melhores trechos (fase1/pipeline.py: transcrição +
+       DeepSeek segmenta + JEV qualifica) ou, no lote CSV, usa os tempos do CSV
 
-Os cortes prontos ficam em "Revisar": assiste, ajusta o título e o canal, e
+Cada bloco vira uma PROPOSTA — mas só um recorte BRUTO (ffmpeg -c copy, sem
+Whisper, sem silêncio, sem abertura: quase instantâneo), em 16:9, como no
+vídeo original. Só os que forem escolhidos em "Propostas" seguem adiante —
+tudo que vem depois é caro (Whisper de novo, JEV escolhendo o gancho da
+abertura, crop, legenda) e produzir isso em candidatos que o usuário nem
+escolhe era processamento jogado fora:
+
+    3. Fase 2 (fase1/pipeline_cortes.py) — SÓ no corte escolhido: corte
+       mecânico (silêncio, recomeço, loudness) + abertura em preto e branco +
+       transição; fica guardado, então "refazer no outro formato" não roda
+       de novo essa parte, só o acabamento
+    4. acabamento (finalizar.py), no formato escolhido por corte: crop 9:16
+       que segue quem fala (LR-ASD) ou transparente (16:9 sobre fundo
+       desfocado); legenda, GC, marca d'água, censura, trilha e capa
+
+Os produzidos ficam em "Revisar": assiste, ajusta o título e o canal, e
 manda para a fila do Publicador (outro serviço, na mesma máquina) — ou
-descarta. Nada é publicado sem passar pela revisão.
+descarta, ou refaz no outro formato. Nada é publicado sem passar pela revisão.
 
 A mesma API que a página usa serve para automatizar depois (ex.: um bot do
 Telegram mandando links): POST /api/trabalhos com JSON {"url", "canal", "perfil"}.
@@ -22,6 +33,10 @@ Estado em ESTUDIO_DATA (padrão C:\\VideoMaker\\estudio):
     trabalhos.json          a lista de trabalhos e dos cortes de cada um
     config.json             canal -> perfil visual, endereço do Publicador, pastas
     trabalhos/<id>/         entrada/, fase1/, cortes/, final/<corte>/, trabalho.log
+
+Situação de cada corte: proposta -> produzindo -> revisar -> na_fila (ou
+descartado). O 16:9 da proposta (cortes/<corte>.mp4) fica guardado até o
+corte ir para a fila, para dar para refazer em outro formato sem cortar de novo.
 """
 
 from __future__ import annotations
@@ -31,6 +46,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -49,6 +65,7 @@ FASE1 = RAIZ / "fase1"
 sys.path.insert(0, str(AQUI))
 
 import finalizar  # noqa: E402  (também põe RAIZ e fase1 no sys.path)
+import pipeline_cortes  # noqa: E402  (Fase 2, chamada por bloco só na produção)
 import ai_srt  # noqa: E402
 from utils import parse_csv_moments, yt_dlp_path  # noqa: E402
 
@@ -199,23 +216,47 @@ def _checar_cancelamento(tid: str) -> None:
         raise Cancelado()
 
 
+def _matar_grupo(p: subprocess.Popen) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(p.pid, signal.SIGKILL)
+        else:
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def _vigiar_cancelamento(tid: str, p: subprocess.Popen) -> None:
+    """Confere o cancelamento a cada segundo, mesmo se a etapa estiver calada
+    (render, Whisper) — antes só era visto quando saía uma linha no log."""
+    while p.poll() is None:
+        if tid in _cancelar:
+            _matar_grupo(p)
+            return
+        time.sleep(1)
+
+
 def _rodar(tid: str, cmd: list[str]) -> None:
     """Roda um comando, copiando a saída para o log do trabalho; cancela se pedido."""
     global _processo
     _registrar(tid, "$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
+    # Grupo de processos próprio: cancelar mata a etapa E os ffmpeg/Whisper que
+    # ela abriu — só p.kill() deixava esses netos rodando órfãos.
+    grupo = {"start_new_session": True} if os.name == "posix" else         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                          text=True, encoding="utf-8", errors="replace", cwd=str(FASE1)) as p:
+                          text=True, encoding="utf-8", errors="replace", cwd=str(FASE1), **grupo) as p:
         _processo = p
+        vigia = threading.Thread(target=_vigiar_cancelamento, args=(tid, p), daemon=True)
+        vigia.start()
         try:
             for linha in p.stdout:
                 linha = linha.rstrip()
                 if linha and "%|" not in linha:        # pula barras de progresso
                     _registrar(tid, "   " + linha[:500])
-                if tid in _cancelar:
-                    p.kill()
-                    raise Cancelado()
             p.wait()
+            if tid in _cancelar:
+                raise Cancelado()
         finally:
             _processo = None
     if p.returncode != 0:
@@ -245,7 +286,10 @@ def _baixar(tid: str, url: str, destino: Path) -> Path:
     cmd = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
            "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
            "--ignore-errors", "--impersonate", "chrome",
-           "-N", "8", "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mp4",
+           # AV1 por último: o OpenCV do crop dinâmico não decodifica AV1
+           # (0 quadros lidos, o crop quebra e o corte é perdido).
+           "-N", "8", "-f", "bv*[height<=1080][vcodec!^=av01]+ba/bv*[height<=1080]+ba/b",
+           "--merge-output-format", "mp4",
            "--write-subs", "--write-auto-subs", "--sub-langs", "pt-BR,pt,pt-orig",
            "--sub-format", "ttml/best", "--convert-subs", "srt",
            "-P", str(destino), "-o", "%(title).150B.%(ext)s", url]
@@ -280,12 +324,44 @@ def _blocos_do_csv(video: Path, csv_path: Path, destino: Path) -> Path:
 
 
 def _config_cortes(tid: str) -> Path:
-    """config_cortes.yaml do fase1, com a pasta de sons de transição desta máquina."""
+    """config_cortes.yaml do fase1, com a pasta de sons de transição desta
+    máquina e sem o crop: a proposta sai em 16:9, o formato vem depois."""
     cfg = yaml.safe_load((FASE1 / "config_cortes.yaml").read_text(encoding="utf-8"))
     cfg["transicao"]["pasta_sons"] = carregar_config()["pasta_transicoes"]
+    cfg.setdefault("crop", {})["ativo"] = False
     caminho = _pasta(tid) / "config_cortes.yaml"
     caminho.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return caminho
+
+
+def _jev_e_config(tid: str):
+    """O config_cortes.yaml deste trabalho (pasta de sons de transição certa,
+    crop desligado — mesma função de antes, só que agora também serve pra Fase
+    2 rodar na produção, não só pra proposta) + uma instância do JEV, ou None
+    sem chave configurada — quem chama decide se segue sem ela (mesma postura
+    de revisar_legenda em finalizar.py)."""
+    cfg = yaml.safe_load(_config_cortes(tid).read_text(encoding="utf-8"))
+    from jev_client import JEV
+    from openrouter import APIError, api_key
+    try:
+        api_key()
+    except APIError:
+        return None, cfg
+    return JEV(cfg["jev"]), cfg
+
+
+def _sugerir_formato(jev, bloco: dict) -> str:
+    """Pré-seleção do dropdown da proposta: crop ou transparente, pelo texto
+    que a Fase 1 já escreveu (gancho + comentário) — sem decodificar vídeo
+    nem áudio de novo, então cabe rodar aqui, antes de qualquer produção.
+    Só decide entre os dois formatos que o Estúdio sabe produzir hoje."""
+    if jev is None:
+        return "dinamico"
+    try:
+        return jev.sugerir_formato(bloco.get("gancho", ""), bloco.get("comentario", ""))["formato_sugerido"]
+    except Exception as exc:  # noqa: BLE001 — sem sugestão, o padrão é crop
+        log.warning("   sugestão de formato (JEV) falhou: %s", exc)
+        return "dinamico"
 
 
 def processar_trabalho(t: dict) -> None:
@@ -319,66 +395,146 @@ def processar_trabalho(t: dict) -> None:
     _registrar(tid, f"{len(blocos)} trecho(s) para cortar")
     _checar_cancelamento(tid)
 
-    # 3. Fase 2: corte mecânico + abertura em preto e branco — só dos trechos
-    # que ainda não têm corte pronto (retomada depois de cair no meio)
+    # 3. corte BRUTO (ffmpeg -c copy, sem Whisper/silêncio/abertura — quase
+    # instantâneo), só dos trechos que ainda não têm corte pronto (retomada
+    # depois de cair no meio). A Fase 2 de verdade (mecânica + abertura) só
+    # roda depois, no que for escolhido pra produzir (ver _preparar_fase2).
     feitos = {c["id"] for c in t.get("cortes", [])}
     pendentes = [b for b in blocos if b["id"] not in feitos
                  and not (pasta / "cortes" / f"{b['id']}.mp4").exists()]
     if pendentes:
-        _atualizar(tid, etapa=f"cortando {len(pendentes)} trecho(s) (silêncio, abertura cinza)")
-        dados = json.loads(blocos_path.read_text(encoding="utf-8"))
-        dados["blocos"] = pendentes
-        pendentes_path = pasta / "blocos_pendentes.json"
-        _gravar_json(pendentes_path, dados)
-        _rodar(tid, [py, str(FASE1 / "pipeline_cortes.py"), str(pendentes_path),
-                     "--saida", str(pasta / "cortes"), "--config", str(_config_cortes(tid))])
+        _atualizar(tid, etapa=f"recortando {len(pendentes)} trecho(s)")
+        destino_cortes = pasta / "cortes"
+        destino_cortes.mkdir(parents=True, exist_ok=True)
+        for bloco in pendentes:
+            _checar_cancelamento(tid)
+            pipeline_cortes.recorta_video(video, bloco["inicio"], bloco["duracao"] + 0.5,
+                                          destino_cortes / f"{bloco['id']}.mp4")
 
-    # 4. acabamento de cada corte
-    cfg_crop = yaml.safe_load((FASE1 / "config_crop.yaml").read_text(encoding="utf-8"))
-    perfil = finalizar.carregar_perfil(t["perfil"])
-    musicas = ai_srt.load_config().get("music_dir")
-    pasta_trilhas = Path(musicas) if musicas else None
-    csv = t["tipo"] == "csv"
-    for i, bloco in enumerate(blocos, 1):
-        clipe = pasta / "cortes" / f"{bloco['id']}.mp4"
+    # 4. cada corte vira uma proposta; o resto (Fase 2 + acabamento) só quando for escolhido
+    jev, _ = _jev_e_config(tid)
+    novos = []
+    for bloco in blocos:
+        clipe = _fonte(tid, bloco["id"])
         if bloco["id"] in feitos or not clipe.exists():
             continue
-        _checar_cancelamento(tid)
-        _atualizar(tid, etapa=f"acabamento {i}/{len(blocos)}: crop, legenda, GC")
-        _registrar(tid, f"── {bloco['id']}: {bloco.get('gancho', '')}")
-        try:
-            meta = finalizar.finalizar_corte(
-                clipe, pasta / "final" / bloco["id"], perfil, cfg_crop,
-                contexto=bloco.get("comentario", ""),
-                # CSV: coluna titulo = chapéu do GC, subtitulo = manchete (como no app).
-                # Automático: o gancho da Fase 1 é a manchete de reserva.
-                titulo_sugerido=bloco.get("gancho", "") if csv else "",
-                manchete_sugerida=bloco.get("subtitulo", "") if csv else bloco.get("gancho", ""),
-                musica_sugerida=bloco.get("musica", ""), preferir_sugeridos=csv,
-                pasta_trilhas=pasta_trilhas)
-            corte = {"id": bloco["id"], "status": "revisar", "canal": t["canal"],
-                     "titulo_publicacao": (meta["subtitulo"] or bloco.get("gancho") or bloco["id"])[:100],
-                     "gancho": bloco.get("gancho", ""), "comentario": bloco.get("comentario", ""),
-                     "nota": bloco.get("nota_final"), **meta}
-        except Cancelado:
-            raise
-        except Exception as exc:  # noqa: BLE001 — um corte falhar não derruba os outros
-            _registrar(tid, f"⚠️ {bloco['id']} falhou no acabamento: {exc}")
-            corte = {"id": bloco["id"], "status": "erro", "mensagem": str(exc)[:400],
-                     "gancho": bloco.get("gancho", "")}
-        with _TRAVA:
-            trabalhos = carregar_trabalhos()
-            for tt in trabalhos:
-                if tt["id"] == tid:
-                    tt.setdefault("cortes", []).append(corte)
-            salvar_trabalhos(trabalhos)
-        # o clipe da Fase 2 já virou final.mp4; apagar economiza disco
-        clipe.unlink(missing_ok=True)
+        novos.append({"id": bloco["id"], "status": "proposta", "canal": t["canal"],
+                      "titulo_publicacao": (bloco.get("gancho") or bloco["id"])[:100],
+                      "gancho": bloco.get("gancho", ""), "comentario": bloco.get("comentario", ""),
+                      "subtitulo_sugerido": bloco.get("subtitulo", ""), "musica_sugerida": bloco.get("musica", ""),
+                      "csv": t["tipo"] == "csv", "nota": bloco.get("nota_final"),
+                      "duracao": round(finalizar.duracao_de(clipe), 1),
+                      "formato_sugerido": _sugerir_formato(jev, bloco)})
+    with _TRAVA:
+        trabalhos = carregar_trabalhos()
+        for tt in trabalhos:
+            if tt["id"] == tid:
+                tt.setdefault("cortes", []).extend(novos)
+        salvar_trabalhos(trabalhos)
+    _registrar(tid, f"{len(novos)} proposta(s) prontas para escolher")
+
+
+def _fonte(tid: str, cid: str) -> Path:
+    """O corte BRUTO em 16:9 (recorte simples, sem Fase 2) — o que a proposta
+    mostra em /previa e de onde sai a Fase 2 quando o usuário produz (ver
+    _preparar_fase2). Cortes antigos (antes das propostas) guardavam essa
+    cópia em backup/."""
+    novo = _pasta(tid) / "cortes" / f"{Path(cid).name}.mp4"
+    antigo = _pasta(tid) / "backup" / f"{Path(cid).name}.mp4"
+    return antigo if (antigo.exists() and not novo.exists()) else novo
+
+
+def _fase2_pronto(tid: str, cid: str) -> Path:
+    return _pasta(tid) / "produzido" / f"{Path(cid).name}.mp4"
+
+
+def _preparar_fase2(tid: str, cid: str, c: dict) -> Path:
+    """A Fase 2 de verdade (silêncio, recomeço, abertura em preto e branco,
+    transição — fase1/pipeline_cortes.py) rodava em TODO bloco antes mesmo da
+    proposta existir; agora só roda aqui, no corte bruto (_fonte) do que foi
+    escolhido pra produzir. Fica guardado: um "refazer no outro formato" não
+    roda essa parte de novo, só o acabamento (crop/legenda) muda."""
+    pronto = _fase2_pronto(tid, cid)
+    if pronto.exists():
+        return pronto
+    jev, cfg = _jev_e_config(tid)
+    pronto.parent.mkdir(parents=True, exist_ok=True)
+    bloco = {"id": cid, "gancho": c.get("gancho", ""), "comentario": c.get("comentario", "")}
+    pipeline_cortes.processa_bloco(bloco, None, pronto.parent, cfg, jev, bruto_pronto=_fonte(tid, cid))
+    return pronto
+
+
+def _corte(tid: str, cid: str) -> dict | None:
+    t = next((t for t in carregar_trabalhos() if t["id"] == tid), None)
+    return next((c for c in (t or {}).get("cortes", []) if c["id"] == cid), None)
+
+
+_produzindo_agora: tuple[str, str] | None = None
+
+
+def _produzir_pendente() -> bool:
+    """Produz UM corte pedido (status "produzindo"), o mais antigo pedido
+    primeiro. Tem prioridade sobre trabalho novo: é curto e alguém está
+    esperando para revisar. Devolve se fez algo."""
+    global _produzindo_agora
+    with _TRAVA:
+        pedidos = [(c.get("pedido_em", ""), t, c) for t in carregar_trabalhos() for c in t.get("cortes", [])
+                   if c.get("status") in ("produzindo", "refazendo")]
+        if not pedidos:
+            return False
+        _, t, c = min(pedidos, key=lambda x: x[0])
+        _produzindo_agora = (t["id"], c["id"])
+    tid, cid = t["id"], c["id"]
+    formato = c.get("formato_pedido") or ("transparente" if c["status"] == "refazendo" else "dinamico")
+    if c["status"] == "refazendo":
+        _atualizar_corte(tid, cid, status="produzindo")
+    _LogDoTrabalho.atual = tid
+    _registrar(tid, f"🎬 {cid}: produzindo em "
+                    f"{'transparente' if formato == 'transparente' else 'crop que segue quem fala'}")
+    try:
+        ja_pronto = _fase2_pronto(tid, cid).exists()
+        clipe = _preparar_fase2(tid, cid, c)
+        _registrar(tid, f"   Fase 2 {'(reaproveitada)' if ja_pronto else '(silêncio, abertura, transição)'} ok")
+        musicas = ai_srt.load_config().get("music_dir")
+        if c.get("arquivo"):
+            # refazendo em outro formato: título, manchete e trilha continuam os da revisão
+            textos = dict(titulo_sugerido=c.get("titulo", ""), manchete_sugerida=c.get("subtitulo", ""),
+                          musica_sugerida=(c.get("trilha") or "").rsplit(".", 1)[0], preferir_sugeridos=True)
+        else:
+            # CSV: coluna titulo = chapéu do GC, subtitulo = manchete (como no app).
+            # Automático: a IA lê a fala; o gancho da Fase 1 é a manchete de reserva.
+            csv = bool(c.get("csv"))
+            textos = dict(titulo_sugerido=c.get("gancho", "") if csv else "",
+                          manchete_sugerida=c.get("subtitulo_sugerido", "") if csv else c.get("gancho", ""),
+                          musica_sugerida=c.get("musica_sugerida", ""), preferir_sugeridos=csv)
+        meta = finalizar.finalizar_corte(
+            clipe, _pasta(tid) / "final" / cid, finalizar.carregar_perfil(t["perfil"]),
+            yaml.safe_load((FASE1 / "config_crop.yaml").read_text(encoding="utf-8")),
+            contexto=c.get("comentario", ""), pasta_trilhas=Path(musicas) if musicas else None,
+            formato=formato, **textos)
+        if (_corte(tid, cid) or {}).get("status") == "produzindo":    # não foi cancelado no meio
+            extra = {}
+            if not c.get("arquivo") and not c.get("titulo_editado"):
+                extra["titulo_publicacao"] = (meta["subtitulo"] or c.get("gancho") or cid)[:100]
+            _atualizar_corte(tid, cid, status="revisar", formato=formato, versao=c.get("versao", 0) + 1,
+                             mensagem="", **meta, **extra)
+            _registrar(tid, f"✅ {cid} produzido — em Revisar")
+    except Exception as exc:  # noqa: BLE001
+        _atualizar_corte(tid, cid, status="revisar" if c.get("arquivo") else "proposta",
+                         mensagem=f"produção falhou: {exc}"[:300])
+        _registrar(tid, f"⚠️ {cid}: produção falhou: {exc}")
+    finally:
+        _produzindo_agora = None
+        _LogDoTrabalho.atual = None
+        finalizar.liberar_modelos()
+    return True
 
 
 def _laco() -> None:
     while True:
         try:
+            if _produzir_pendente():
+                continue
             with _TRAVA:
                 proximo = next((t for t in carregar_trabalhos() if t["status"] == "aguardando"), None)
                 if proximo:
@@ -404,6 +560,7 @@ def _laco() -> None:
             finally:
                 _cancelar.discard(tid)
                 _LogDoTrabalho.atual = None
+                finalizar.liberar_modelos()
         except Exception as exc:  # noqa: BLE001 — o laço nunca morre
             log.error("laço: %s", exc)
             time.sleep(5)
@@ -453,6 +610,7 @@ def estado():
         "publicador_ok": bool(pub),
         "publicador_porta": cfg["publicador_url"].rsplit(":", 1)[-1],
         "canal_perfil": cfg["canal_perfil"],
+        "produzindo_agora": list(_produzindo_agora) if _produzindo_agora else None,
     })
 
 
@@ -561,6 +719,13 @@ def ver_log(tid: str):
     return jsonify({"linhas": linhas})
 
 
+@app.get("/previa/<tid>/<cid>")
+def previa(tid: str, cid: str):
+    """O 16:9 da proposta (Fase 2), para assistir antes de mandar produzir."""
+    fonte = _fonte(tid, cid)
+    return send_from_directory(fonte.parent, fonte.name, conditional=True, max_age=0)
+
+
 @app.get("/midia/<tid>/<cid>/<arquivo>")
 def midia(tid: str, cid: str, arquivo: str):
     return send_from_directory(_pasta(tid) / "final" / Path(cid).name, Path(arquivo).name,
@@ -573,6 +738,7 @@ def editar_corte(tid: str, cid: str):
     campos = {}
     if "titulo_publicacao" in dados:
         campos["titulo_publicacao"] = str(dados["titulo_publicacao"]).strip()[:100]
+        campos["titulo_editado"] = True
     if "canal" in dados:
         campos["canal"] = str(dados["canal"]).strip()
     c = _atualizar_corte(tid, cid, **campos)
@@ -587,8 +753,31 @@ def descartar(tid: str, cid: str):
 
 @app.post("/api/cortes/<tid>/<cid>/voltar")
 def voltar(tid: str, cid: str):
-    c = _atualizar_corte(tid, cid, status="revisar")
-    return jsonify({"ok": True}) if c else (jsonify({"erro": "Corte não existe."}), 404)
+    """Tira do descarte, ou cancela uma produção que ainda não começou."""
+    c = _corte(tid, cid)
+    if c is None:
+        return jsonify({"erro": "Corte não existe."}), 404
+    if _produzindo_agora == (tid, cid):
+        return jsonify({"erro": "Este corte já está sendo produzido — espere terminar."}), 409
+    _atualizar_corte(tid, cid, status="revisar" if c.get("arquivo") else "proposta")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/cortes/<tid>/<cid>/produzir")
+def produzir(tid: str, cid: str):
+    """Manda produzir (ou refazer) o corte no formato pedido, a partir do 16:9."""
+    dados = request.get_json(silent=True) or {}
+    formato = "transparente" if dados.get("formato") == "transparente" else "dinamico"
+    c = _corte(tid, cid)
+    if c is None:
+        return jsonify({"erro": "Corte não existe."}), 404
+    if c.get("status") not in ("proposta", "revisar", "descartado"):
+        return jsonify({"erro": "Este corte já está na produção ou na fila."}), 409
+    if not _fonte(tid, cid).exists():
+        return jsonify({"erro": "O 16:9 deste corte não existe mais para produzir."}), 409
+    _atualizar_corte(tid, cid, status="produzindo", formato_pedido=formato, mensagem="",
+                     pedido_em=datetime.now().isoformat(timespec="seconds"))
+    return jsonify({"ok": True})
 
 
 @app.post("/api/cortes/<tid>/<cid>/enviar")
@@ -617,6 +806,8 @@ def enviar(tid: str, cid: str):
         return jsonify({"erro": resposta.get("erro") or f"Publicador respondeu {r.status_code}"}), 502
     _atualizar_corte(tid, cid, status="na_fila", arquivo_publicador=resposta["adicionados"][0],
                      enviado_em=datetime.now().isoformat(timespec="seconds"))
+    _fonte(tid, cid).unlink(missing_ok=True)          # bruto: só servia para a Fase 2/refazer
+    _fase2_pronto(tid, cid).unlink(missing_ok=True)   # 16:9 pronto: idem
     _registrar(tid, f"📤 {cid} foi para a fila do Publicador ({c['canal']}): {resposta['adicionados'][0]}")
     return jsonify({"ok": True, "arquivo": resposta["adicionados"][0]})
 

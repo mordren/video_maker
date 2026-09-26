@@ -1,8 +1,14 @@
 """Etapas 1 e 2: áudio e transcrição (SRT ao lado do vídeo ou Whisper).
 
-As duas rotas saem no mesmo formato interno, uma lista de segmentos:
+As três rotas saem no mesmo formato interno, uma lista de segmentos:
     {"start": float, "end": float, "text": str, "words": [{"word", "start", "end"}]}
 Vindo de SRT, `words` fica vazio: a granularidade é por segmento, não por palavra.
+
+Entre as duas rotas de Whisper, `transcrever_audio` tenta primeiro a API
+(openai/whisper-large-v3-turbo via OpenRouter, mesma chave do JEV/DeepSeek):
+~10x mais rápido que o modelo local e um custo trivial (~US$0,0002/min de
+áudio, medido em 26/09/2026). Cai pro Whisper local sem OPENROUTER_API_KEY
+configurada ou se a chamada falhar.
 """
 
 from __future__ import annotations
@@ -167,11 +173,106 @@ def rodar_whisper(audio: Path, pasta: Path, modelo: str, idioma: str) -> list[di
 
 
 # ---------------------------------------------------------------------------
+# Etapa 2, rota C — Whisper pela API (OpenRouter, sem GPU/CPU local)
+# ---------------------------------------------------------------------------
+
+_API_MODELO = "openai/whisper-large-v3-turbo"
+_API_JANELA = 600.0  # s por chamada — mantém o corpo da requisição (base64) num tamanho razoável
+
+
+def _duracao_audio(audio: Path) -> float:
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", str(audio)],
+                       capture_output=True, text=True, check=True)
+    return float(r.stdout.strip())
+
+
+def _monta_segmentos(r: dict, offset: float) -> list[dict]:
+    """A API devolve `words` achatado (todo o trecho) e `segments` sem as
+    palavras dentro — reencaixa cada palavra no segmento mais próximo pelo
+    tempo (não por uma janela com folga: duas janelas vizinhas se tocando
+    duplicava a palavra da borda nos dois segmentos), no mesmo formato de
+    rodar_whisper."""
+    palavras = [{"word": w["word"].strip(), "start": round(w["start"] + offset, 3),
+                "end": round(w["end"] + offset, 3)}
+               for w in (r.get("words") or []) if w.get("word", "").strip()]
+    segs = [{"start": round(s["start"] + offset, 3), "end": round(s["end"] + offset, 3),
+            "text": s["text"].strip(), "words": []}
+           for s in (r.get("segments") or []) if (s.get("text") or "").strip()]
+    for w in palavras:
+        if not segs:
+            break
+        alvo = min(segs, key=lambda s: abs(w["start"] - (s["start"] + s["end"]) / 2))
+        alvo["words"].append(w)
+    return segs
+
+
+def _transcrever_trecho_api(audio_wav: Path, offset: float, duracao: float, idioma: str) -> list[dict]:
+    import base64
+
+    from openrouter import post
+
+    recorte = audio_wav.with_name(f"{audio_wav.stem}_{int(offset)}.wav")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{offset:.3f}", "-i", str(audio_wav),
+                    "-t", f"{duracao:.3f}", "-c", "copy", str(recorte)], check=True)
+    try:
+        payload = {
+            "model": _API_MODELO,
+            "input_audio": {"data": base64.b64encode(recorte.read_bytes()).decode(), "format": "wav"},
+            "language": idioma,
+            "response_format": "verbose_json",
+            "timestamp_granularities": ["word", "segment"],
+        }
+        r = post("/v1/audio/transcriptions", payload, timeout=120, tentativas=3)
+    finally:
+        recorte.unlink(missing_ok=True)
+    return _monta_segmentos(r, offset)
+
+
+def rodar_whisper_api(audio_wav: Path, idioma: str) -> list[dict]:
+    """Mesmo formato de rodar_whisper, mas pela API. Corta em janelas de
+    10min (a maioria dos casos — um corte de alguns minutos — sai numa
+    chamada só) pra manter o corpo da requisição num tamanho razoável."""
+    duracao = _duracao_audio(audio_wav)
+    segs: list[dict] = []
+    inicio = 0.0
+    while inicio < duracao:
+        janela = min(_API_JANELA, duracao - inicio)
+        segs += _transcrever_trecho_api(audio_wav, inicio, janela, idioma)
+        inicio += janela
+    return segs
+
+
+def transcrever_audio(midia: Path, pasta: Path, modelo: str, idioma: str) -> tuple[list[dict], str]:
+    """`midia` pode ser vídeo ou áudio. Tenta a API primeiro; sem
+    OPENROUTER_API_KEY ou se a chamada falhar, cai pro Whisper local
+    (rodar_whisper, que aceita vídeo ou áudio igual). Devolve (segmentos,
+    fonte: "whisper-api" ou "whisper")."""
+    from openrouter import APIError, api_key
+    try:
+        api_key()
+    except APIError:
+        return rodar_whisper(midia, pasta, modelo, idioma), "whisper"
+    wav, limpar = (midia, False) if midia.suffix.lower() == ".wav" else \
+        (pasta / f"{midia.stem}_api.wav", True)
+    try:
+        if limpar:
+            extrair_audio(midia, wav)
+        return rodar_whisper_api(wav, idioma), "whisper-api"
+    except Exception as exc:  # noqa: BLE001 — API falhou, cai pro Whisper local
+        log.warning("Whisper pela API falhou (%s); caindo pro Whisper local", exc)
+        return rodar_whisper(midia, pasta, modelo, idioma), "whisper"
+    finally:
+        if limpar:
+            wav.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Etapa 2 — escolha da rota
 # ---------------------------------------------------------------------------
 
 def obter_transcricao(video: Path, audio: Path | None, pasta: Path, cfg: dict) -> tuple[list[dict], str]:
-    """Devolve (segmentos, fonte). Fonte é "srt: <arquivo>" ou "whisper"."""
+    """Devolve (segmentos, fonte). Fonte é "srt: <arquivo>", "whisper-api" ou "whisper"."""
     for srt in candidatos_srt(video):
         try:
             segs = ler_srt(srt)
@@ -183,5 +284,7 @@ def obter_transcricao(video: Path, audio: Path | None, pasta: Path, cfg: dict) -
         log.warning("SRT %s vazio ou corrompido (%d legendas); tentando o próximo", srt.name, len(segs))
     if audio is None:
         raise RuntimeError("Sem SRT utilizável e sem áudio para rodar o Whisper.")
-    log.info("Nenhum SRT utilizável ao lado do vídeo; transcrevendo com Whisper (%s)", cfg["whisper_modelo"])
-    return rodar_whisper(audio, pasta, cfg["whisper_modelo"], cfg["whisper_idioma"]), "whisper"
+    log.info("Nenhum SRT utilizável ao lado do vídeo; transcrevendo")
+    segs, fonte = transcrever_audio(audio, pasta, cfg["whisper_modelo"], cfg["whisper_idioma"])
+    log.info("   transcrito com %s", fonte)
+    return segs, fonte

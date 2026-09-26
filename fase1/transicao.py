@@ -66,7 +66,7 @@ def aplicar(abertura: Path, whoosh: Path, fator_slow: float, volume_whoosh: floa
     )
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(abertura),
                     "-filter_complex", filtro1, "-map", "[vout]", "-map", "[aout]",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k", str(intermediario)],
                    check=True, capture_output=True)
 

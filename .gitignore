@@ -27,3 +27,8 @@ fase1/resultados/
 
 # modelo de reconhecimento facial (37MB), baixado sozinho pelo crop_dinamico.py
 fase1/models/face_recognition_sface_2021dec.onnx
+
+# pesos do crop LR-ASD (falante_ativo.py): det_10g.onnx vem do buffalo_l do InsightFace
+# (licença só para pesquisa não comercial), o LR-ASD do github Junhua-Liao/LR-ASD (weight/)
+fase1/models/det_10g.onnx
+fase1/models/lrasd_finetuning_TalkSet.model

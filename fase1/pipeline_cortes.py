@@ -2,6 +2,13 @@
 
     python pipeline_cortes.py <blocos_finais.json> [--saida pasta] [--config config_cortes.yaml]
 
+No Estúdio (estudio.py) esta fase NÃO roda mais em todos os blocos antes da
+proposta — só no bloco que o usuário escolheu produzir, chamando
+`processa_bloco(..., bruto_pronto=<corte bruto da proposta>)` direto (sem
+subprocesso), o que pula o passo 1 abaixo. A proposta em si é só um recorte
+rápido (ffmpeg -c copy, sem Whisper/silêncio/abertura) — processar isto tudo
+em candidatos que o usuário nem escolhe era processamento jogado fora.
+
 Para cada bloco:
 1. Recorta vídeo+áudio do vídeo original (ffmpeg -ss -t) — um clipe bruto, ainda
    sem cortes internos. Os passos seguintes trabalham só nesse recorte, então
@@ -48,7 +55,7 @@ import silencio
 import transicao
 from jev_client import JEV
 from openrouter import APIError, api_key
-from transcricao import rodar_whisper  # reaproveita o wrapper do Whisper da Fase 1
+from transcricao import transcrever_audio  # tenta a API, cai pro Whisper local (fase1/transcricao.py)
 
 AQUI = Path(__file__).resolve().parent
 log = logging.getLogger("fase2")
@@ -122,18 +129,25 @@ def crop_vertical(clipe: Path, palavras: list[dict], pasta: Path, cfg_crop: dict
     return vertical
 
 
-def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | None) -> dict:
+def processa_bloco(bloco: dict, video: Path | None, pasta: Path, cfg: dict, jev: JEV | None,
+                   bruto_pronto: Path | None = None) -> dict:
+    """`bruto_pronto`: um corte já feito (ex.: o recorte rápido da proposta no
+    Estúdio) — pula o passo 1 (recorta_video) e parte direto dele; `video`
+    fica sem uso nesse caso."""
     bid = bloco["id"]
     pbloco = pasta / bid
     pbloco.mkdir(parents=True, exist_ok=True)
     clipe_bruto = pbloco / "bruto.mp4"
 
-    with etapa("recorte do vídeo original"):
-        recorta_video(video, bloco["inicio"], bloco["duracao"] + 0.5, clipe_bruto)
+    if bruto_pronto is not None:
+        shutil.copy(bruto_pronto, clipe_bruto)
+    else:
+        with etapa("recorte do vídeo original"):
+            recorta_video(video, bloco["inicio"], bloco["duracao"] + 0.5, clipe_bruto)
     duracao_bruta = duracao_de(clipe_bruto)
 
     with etapa("transcrição por palavra (Whisper)"):
-        segs = rodar_whisper(clipe_bruto, pbloco, cfg["whisper"]["modelo"], cfg["whisper"]["idioma"])
+        segs, _ = transcrever_audio(clipe_bruto, pbloco, cfg["whisper"]["modelo"], cfg["whisper"]["idioma"])
     palavras = [w for s in segs for w in s["words"]]
     if not palavras:
         log.warning("   %s: Whisper não achou palavras; bloco copiado sem cortes internos", bid)
@@ -200,8 +214,8 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
                     # roda de novo só no áudio recortado, e o JEV julga sem o contexto
                     # que o resto do bloco dava — o mesmo jeito que o espectador vai ver.
                     try:
-                        segs_isolado = rodar_whisper(abertura, pbloco, cfg["whisper"]["modelo"],
-                                                     cfg["whisper"]["idioma"])
+                        segs_isolado, _ = transcrever_audio(abertura, pbloco, cfg["whisper"]["modelo"],
+                                                            cfg["whisper"]["idioma"])
                         texto_isolado = " ".join(s["text"] for s in segs_isolado).strip() or escolhido["texto"]
                         contexto = jev.tem_contexto(texto_isolado, bloco.get("gancho", ""),
                                                     bloco.get("comentario", ""))

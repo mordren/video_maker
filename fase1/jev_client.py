@@ -156,6 +156,44 @@ class JEV:
         idx = _idx(a["melhor"]["choice"], 0)
         return {"indice": idx, **candidatos[idx]}
 
+    # Proposta no Estúdio (estudio.py, sem custo extra: só texto já escrito) --
+    def sugerir_formato(self, gancho: str, comentario: str) -> dict:
+        """Sugere o formato do crop 9:16 pelo texto que a Fase 1 já escreveu
+        (gancho + comentário do editor) — sem decodificar vídeo nem áudio, por
+        isso cabe rodar num corte por proposta, antes de qualquer acabamento.
+
+        Só decide entre os dois formatos que o Estúdio sabe produzir hoje
+        (`dinamico`/crop e `transparente`); tela dividida e vídeo fixo com
+        imagens ainda não têm renderização — ver [[video-maker-microedicao-piloto]].
+        Isto é só a pré-seleção do dropdown da proposta: o usuário decide."""
+        state = {"gancho": gancho or "(nenhum)", "comentario_do_editor": comentario or "(nenhum)"}
+        a = self.decide(state, {
+            "formato": {
+                "type": "choice",
+                "instructions": (
+                    "Este corte vai virar um vídeo vertical (9:16) para redes sociais. "
+                    "Pelo gancho e pelo comentário do editor, escolha o formato mais "
+                    "adequado. O que importa é se vale a pena VER O ROSTO de quem fala "
+                    "(reação, emoção, expressão, embate) — não se é um monólogo ou uma "
+                    "conversa: um depoimento emocional de uma pessoa só também é `crop`, "
+                    "porque a expressão dela é parte do corte."),
+                "criteria": {
+                    "crop": ("A reação, a emoção ou a expressão de quem fala é parte do que "
+                             "prende: depoimento emocional, discussão, entrevista, embate, "
+                             "confissão — não importa se é uma pessoa só ou várias"),
+                    "transparente": ("O interesse está só na ideia/dado falado, não em ver "
+                                     "quem fala (leitura de número, estatística, notícia, "
+                                     "explicação fria de um fato — o rosto não acrescenta), OU "
+                                     "o comentário descreve uma grade/mosaico com vários "
+                                     "quadrinhos pequenos lado a lado (chamada de vídeo com "
+                                     "muitos participantes, cada um no seu quadro) — a câmera "
+                                     "dinâmica não consegue seguir um mosaico assim"),
+                },
+            },
+        })
+        formato = "transparente" if "transparente" in str(a["formato"]["choice"]).lower() else "dinamico"
+        return {"formato_sugerido": formato}
+
     def tem_contexto(self, texto: str, gancho_do_editor: str = "", motivo_editor: str = "") -> dict:
         """Confere, depois de escolhido, se o texto ISOLADO do gancho (transcrito
         de novo só a partir do áudio recortado, sem o resto do bloco) ainda
