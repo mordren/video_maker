@@ -48,6 +48,12 @@ done
 [ "$FALHOU" -eq 0 ] || exit 1
 
 echo
+if [ ! -d "/home/mordren/bgutil-ytdlp-pot-provider/server/node_modules" ]; then
+  echo "Aviso: gerador de PO Token não preparado ainda — sem ele, o YouTube só"
+  echo "libera 360p por link. Rode (como mordren, sem sudo):"
+  echo "  bash /home/mordren/video_maker/servidor/instalar_bgutil.sh"
+  echo
+fi
 echo "Pronto. Abra no navegador (rede local):"
 echo "  Estúdio:    http://192.168.31.133:8090"
 echo "  Publicador: http://192.168.31.133:8080"

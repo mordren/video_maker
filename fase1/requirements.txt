@@ -7,3 +7,6 @@ openai-whisper>=20250625
 # yt-dlp: no Windows o app usa o tools/yt-dlp.exe versionado no repo; em
 # qualquer outro SO (Estúdio no Linux) vem daqui, via utils.yt_dlp_path().
 yt-dlp>=2025.1.1
+# Plugin de PO Token (ver servidor/instalar-arch.sh e o comentário em
+# estudio.py:_baixar) — sem ele, o YouTube só libera 360p por link.
+bgutil-ytdlp-pot-provider

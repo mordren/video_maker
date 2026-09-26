@@ -225,17 +225,15 @@ def _rodar(tid: str, cmd: list[str]) -> None:
 
 def _baixar(tid: str, url: str, destino: Path) -> Path:
     destino.mkdir(parents=True, exist_ok=True)
-    # Mesmas opções do programa de desktop (download_video): legenda do próprio
-    # YouTube em pt ao lado do vídeo — a Fase 1 usa ela e pula o Whisper do
-    # vídeo inteiro. Clientes mweb/tv_simply: o "default" dava HTTP 403 (ver
-    # app.py); precisam do deno no PATH. --remote-components ejs:github: o
-    # yt-dlp do pip (bem mais novo que o tools/yt-dlp.exe do Windows) passou
-    # a exigir esse opt-in para baixar o script que resolve o desafio JS do
-    # YouTube com o deno — sem ele, cai só nos formatos de imagem.
+    # Legenda do próprio YouTube em pt ao lado do vídeo — a Fase 1 usa ela e
+    # pula o Whisper do vídeo inteiro. Sem um PO Token, o YouTube só liberava
+    # 360p (formato 18) para qualquer cliente — o plugin bgutil-ytdlp-pot-
+    # -provider (instalado no venv) gera um na hora, via um script Deno
+    # descartável (servidor/bgutil-ytdlp-pot-provider), sem precisar de
+    # navegador nem de um serviço fixo rodando. Com ele o cliente "web"
+    # (default do yt-dlp) já libera até 1080p normalmente.
     # --progress-delta: uma linha de progresso a cada 20 s, não a cada pedaço.
     base = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
-            "--extractor-args", "youtube:player_client=mweb,tv_simply",
-            "--remote-components", "ejs:github",
             "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3"]
     cmd = [*base, "-N", "8", "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mp4",
            "-P", str(destino), "-o", "%(title).150B.%(ext)s", url]
