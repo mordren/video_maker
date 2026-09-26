@@ -235,10 +235,16 @@ def _baixar(tid: str, url: str, destino: Path) -> Path:
     # Vídeo e legenda saem da MESMA chamada ao yt-dlp: duas chamadas em
     # sequência (vídeo, depois legenda à parte) levavam a um 429 do YouTube
     # na segunda, porque o rate-limit é por essa rajada de pedidos seguidos —
-    # numa chamada só isso não acontece.
+    # numa chamada só isso não acontece. O endpoint de legenda do YouTube
+    # também bloqueia sem um fingerprint de navegador de verdade (daí o aviso
+    # de "impersonation" no log) — --impersonate resolve isso via curl_cffi
+    # (instalado no venv). --ignore-errors garante que, mesmo se a legenda
+    # ainda assim tomar 429, o yt-dlp trata como aviso e continua pro vídeo,
+    # em vez de abortar o job inteiro.
     # --progress-delta: uma linha de progresso a cada 20 s, não a cada pedaço.
     cmd = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
            "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
+           "--ignore-errors", "--impersonate", "chrome",
            "-N", "8", "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mp4",
            "--write-subs", "--write-auto-subs", "--sub-langs", "pt-BR,pt,pt-orig",
            "--sub-format", "ttml/best", "--convert-subs", "srt",
@@ -246,9 +252,9 @@ def _baixar(tid: str, url: str, destino: Path) -> Path:
     try:
         _rodar(tid, cmd)
     except RuntimeError:
-        # Se só a parte da legenda falhar o yt-dlp ainda sai com erro, mas o
-        # vídeo pode ter baixado normalmente — só falha de verdade se ele não
-        # apareceu na pasta.
+        # Com --ignore-errors isso só deve disparar se o vídeo em si falhar
+        # (a legenda sozinha vira aviso, não erro fatal) — mas confere mesmo
+        # assim antes de desistir.
         if not [p for p in destino.iterdir() if p.suffix.lower() in EXTENSOES]:
             raise
         _registrar(tid, "   (legenda do YouTube indisponível — segue sem ela, o Whisper cobre)")
