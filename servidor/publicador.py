@@ -354,6 +354,7 @@ def _apagar_video(arquivo: str, fila: dict, ignorando: str = "") -> None:
         return
     try:
         caminho_do_video(arquivo).unlink(missing_ok=True)
+        (VIDEOS_DIR / f"{Path(arquivo).stem}.srt").unlink(missing_ok=True)
     except OSError as erro:
         registrar(f"⚠️ não deu para apagar {arquivo}: {erro}")
 
@@ -595,6 +596,11 @@ def _enviar_item(item_id: str) -> None:
         def progresso(mensagem: str) -> None:
             registrar(f"   {titulo}: {mensagem}")
 
+        legenda_nome = item.get("legenda") or ""
+        legenda_path = VIDEOS_DIR / legenda_nome if legenda_nome else None
+        if legenda_path and not legenda_path.is_file():
+            legenda_path = None
+
         try:
             # headless=False: o serviço roda sob Xvfb (display virtual — veja
             # publicador.service), mesma ideia já usada pelo tiktok_upload.py
@@ -602,7 +608,7 @@ def _enviar_item(item_id: str) -> None:
             # bloqueia automação com mais facilidade nesse modo.
             url = youtube_browser_upload.upload_video(
                 caminho, titulo, canal, descricao, privacidade,
-                publish_at=None, headless=False, log=progresso)
+                publish_at=None, headless=False, log=progresso, legenda_path=legenda_path)
         except Exception as erro:                        # noqa: BLE001
             tentativas = int(item.get("tentativas") or 0) + 1
             if _erro_de_rede(erro) and tentativas <= MAX_TENTATIVAS_REDE:
@@ -756,6 +762,10 @@ def subir_videos():
     arquivos = [a for a in request.files.getlist("arquivos") if a and a.filename]
     if not arquivos:
         return jsonify({"erro": "Nenhum arquivo escolhido."}), 400
+    # Legenda opcional (.srt), com o mesmo nome-base do vídeo — sobe junto
+    # como legenda de verdade no YouTube (Estúdio manda quando o vídeo não
+    # veio de um download com legenda oficial; ver estudio.py:enviar).
+    legenda_enviada = request.files.get("legenda")
 
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     adicionados, recusados = [], []
@@ -769,13 +779,17 @@ def subir_videos():
         nome = _nome_livre(nome)
         enviado.save(VIDEOS_DIR / nome)
         adicionados.append(nome)
+        if legenda_enviada and legenda_enviada.filename:
+            legenda_enviada.save(VIDEOS_DIR / f"{Path(nome).stem}.srt")
 
     with _TRAVA:
         fila = carregar_fila()
         for nome in adicionados:
+            legenda_nome = f"{Path(nome).stem}.srt" if legenda_enviada and legenda_enviada.filename else ""
             fila["itens"].append({
                 "id": _novo_id(),
                 "arquivo": nome,
+                "legenda": legenda_nome,
                 "titulo": Path(nome).stem,
                 "canal": canal,
                 "status": "aguardando",

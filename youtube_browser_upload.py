@@ -637,6 +637,59 @@ def _agendar(page, quando: datetime, log=None) -> None:
     _emit(log, f"Preenchi o horário de agendamento: {hora_txt}.")
 
 
+def _enviar_legenda(page, video_id: str, legenda_path: Path, idioma: str = "pt", log=None) -> None:
+    """Sobe um .srt como legenda de verdade do vídeo (tela separada do
+    assistente de upload — /video/<id>/translations), não só o texto que já
+    vai queimado na imagem.
+
+    Best-effort e isolado do resto do envio: se a tela do Studio mudar aqui,
+    o vídeo já publicado continua valendo, só sem essa legenda (quem chama
+    trata a exceção). Uma segunda aba evita mexer na aba principal, cujo
+    estado (diálogo de confirmação etc.) o resto do fluxo ainda pode usar.
+    """
+    pagina = page.context.new_page()
+    try:
+        pagina.set_default_timeout(_ESPERA)
+        pagina.goto(f"https://studio.youtube.com/video/{video_id}/translations",
+                    wait_until="domcontentloaded", timeout=_ESPERA)
+        _emit(log, "Abri a tela de legendas.")
+
+        # Se o idioma já existir na lista (ex.: legenda automática do YouTube),
+        # o link de ação é "ADICIONAR"/"Add" na linha dele; senão, primeiro
+        # precisa adicionar o idioma pelo botão geral. Os dois casos abrem o
+        # mesmo menu de origem da legenda.
+        linha_idioma = pagina.get_by_role("row", name=re.compile(idioma, re.IGNORECASE)).first
+        try:
+            linha_idioma.get_by_role("button", name=re.compile("adicionar|add", re.IGNORECASE)).click(timeout=6000)
+        except Exception:
+            pagina.get_by_role("button", name=re.compile("adicionar idioma|add language", re.IGNORECASE)).click(timeout=8000)
+            pagina.get_by_text(re.compile(f"^{idioma}$", re.IGNORECASE)).first.click(timeout=8000)
+            pagina.wait_for_timeout(500)
+            linha_idioma = pagina.get_by_role("row", name=re.compile(idioma, re.IGNORECASE)).first
+            linha_idioma.get_by_role("button", name=re.compile("adicionar|add", re.IGNORECASE)).click(timeout=6000)
+
+        # Menu com as origens da legenda: upload de arquivo, sincronização
+        # automática ou digitar na mão — escolhe "fazer upload de arquivo".
+        pagina.get_by_text(re.compile("upload.*arquivo|upload file", re.IGNORECASE)).first.click(timeout=8000)
+        # Segunda tela: "com timing" (já tem os tempos, é o nosso caso do
+        # .srt) vs "sem timing" (só o texto corrido).
+        try:
+            pagina.get_by_text(re.compile("com.*tempo|with timing", re.IGNORECASE)).first.click(timeout=5000)
+        except Exception:
+            pass  # algumas contas pulam direto pro seletor de arquivo
+
+        with pagina.expect_file_chooser(timeout=8000) as escolhedor:
+            pagina.get_by_text(re.compile("selecionar arquivo|browse", re.IGNORECASE)).first.click(timeout=8000)
+        escolhedor.value.set_files(str(legenda_path))
+        _emit(log, f"Arquivo de legenda selecionado: {legenda_path.name}.")
+
+        pagina.get_by_role("button", name=re.compile("^publicar$|^publish$|^salvar$|^save$", re.IGNORECASE)).click(timeout=15_000)
+        pagina.wait_for_timeout(2000)
+        _emit(log, "Legenda enviada.")
+    finally:
+        pagina.close()
+
+
 def _concluir(page, log=None) -> str:
     """Clica em Publicar/Concluir e devolve a URL do vídeo, se aparecer.
 
@@ -753,6 +806,8 @@ def upload_video(
     publish_at: datetime | None = None,
     headless: bool = False,
     log=None,
+    legenda_path: Path | None = None,
+    legenda_idioma: str = "pt",
 ) -> str:
     """Envia um vídeo pela tela do Studio, na conta indicada. Devolve a URL.
 
@@ -760,7 +815,11 @@ def upload_video(
     Com `publish_at`, o vídeo é agendado (privado até a hora marcada). `log`, se
     informado, é uma função que recebe mensagens de progresso (str). `headless`
     roda o navegador escondido, mas o YouTube detecta automação com mais
-    facilidade assim — deixe desligado a menos que precise mesmo.
+    facilidade assim — deixe desligado a menos que precise mesmo. `legenda_path`
+    (opcional, .srt) sobe como legenda de verdade do vídeo (não só texto
+    queimado na imagem) — útil quando o vídeo não veio de um download com
+    legenda oficial do YouTube. Best-effort: se falhar, o vídeo já publicado
+    não é desfeito, só fica sem essa legenda (veja `_enviar_legenda`).
     """
     def _log(msg: str) -> None:
         if log:
@@ -846,6 +905,12 @@ def upload_video(
             etapa = "abrindo o formulário de upload"
             _log("Selecionando o arquivo de vídeo…")
             _abrir_upload(page, video_path, log=_log)
+            # A URL já mostra o id do vídeo assim que o Studio cria o rascunho
+            # (antes mesmo do upload/publicação terminar) — é o mesmo id usado
+            # depois pra achar a tela de legendas, sem depender do link final
+            # (que às vezes não aparece na tela de confirmação).
+            video_id_m = re.search(r"studio\.youtube\.com/video/([^/]+)/", page.url)
+            video_id = video_id_m.group(1) if video_id_m else None
 
             etapa = "preenchendo título"
             _log("Preenchendo título e descrição…")
@@ -889,6 +954,18 @@ def upload_video(
             url = _concluir(page, log=_log)
             _fechar_confirmacao(page, log=_log)
             page.wait_for_timeout(2000)
+
+            if legenda_path and legenda_path.is_file():
+                if video_id:
+                    etapa = "enviando a legenda"
+                    _log(f"Enviando legenda ({legenda_path.name})…")
+                    try:
+                        _enviar_legenda(page, video_id, legenda_path, legenda_idioma, log=_log)
+                    except Exception as exc:  # noqa: BLE001 — vídeo já publicado; legenda é bônus
+                        _log(f"Legenda não foi enviada ({exc}); o vídeo continua publicado normalmente.")
+                else:
+                    _log("Não consegui identificar o id do vídeo — pulando o envio da legenda.")
+
             # Salva de novo no final: a espera das verificações pode levar
             # bastante tempo, e o Google pode ter renovado o token de sessão
             # durante esse período — este é o cookie mais fresco que se

@@ -590,11 +590,21 @@ def enviar(tid: str, cid: str):
         return jsonify({"erro": "Escolha o canal antes de enviar."}), 400
     final = _pasta(tid) / "final" / cid / c["arquivo"]
     nome = _nome_arquivo(c.get("titulo_publicacao") or cid)
+    # Manda a legenda junto, com o mesmo nome-base do vídeo — o Publicador
+    # sobe ela como legenda de verdade no YouTube (accessibilidade e SEO),
+    # não só o texto queimado no vídeo. Sem download prévio de legenda do
+    # YouTube, essa é a única legenda que existe pra esse corte.
+    legenda = _pasta(tid) / "final" / cid / (c.get("legenda") or "")
     try:
-        with final.open("rb") as f:
+        arquivos = {"arquivos": (nome, final.open("rb"), "video/mp4")}
+        if legenda.is_file():
+            arquivos["legenda"] = (Path(nome).stem + ".srt", legenda.open("rb"), "text/plain")
+        try:
             r = requests.post(carregar_config()["publicador_url"] + "/api/videos",
-                              data={"canal": c["canal"]}, files={"arquivos": (nome, f, "video/mp4")},
-                              timeout=600)
+                              data={"canal": c["canal"]}, files=arquivos, timeout=600)
+        finally:
+            for _, arquivo, _ in arquivos.values():
+                arquivo.close()
         resposta = r.json()
     except Exception as exc:  # noqa: BLE001
         return jsonify({"erro": f"Publicador fora do ar? {exc}"}), 502
