@@ -143,9 +143,16 @@ def rodar_whisper(audio: Path, pasta: Path, modelo: str, idioma: str) -> list[di
     binario = whisper_bin()
     if not binario:
         raise RuntimeError("Whisper não encontrado (pip install openai-whisper).")
-    subprocess.run([binario, str(audio), "--model", modelo, "--language", idioma,
-                    "--task", "transcribe", "--word_timestamps", "True",
-                    "--output_format", "json", "--output_dir", str(pasta)], check=True)
+    cmd = [binario, str(audio), "--model", modelo, "--language", idioma,
+           "--task", "transcribe", "--word_timestamps", "True",
+           "--output_format", "json", "--output_dir", str(pasta)]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        # GPUs pequenas (ex.: 4GB) ficam sem VRAM quando o crop dinâmico já
+        # está com os modelos de rosto carregados durante o lote de blocos —
+        # cai para CPU em vez de derrubar o bloco inteiro.
+        subprocess.run([*cmd, "--device", "cpu"], check=True)
     dados = json.loads((pasta / f"{audio.stem}.json").read_text(encoding="utf-8"))
     segs = []
     for s in dados.get("segments", []):
