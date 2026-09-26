@@ -41,7 +41,7 @@ loudness:
 abertura:
   ativo: true
   duracao_minima: 1.8
-  duracao_maxima: 3.2
+  duracao_maxima: 7.0
   max_candidatos: 20   # teto de opções mandadas ao JEV (mais opções = decisão pior/mais lenta)
   margem_inicio: 5.0   # regra dura: nenhum candidato pode começar antes disso (segundos, desde
                         # o início do bloco) — senão a abertura pode coincidir com o próprio

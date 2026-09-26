@@ -156,6 +156,33 @@ class JEV:
         idx = _idx(a["melhor"]["choice"], 0)
         return {"indice": idx, **candidatos[idx]}
 
+    def tem_contexto(self, texto: str, gancho_do_editor: str = "", motivo_editor: str = "") -> dict:
+        """Confere, depois de escolhido, se o texto ISOLADO do gancho (transcrito
+        de novo só a partir do áudio recortado, sem o resto do bloco) ainda
+        faz sentido sozinho — a escolha em `escolher_gancho` usa o texto vindo
+        da transcrição do bloco inteiro, que pode diferir um pouco do que o
+        Whisper entende sem esse contexto ao redor."""
+        state = {
+            "gancho_do_editor": gancho_do_editor or "(nenhum)",
+            "motivo_do_editor": motivo_editor or "(nenhum)",
+            "texto_isolado": texto,
+        }
+        a = self.decide(state, {
+            "tem_contexto": {
+                "type": "noul",
+                "instructions": (
+                    "`texto_isolado` é a transcrição de um trecho de ~3-7s que vai tocar "
+                    "SOZINHO, sem nada antes, como abertura de um corte para redes sociais. "
+                    "Alguém que não viu mais nada do vídeo entenderia do que se trata e "
+                    "sentiria vontade de continuar assistindo? Responda false para um "
+                    "preâmbulo vago, uma frase de transição ('é o seguinte', 'vamos lá') ou "
+                    "algo que só faz sentido com o que vem antes ou depois."),
+                "criteria": {"true": "Faz sentido e prende sozinho, mesmo sem mais contexto",
+                             "false": "Vago, incompleto ou só faz sentido com contexto externo"},
+            },
+        })
+        return {"tem_contexto": float(a["tem_contexto"]["noul"])}
+
 
 def _resumo(texto: str, limite: int = 140) -> str:
     texto = " ".join(texto.split())

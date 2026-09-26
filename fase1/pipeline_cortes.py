@@ -14,10 +14,13 @@ Para cada bloco:
    só corta repetição literal com pausa curta entre as duas tentativas.
 5. Mescla os dois planos de corte, calcula os trechos a manter, renderiza o
    corte principal (trim+concat, loudnorm, fade curto em cada junção interna).
-6. Se `abertura.ativo`: gera candidatos de ~2-3s do bloco (fora dos trechos já
-   cortados), o JEV escolhe o mais forte sozinho, e esse trecho é renderizado
-   à parte e colado na frente do corte principal — a técnica de mostrar o
-   pico primeiro para prender atenção nos primeiros segundos.
+6. Se `abertura.ativo`: gera candidatos de ~1,8-7s do bloco (fora dos trechos
+   já cortados), o JEV escolhe o mais forte sozinho, e esse trecho é
+   renderizado à parte e colado na frente do corte principal — a técnica de
+   mostrar o pico primeiro para prender atenção nos primeiros segundos. Depois
+   de renderizado, o Whisper roda de novo só nesse recorte (sem o resto do
+   bloco como contexto) e o JEV confere se o texto isolado ainda faz sentido
+   sozinho — só um aviso no log por enquanto, não troca de candidato.
 7. Salva um relatório por bloco: duração antes/depois e cada corte com motivo.
 
 A abertura é a única parte desta fase que usa IA (JEV) — o resto é tudo regra
@@ -191,6 +194,24 @@ def processa_bloco(bloco: dict, video: Path, pasta: Path, cfg: dict, jev: JEV | 
                                          escala_de_cinza=ca["escala_de_cinza"])
                     abertura_info = {"inicio": escolhido["inicio"], "fim": escolhido["fim"],
                                      "texto": escolhido["texto"], "transicao": None}
+
+                    # Reconfere isolado: o texto de `escolhido` vem da transcrição do
+                    # bloco inteiro (com o resto da fala como contexto); aqui o Whisper
+                    # roda de novo só no áudio recortado, e o JEV julga sem o contexto
+                    # que o resto do bloco dava — o mesmo jeito que o espectador vai ver.
+                    try:
+                        segs_isolado = rodar_whisper(abertura, pbloco, cfg["whisper"]["modelo"],
+                                                     cfg["whisper"]["idioma"])
+                        texto_isolado = " ".join(s["text"] for s in segs_isolado).strip() or escolhido["texto"]
+                        contexto = jev.tem_contexto(texto_isolado, bloco.get("gancho", ""),
+                                                    bloco.get("comentario", ""))
+                        abertura_info["texto_isolado"] = texto_isolado
+                        abertura_info["tem_contexto"] = contexto["tem_contexto"]
+                        if contexto["tem_contexto"] < 0.5:
+                            log.warning("   %s: gancho pode não ter contexto sozinho (%.2f) — %r",
+                                       bid, contexto["tem_contexto"], texto_isolado)
+                    except Exception as exc:  # noqa: BLE001 — checagem falhar não derruba a abertura
+                        log.warning("   %s: checagem de contexto do gancho falhou (%s)", bid, exc)
 
                     ct = cfg["transicao"]
                     if ct["ativo"]:
