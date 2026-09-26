@@ -232,10 +232,13 @@ def _baixar(tid: str, url: str, destino: Path) -> Path:
     # yt-dlp do pip (bem mais novo que o tools/yt-dlp.exe do Windows) passou
     # a exigir esse opt-in para baixar o script que resolve o desafio JS do
     # YouTube com o deno — sem ele, cai só nos formatos de imagem.
+    # --ignore-errors: a legenda é só um atalho (a Fase 1 cai para o Whisper
+    # quando não tem .srt ao lado) — sem isso, um 429 do YouTube ao baixar só
+    # a legenda derrubava o trabalho inteiro mesmo com o vídeo disponível.
     # --progress-delta: uma linha de progresso a cada 20 s, não a cada pedaço.
     cmd = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
            "--extractor-args", "youtube:player_client=mweb,tv_simply",
-           "--remote-components", "ejs:github",
+           "--remote-components", "ejs:github", "--ignore-errors",
            "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
            "-N", "8", "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mp4",
            "-P", str(destino), "-o", "%(title).150B.%(ext)s",
