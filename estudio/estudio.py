@@ -232,27 +232,29 @@ def _baixar(tid: str, url: str, destino: Path) -> Path:
     # descartável (servidor/bgutil-ytdlp-pot-provider), sem precisar de
     # navegador nem de um serviço fixo rodando. Com ele o cliente "web"
     # (default do yt-dlp) já libera até 1080p normalmente.
+    # Vídeo e legenda saem da MESMA chamada ao yt-dlp: duas chamadas em
+    # sequência (vídeo, depois legenda à parte) levavam a um 429 do YouTube
+    # na segunda, porque o rate-limit é por essa rajada de pedidos seguidos —
+    # numa chamada só isso não acontece.
     # --progress-delta: uma linha de progresso a cada 20 s, não a cada pedaço.
-    base = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
-            "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3"]
-    cmd = [*base, "-N", "8", "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mp4",
+    cmd = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
+           "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
+           "-N", "8", "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mp4",
+           "--write-subs", "--write-auto-subs", "--sub-langs", "pt-BR,pt,pt-orig",
+           "--sub-format", "ttml/best", "--convert-subs", "srt",
            "-P", str(destino), "-o", "%(title).150B.%(ext)s", url]
-    _rodar(tid, cmd)
+    try:
+        _rodar(tid, cmd)
+    except RuntimeError:
+        # Se só a parte da legenda falhar o yt-dlp ainda sai com erro, mas o
+        # vídeo pode ter baixado normalmente — só falha de verdade se ele não
+        # apareceu na pasta.
+        if not [p for p in destino.iterdir() if p.suffix.lower() in EXTENSOES]:
+            raise
+        _registrar(tid, "   (legenda do YouTube indisponível — segue sem ela, o Whisper cobre)")
     videos = [p for p in destino.iterdir() if p.suffix.lower() in EXTENSOES]
     if not videos:
         raise RuntimeError("o download terminou mas nenhum vídeo apareceu na pasta")
-
-    # Legenda à parte, best-effort: é só um atalho (a Fase 1 cai para o
-    # Whisper quando não tem .srt ao lado) — um 429 do YouTube nela não pode
-    # derrubar o trabalho quando o vídeo já baixou certinho.
-    cmd_legenda = [*base, "--skip-download", "--write-subs", "--write-auto-subs",
-                   "--sub-langs", "pt-BR,pt,pt-orig", "--sub-format", "ttml/best",
-                   "--convert-subs", "srt", "-P", str(destino),
-                   "-o", "%(title).150B.%(ext)s", url]
-    try:
-        _rodar(tid, cmd_legenda)
-    except RuntimeError:
-        _registrar(tid, "   (legenda do YouTube indisponível — segue sem ela, o Whisper cobre)")
     return max(videos, key=lambda p: p.stat().st_size)
 
 
