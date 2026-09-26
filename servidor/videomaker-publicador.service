@@ -12,6 +12,9 @@ Environment=PUBLICADOR_DATA=/home/mordren/VideoMaker/publicador
 Environment=HOME=/home/mordren
 Environment=TMPDIR=/home/mordren/VideoMaker/tmp
 Environment=PYTHONUNBUFFERED=1
+# tiktok_upload.py e youtube_browser_upload.py ficam na raiz do repo, não em
+# servidor/ (onde está publicador.py) — sem isso, ModuleNotFoundError.
+Environment=PYTHONPATH=/home/mordren/video_maker
 # O Chromium do Playwright (envios ao YouTube/TikTok) foi instalado dentro do
 # próprio venv (PLAYWRIGHT_BROWSERS_PATH=0 no momento do "pip install"),
 # não no cache do usuário.
