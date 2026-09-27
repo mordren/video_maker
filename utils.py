@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import shutil
 import sys
@@ -61,6 +62,41 @@ def yt_dlp_path() -> Path | None:
             return YTDLP_SYSTEM
     found = shutil.which("yt-dlp")
     return Path(found) if found else None
+
+
+FFMPEG_NATIVO = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "ffmpeg-arm64" / "bin"
+
+
+def preferir_ffmpeg_nativo() -> None:
+    """Põe o ffmpeg ARM64 na frente do PATH, se ele estiver instalado.
+
+    Este notebook é um Snapdragon X: o ffmpeg de C:\\Program Files é x64 e roda
+    emulado. A build ARM64 (BtbN autobuild-2026-08-31 — as diárias de 24/09 em
+    diante travam ao abrir) exportou o mesmo corte 1,7x mais rápido. Mexer no
+    PATH do próprio processo vale para tudo que o app chama por nome ("ffmpeg",
+    "ffprobe") e para o yt-dlp, que acha o ffmpeg pelo PATH ao juntar áudio e
+    vídeo. Sem a pasta (outra máquina), nada muda.
+    """
+    if (FFMPEG_NATIVO / "ffmpeg.exe").exists():
+        os.environ["PATH"] = str(FFMPEG_NATIVO) + os.pathsep + os.environ.get("PATH", "")
+
+
+def transcricao_api_configurada() -> bool:
+    """Há chave do OpenRouter (fase1/.env ou ambiente) para o Whisper pela API?"""
+    fase1 = str(PROJECT_DIR / "fase1")
+    if fase1 not in sys.path:
+        sys.path.append(fase1)
+    from openrouter import APIError, api_key
+    try:
+        api_key()
+    except APIError:
+        return False
+    return True
+
+
+def transcricao_disponivel() -> bool:
+    """Dá para transcrever? Pela API (preferida) ou com o Whisper local."""
+    return transcricao_api_configurada() or whisper_path() is not None
 
 
 def whisper_path() -> str | None:

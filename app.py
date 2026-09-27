@@ -39,8 +39,10 @@ from utils import (
     thumbnail_path, write_reels_prompt, write_reels_text,
     parse_csv_moments, parse_srt_segments, parse_time_string, segments_to_srt,
     shorten_srt_captions, srt_has_content, whisper_path, yt_dlp_path,
-    TimestampInput, log_change, log_video,
+    TimestampInput, log_change, log_video, preferir_ffmpeg_nativo, transcricao_disponivel,
 )
+
+preferir_ffmpeg_nativo()
 
 import ai_srt
 import censor
@@ -1209,7 +1211,7 @@ class MainWindow(QMainWindow):
         if existing:
             source = parse_srt_segments(existing)
             auto = looks_like_auto_caption(source)
-            if auto and whisper_path():
+            if auto and transcricao_disponivel():
                 self.log.appendPlainText(
                     f"ℹ️ {existing.name} parece uma legenda automática (marcadores "
                     ">>, repetições). Transcrevendo com Whisper para sair limpa.")
@@ -1229,18 +1231,12 @@ class MainWindow(QMainWindow):
                     QMessageBox.information(self, APP_NAME, f"Legenda do vídeo reaproveitada ({existing.name}).{aviso}\nSerá aplicada na exportação.")
                     return
                 self.log.appendPlainText(f"ℹ️ {existing.name} não cobre este trecho; usando Whisper.")
-        # 2) Sem legenda pronta: transcreve com Whisper.
-        whisper = whisper_path()
-        if not whisper:
-            QMessageBox.warning(self, APP_NAME, "Whisper não foi encontrado. Instale as dependências do README para usar legendas offline.")
+        # 2) Sem legenda pronta: transcreve (Whisper pela API ou local).
+        if not transcricao_disponivel():
+            QMessageBox.warning(self, APP_NAME, "Sem chave do OpenRouter (fase1/.env) e sem Whisper local. Configure um dos dois para gerar legendas.")
             return
         audio_path = self.work_dir / "trecho_para_legendar.wav"
-        try:
-            subprocess.run(["ffmpeg", "-y", "-ss", str(start), "-t", str(length), "-i", str(self.video_path), "-vn", "-ac", "1", "-ar", "16000", str(audio_path)], check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            QMessageBox.critical(self, APP_NAME, "Não foi possível extrair o áudio do trecho.")
-            return
-        command = self.whisper_command(whisper, audio_path, self.work_dir)
+        command = self.whisper_command(audio_path, self.work_dir, self.video_path, start, length)
         self.run_process(command, "Legendas geradas. Elas serão aplicadas na exportação.", caption=True)
 
     # ──────────────────────────────────────────────────────────────
@@ -1665,20 +1661,43 @@ class MainWindow(QMainWindow):
         """O Whisper precisa marcar palavra a palavra nesta exportação?"""
         return bool(self.censor_word_list()) and self.censor_mute.isChecked()
 
-    def whisper_command(self, binary: str, wav: Path, out_dir: Path) -> list[str]:
-        """Comando do Whisper para o trecho, já ajustado à censura.
+    def whisper_command(self, wav: Path, out_dir: Path, video: Path | None = None,
+                        start: float = 0.0, length: float | None = None) -> list[str]:
+        """Comando que transcreve o trecho e grava <out_dir>/<wav>.srt.
 
-        Marcar palavra por palavra (`--word_timestamps`) deixa a transcrição
-        mais lenta, então só entra quando a censura vai silenciar o áudio — é o
-        único caso em que precisamos do segundo exato de cada palavra. O formato
-        'all' é o que também grava o .json, onde ficam esses tempos.
+        Chama transcrever_trecho.py: Whisper pela API (segundos) e, sem chave
+        ou se ela falhar, o Whisper local. Com `video`, o próprio script extrai
+        antes o áudio do trecho para `wav` — fora da thread da interface.
+
+        Marcar palavra por palavra (`--word_timestamps`) deixa o Whisper local
+        mais lento, então só entra quando a censura vai silenciar o áudio — é o
+        único caso em que precisamos do segundo exato de cada palavra. (A API
+        devolve as palavras de graça, e o .json sai sempre.)
+
+        No executável empacotado (PyInstaller) não há Python para rodar o
+        script: aí fica o Whisper local direto, como era antes.
         """
-        command = [binary, str(wav), "--model", self.whisper_model.currentData(),
-                   "--language", "Portuguese",
-                   "--task", "transcribe", "--output_dir", str(out_dir)]
+        modelo = self.whisper_model.currentData()
+        if getattr(sys, "frozen", False):
+            if video is not None:
+                trecho = ["-ss", str(start)] + (["-t", str(length)] if length else [])
+                subprocess.run(["ffmpeg", "-y", *trecho, "-i", str(video), "-vn", "-ac", "1",
+                                "-ar", "16000", str(wav)], capture_output=True)
+            command = [whisper_path() or "whisper", str(wav), "--model", modelo,
+                       "--language", "Portuguese",
+                       "--task", "transcribe", "--output_dir", str(out_dir)]
+            if self.censor_wants_mute():
+                return command + ["--word_timestamps", "True", "--output_format", "all"]
+            return command + ["--output_format", "srt"]
+        command = [sys.executable, str(PROJECT_DIR / "transcrever_trecho.py"), str(wav),
+                   "--pasta", str(out_dir), "--modelo", modelo]
+        if video is not None:
+            command += ["--de", str(video), "--inicio", str(start)]
+            if length:
+                command += ["--duracao", str(length)]
         if self.censor_wants_mute():
-            return command + ["--word_timestamps", "True", "--output_format", "all"]
-        return command + ["--output_format", "srt"]
+            command.append("--palavras")
+        return command
 
     def _csv_music_track(self, moment: dict) -> Path | None:
         """Trilha do corte de CSV: a que a IA escolheu, se a mixagem estiver ligada.
@@ -1821,10 +1840,15 @@ class MainWindow(QMainWindow):
         #   formato; "mweb,tv_simply" baixou normal. Os dois precisam de um
         #   runtime de JavaScript (deno) no PATH para o desafio "n" do YouTube.
         # --*-retries: reenfileira automaticamente falhas transitórias (403/429).
+        # -f: prefere H.264 (avc1), que é o mais barato de decodificar em cada
+        #   prévia e exportação; sem ele, qualquer coisa menos AV1 (o YouTube
+        #   manda AV1 por padrão, o mais pesado para a CPU). Com AAC (mp4a) o
+        #   áudio entra no .mp4 sem conversão. O H.264 do YouTube vai até 1080p.
         command = [str(downloader), "--no-playlist", "--match-filter", "!is_live",
                    "--extractor-args", "youtube:player_client=mweb,tv_simply",
                    "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
-                   "-N", str(self.fragment_count.value()), "-f", "bv*+ba/b",
+                   "-N", str(self.fragment_count.value()),
+                   "-f", "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[vcodec^=avc1]+ba/bv*[vcodec!^=av01]+ba/b",
                    "--merge-output-format", "mp4", "-P", str(DOWNLOAD_DIR),
                    "-o", "%(title).200B.%(ext)s"]
 
@@ -1935,7 +1959,10 @@ class MainWindow(QMainWindow):
             command += ["-filter_complex", chain, "-map", "[outv]", "-map", amap]
             if amap == "0:a?":
                 command += self._audio_censor_args(censor_af)
-            command += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
+            # veryfast/crf 19 em vez de medium/crf 20: mesmo tamanho de arquivo e
+            # ~4x mais rápido neste notebook (30s de corte: 26,8s -> 6,8s, medido
+            # em 27/09/2026 junto com o ffmpeg ARM64). O CSV e a Live já usavam veryfast.
+            command += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-c:a", "aac", "-movflags", "+faststart", "-shortest", filename]
             # Ao terminar, salva a transcrição (pt-br) ao lado do vídeo, se houver.
             self._srt_to_export = self.caption_path if srt_has_content(self.caption_path) else None
             self._srt_export_target = Path(filename).with_suffix(".srt")
@@ -3945,39 +3972,20 @@ class MainWindow(QMainWindow):
             self._csv_run_cuts_ai(legenda)
             return
 
-        whisper = whisper_path()
-        if not whisper:
+        if not transcricao_disponivel():
             QMessageBox.warning(
                 self, APP_NAME,
-                "O vídeo não tem legenda .srt e o Whisper não foi encontrado. "
-                "Instale as dependências do README ou coloque um .srt ao lado do vídeo.")
+                "O vídeo não tem legenda .srt, e não há chave do OpenRouter (fase1/.env) "
+                "nem Whisper local. Configure um dos dois ou coloque um .srt ao lado do vídeo.")
             return
 
         self._csv_ai_busy(True)
         self.csv_log.appendPlainText("🎙️ Sem legenda ao lado do vídeo; transcrevendo o vídeo inteiro…")
         self._csv_cuts_wav = self.work_dir / "_csv_cuts_full.wav"
-        self._csv_cuts_whisper = whisper
+        command = self.whisper_command(self._csv_cuts_wav, self.work_dir, self.video_path)
         proc = QProcess(self)
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        proc.finished.connect(self._csv_cuts_extracted)
-        self._csv_cuts_proc = proc
-        proc.start("ffmpeg", ["-y", "-i", str(self.video_path), "-vn", "-ac", "1",
-                              "-ar", "16000", str(self._csv_cuts_wav)])
-
-    def _csv_cuts_extracted(self, code: int, status: QProcess.ExitStatus) -> None:
-        if code != 0 or not self._csv_cuts_wav.exists():
-            self._csv_ai_busy(False)
-            QMessageBox.critical(self, APP_NAME, "Não foi possível extrair o áudio do vídeo.")
-            return
-        self.csv_log.appendPlainText(
-            f"🎙️ Transcrevendo com Whisper (modelo {self.whisper_model.currentData()})… "
-            "pode demorar em vídeos longos.")
-        command = [self._csv_cuts_whisper, str(self._csv_cuts_wav),
-                   "--model", self.whisper_model.currentData(), "--language", "Portuguese",
-                   "--task", "transcribe", "--output_format", "srt",
-                   "--output_dir", str(self.work_dir)]
-        proc = QProcess(self)
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(lambda p=proc: self._csv_log_transcricao(p))
         proc.finished.connect(self._csv_cuts_after_whisper)
         self._csv_cuts_proc = proc
         proc.start(command[0], command[1:])
@@ -4085,7 +4093,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_NAME, "FFmpeg não foi encontrado.")
             return
 
-        self._whisper_bin = whisper_path()
+        self._pode_transcrever = transcricao_disponivel()
         self._csv_captions_on = self.csv_captions.isChecked()
         # Se o vídeo já tem legenda (ex.: baixada pelo yt-dlp), reaproveita-a e
         # dispensa o Whisper. Mas não quando ela é auto-gerada (YouTube): essas
@@ -4096,10 +4104,10 @@ class MainWindow(QMainWindow):
         # transcreve de novo em vez de reaproveitar.
         raw_srt = find_video_subtitle(self.video_path) if self._csv_captions_on else None
         self._csv_auto_caption = bool(raw_srt) and looks_like_auto_caption(parse_srt_segments(raw_srt))
-        self._csv_source_srt = None if (self._csv_auto_caption and self._whisper_bin) else raw_srt
-        self._csv_use_whisper = self._csv_captions_on and self._whisper_bin is not None
-        if self._csv_captions_on and not self._csv_source_srt and not self._whisper_bin:
-            QMessageBox.warning(self, APP_NAME, "Sem legenda pronta e Whisper não encontrado. Os cortes serão gerados sem legendas.")
+        self._csv_source_srt = None if (self._csv_auto_caption and self._pode_transcrever) else raw_srt
+        self._csv_use_whisper = self._csv_captions_on and self._pode_transcrever
+        if self._csv_captions_on and not self._csv_source_srt and not self._pode_transcrever:
+            QMessageBox.warning(self, APP_NAME, "Sem legenda pronta, sem chave do OpenRouter (fase1/.env) e sem Whisper local. Os cortes serão gerados sem legendas.")
         elif self._csv_auto_caption and self._csv_source_srt:
             QMessageBox.warning(
                 self, APP_NAME,
@@ -4386,25 +4394,17 @@ class MainWindow(QMainWindow):
                 return
             self.csv_log.appendPlainText("   ℹ️ Legenda do vídeo não cobre este trecho.")
 
-        # Fase 1b: legendas via Whisper (se ligado e disponível).
+        # Fase 1b: legendas via Whisper (se ligado e disponível). O script
+        # extrai o áudio do trecho e transcreve (API, ou local de reserva).
         if self._csv_use_whisper:
             start, end = m["start_s"], m["end_s"]
             audio_path = self.work_dir / f"_csv_audio_{self._csv_batch_index}.wav"
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start),
-                     "-i", str(self.video_path), "-vn", "-ac", "1", "-ar", "16000", str(audio_path)],
-                    check=True, capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                self.csv_log.appendPlainText("   ⚠️ Sem áudio no trecho; corte sem legenda.")
-                self._csv_export_clip()
-                return
-            self.csv_log.appendPlainText(
-                f"   🎙️ Transcrevendo com Whisper (modelo {self.whisper_model.currentData()})…")
-            command = self.whisper_command(self._whisper_bin, audio_path, self.work_dir)
+            self.csv_log.appendPlainText("   🎙️ Transcrevendo o trecho…")
+            command = self.whisper_command(audio_path, self.work_dir, self.video_path, start, end - start)
             self._csv_process = QProcess(self)
             self._csv_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            self._csv_process.readyReadStandardOutput.connect(
+                lambda p=self._csv_process: self._csv_log_transcricao(p))
             self._csv_process.finished.connect(
                 lambda code, status, idx=self._csv_batch_index: self._csv_after_whisper(code, status, idx)
             )
@@ -4604,6 +4604,18 @@ class MainWindow(QMainWindow):
     def _csv_log_indent(self, message: str) -> None:
         """Log do lote, alinhado com as demais mensagens do corte."""
         self.csv_log.appendPlainText(f"   {message}")
+
+    def _csv_log_transcricao(self, proc: QProcess) -> None:
+        """Mostra no lote os avisos do transcrever_trecho.py (API ou local).
+
+        As linhas "[00:01.000 --> ...]" que o Whisper local imprime por frase
+        ficam de fora, para o log do lote não virar a transcrição inteira.
+        """
+        data = bytes(proc.readAllStandardOutput())
+        for linha in data.decode("utf-8", errors="replace").splitlines():
+            linha = linha.strip()
+            if linha and not linha.startswith("["):
+                self._csv_log_indent(linha)
 
     def _csv_read_process_output(self) -> None:
         """Captura saída do FFmpeg durante o processamento."""
@@ -5296,43 +5308,28 @@ class MainWindow(QMainWindow):
         self._live_cut_busy(True)
         self.live_cut_log.clear()
 
-        # Fase 1: legendas do trecho com Whisper (se ligado)
+        # Fase 1-2: extrai o áudio do trecho e transcreve (API, ou Whisper
+        # local de reserva) num processo só — transcrever_trecho.py.
         if self.live_captions_check.isChecked():
-            self._whisper_bin = whisper_path()
-            if not self._whisper_bin:
-                self.live_cut_log.appendPlainText("⚠️ Whisper não encontrado; exportando sem legendas.")
+            if not transcricao_disponivel():
+                self.live_cut_log.appendPlainText(
+                    "⚠️ Sem chave do OpenRouter (fase1/.env) e sem Whisper local; exportando sem legendas.")
                 self._live_run_cut(None)
                 return
             source = audio or video
             wav = self._live_dir / f"cut_{self._live_cut_count:02d}.wav"
             self._live_pending["wav"] = wav
-            self.live_cut_log.appendPlainText(f"1/3 🎙️ Extraindo áudio de {as_time(start)} — {as_time(end)}…")
-            command = ["ffmpeg", "-y", "-ss", str(start), "-t", str(end - start),
-                       "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(wav)]
+            self.live_cut_log.appendPlainText(
+                f"1-2/3 🎙️ Extraindo e transcrevendo o áudio de {as_time(start)} — {as_time(end)}…")
+            command = self.whisper_command(wav, self._live_dir, source, start, end - start)
             proc = QProcess(self)
             proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
             proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
-            proc.finished.connect(self._live_on_cut_audio)
+            proc.finished.connect(self._live_on_cut_whisper)
             self._live_cut_process = proc
             proc.start(command[0], command[1:])
         else:
             self._live_run_cut(None)
-
-    def _live_on_cut_audio(self, code: int, status: QProcess.ExitStatus) -> None:
-        wav = self._live_pending.get("wav")
-        if code != 0 or not wav or not wav.exists():
-            self.live_cut_log.appendPlainText("⚠️ Não deu para extrair o áudio do trecho; exportando sem legendas.")
-            self._live_run_cut(None)
-            return
-        self.live_cut_log.appendPlainText(
-            f"2/3 🎙️ Transcrevendo com Whisper (modelo {self.whisper_model.currentData()})…")
-        command = self.whisper_command(self._whisper_bin, wav, self._live_dir)
-        proc = QProcess(self)
-        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        proc.readyReadStandardOutput.connect(lambda p=proc: self._live_cut_read(p))
-        proc.finished.connect(self._live_on_cut_whisper)
-        self._live_cut_process = proc
-        proc.start(command[0], command[1:])
 
     def _live_on_cut_whisper(self, code: int, status: QProcess.ExitStatus) -> None:
         wav = self._live_pending.get("wav")
