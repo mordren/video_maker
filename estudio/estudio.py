@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
 import re
 import shutil
@@ -203,8 +204,14 @@ class _LogDoTrabalho(logging.Handler):
 
 
 _handler = _LogDoTrabalho()
+_log_centralizado = logging.handlers.RotatingFileHandler(
+    DATA_DIR / "estudio.log", maxBytes=50*1024*1024, backupCount=5,
+    encoding="utf-8")
+_log_centralizado.setFormatter(logging.Formatter(
+    "%(asctime)s [%(name)s] %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
 for nome in ("estudio", "fase1"):
     logging.getLogger(nome).addHandler(_handler)
+    logging.getLogger(nome).addHandler(_log_centralizado)
     logging.getLogger(nome).setLevel(logging.INFO)
 
 
