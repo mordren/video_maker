@@ -48,6 +48,17 @@ ESTILO_LEGENDA = ("FontName=Montserrat,FontSize=18,Bold=-1,PrimaryColour=&H0000D
                   "OutlineColour=&H00000000,BorderStyle=1,Outline=2.5,Shadow=0,Alignment=2,"
                   "MarginV={margem}")
 
+# O formato "imagens" (foto em cima, vídeo embaixo — utils.build_clip_filter
+# modo "imagem") empilha dois blocos de 608px (1216 no total) centralizados
+# no quadro de 1920: a emenda foto/vídeo fica em 960 (a metade), com uma
+# barra preta de 352px embaixo do vídeo (1568 a 1920). Legenda e GC mudam de
+# lugar só nesse formato — a conta normal (acima) pensa num vídeo que ocupa
+# o quadro inteiro: a legenda cairia em cima da foto, e o GC ficaria colado
+# no vídeo em vez de usar a barra preta.
+COLAGEM_EMENDA = 960                          # onde a foto termina e o vídeo começa
+COLAGEM_LEGENDA_MARGIN_V = round(COLAGEM_EMENDA * 288 / 1920)
+COLAGEM_GC_BOTTOM_MARGIN = 96                 # GC centralizado na barra preta embaixo do vídeo
+
 
 # ---------------------------------------------------------------------------
 # Perfil visual (logo, cores, marca d'água) — o mesmo do programa de desktop
@@ -175,15 +186,18 @@ def duracao_de(arquivo: Path) -> float:
 
 
 def _cadeia_video(srt: Path | None, cg_entrada: int | None, titulo: str, perfil: Perfil,
-                  capa_entrada: int | None) -> str:
+                  capa_entrada: int | None, colagem: bool = False) -> str:
     cadeia, atual = "[0:v]setsar=1[base]", "base"
     if srt is not None and srt_has_content(srt):
-        estilo = ESTILO_LEGENDA.format(margem=LT_CAPTION_MARGIN_V if cg_entrada is not None else 60)
+        margem = (COLAGEM_LEGENDA_MARGIN_V if colagem
+                 else LT_CAPTION_MARGIN_V if cg_entrada is not None else 60)
+        estilo = ESTILO_LEGENDA.format(margem=margem)
         cadeia += (f";[{atual}]subtitles=filename='{filter_path(srt)}':"
                    f"fontsdir='{filter_path(FONT_DIR)}':force_style='{estilo}'[leg]")
         atual = "leg"
     if cg_entrada is not None:
-        cadeia += f";[{atual}][{cg_entrada}:v]overlay=x=0:y=main_h-{LT_HEIGHT + LT_BOTTOM_MARGIN}[cg]"
+        margem_gc = COLAGEM_GC_BOTTOM_MARGIN if colagem else LT_BOTTOM_MARGIN
+        cadeia += f";[{atual}][{cg_entrada}:v]overlay=x=0:y=main_h-{LT_HEIGHT + margem_gc}[cg]"
         atual = "cg"
     elif titulo.strip():
         from utils import format_title_for_video
@@ -206,8 +220,13 @@ def _cadeia_video(srt: Path | None, cg_entrada: int | None, titulo: str, perfil:
 
 
 def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: str, subtitulo: str,
-                     perfil: Perfil, censura: list[str], trilha: Path | None, pasta: Path) -> dict:
-    """Queima tudo no 9:16. Devolve {"capa": Path|None, "silenciados": n, "trocadas": n}."""
+                     perfil: Perfil, censura: list[str], trilha: Path | None, pasta: Path,
+                     colagem: bool = False) -> dict:
+    """Queima tudo no 9:16. Devolve {"capa": Path|None, "silenciados": n, "trocadas": n}.
+
+    `colagem`: True quando o clipe já chegou no formato "imagens" (foto em
+    cima, vídeo embaixo) — muda onde a legenda e o GC ficam (ver as
+    constantes COLAGEM_* acima)."""
     cfg = ai_srt.load_config()
     duracao = duracao_de(vertical)
 
@@ -219,7 +238,7 @@ def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: st
     capa = destino.with_suffix(".png")
     entradas_capa = ["-i", str(vertical)] + (["-loop", "1", "-i", str(cg)] if cg else [])
     r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *entradas_capa, "-filter_complex",
-                        _cadeia_video(None, 1 if cg else None, titulo, perfil, None),
+                        _cadeia_video(None, 1 if cg else None, titulo, perfil, None, colagem),
                         "-map", "[outv]", "-frames:v", "1", "-q:v", "2", str(capa)],
                        capture_output=True, text=True)
     if r.returncode != 0 or not capa.exists():
@@ -249,7 +268,7 @@ def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: st
         entradas += ["-i", str(trilha)]
         trilha_entrada, n = n, n + 1
 
-    cadeia = _cadeia_video(srt, cg_entrada, titulo, perfil, capa_entrada)
+    cadeia = _cadeia_video(srt, cg_entrada, titulo, perfil, capa_entrada, colagem)
     if trilha_entrada is not None:
         fala = "0:a"
         if filtro_censura:
@@ -286,6 +305,61 @@ def para_transparente(clipe: Path, destino: Path) -> None:
         raise RuntimeError(f"ffmpeg falhou no transparente: {r.stderr[-600:]}")
 
 
+def assunto_do_corte(gancho: str, comentario: str) -> str:
+    """Nome da pessoa/organização/lugar de que o corte inteiro trata, para
+    buscar a foto no Wikidata (formato "imagens") — um LLM barato (DeepSeek),
+    só texto, sem decodificar vídeo/áudio. Vazio se não há um assunto único
+    identificável (aí o formato cai para o crop dinâmico, ver `para_imagens`)."""
+    import deepseek_client
+    from llm_client import _json
+    resp = deepseek_client.post("/chat/completions", {
+        "model": "deepseek-chat", "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": (
+                "Diga o nome da PESSOA, ORGANIZAÇÃO/PARTIDO ou LUGAR específico de "
+                "que este corte de vídeo trata — o assunto do corte inteiro — para "
+                "buscar a foto dele num verbete de enciclopédia. Responda só JSON: "
+                '{"assunto": "nome exato, como apareceria no título do verbete, ou '
+                'vazio se o corte não tem um assunto único e nomeável"}')},
+            {"role": "user", "content": f"Gancho: {gancho or '(nenhum)'}\nComentário: {comentario or '(nenhum)'}"},
+        ],
+    }, 30, 2)
+    return str(_json(resp["choices"][0]["message"].get("content") or "{}").get("assunto") or "").strip()
+
+
+def para_imagens(clipe: Path, destino: Path, pasta: Path, gancho: str, comentario: str) -> bool:
+    """Foto do assunto no topo (Wikidata, via `fase1/microedicao.buscar_imagem`
+    — mesma busca filtrada por tipo do verbete do piloto de micro-edição) e o
+    corte (crop dinâmico, seguindo quem fala) embaixo — o modo "imagem" que já
+    existia no programa de desktop (utils.build_clip_filter), só que aqui a
+    imagem é escolhida sozinha em vez de escolhida à mão.
+
+    Devolve False (sem gravar `destino`) se não achou um assunto nomeável ou
+    não achou foto dele — quem chama cai para o crop dinâmico comum."""
+    import microedicao
+    from utils import build_clip_filter
+    assunto = assunto_do_corte(gancho, comentario)
+    if not assunto:
+        log.warning("   formato imagens: sem assunto único identificável; usando crop dinâmico")
+        return False
+    img = microedicao.buscar_imagem(assunto, pasta)
+    if img is None:
+        log.warning("   formato imagens: sem foto no Wikidata para %r; usando crop dinâmico", assunto)
+        return False
+    log.info("   formato imagens: %r -> %s", assunto, img.get("verbete") or assunto)
+    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe),
+                        "-loop", "1", "-i", str(img["arquivo"]), "-filter_complex",
+                        build_clip_filter("imagem", True, image_input=1),
+                        "-map", "[base]", "-map", "0:a?",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "copy",
+                        "-shortest", str(destino)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg falhou no formato imagens: {r.stderr[-600:]}")
+    return True
+
+
 def crop_falante_ativo(clipe: Path, destino: Path, cfg_crop: dict, pasta: Path) -> bool:
     """Crop 9:16 pelo LR-ASD (fase1/falante_ativo.py), num processo à parte:
     quando ele sai, a VRAM e a RAM (~3 GB por minuto de vídeo) voltam inteiras.
@@ -314,7 +388,7 @@ def crop_falante_ativo(clipe: Path, destino: Path, cfg_crop: dict, pasta: Path) 
 def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, contexto: str = "",
                     titulo_sugerido: str = "", manchete_sugerida: str = "",
                     pasta_trilhas: Path | None = None, preferir_sugeridos: bool = False,
-                    musica_sugerida: str = "", formato: str = "dinamico") -> dict:
+                    musica_sugerida: str = "", formato: str = "dinamico", gancho: str = "") -> dict:
     """Clipe da Fase 2 -> <pasta>/final.mp4 (9:16 pronto). Devolve os metadados
     do corte para a tela de revisão.
 
@@ -322,8 +396,12 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
     valem mais que os da IA, como no programa de desktop; no automático é o
     contrário — a IA leu a fala do corte e o sugerido é só o gancho da Fase 1.
 
-    `formato`: "dinamico" (crop 9:16 que segue quem fala) ou "transparente"
-    (16:9 inteiro sobre fundo desfocado). Só vale para clipe que chega 16:9.
+    `formato`: "dinamico" (crop 9:16 que segue quem fala), "transparente"
+    (16:9 inteiro sobre fundo desfocado) ou "imagens" (foto do assunto em
+    cima, via Wikidata, e o corte 16:9 embaixo — cai para "dinamico" se não
+    achar um assunto nomeável ou foto dele). Só vale para clipe que chega
+    16:9; `gancho`/`contexto` são o texto que a Fase 1 já escreveu, usados
+    para achar o assunto do "imagens".
     """
     pasta.mkdir(parents=True, exist_ok=True)
     cf = cfg_crop.get("falantes", {})
@@ -336,9 +414,12 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
     # O crop vem ANTES do Whisper: roda num processo à parte e precisa da
     # placa livre (4 GB).
     feito = ja_vertical
+    colagem = False    # só True se o "imagens" realmente saiu assim (achou assunto e foto)
     if not feito and formato == "transparente":
         para_transparente(clipe, vertical)
         feito = True
+    if not feito and formato == "imagens":
+        feito = colagem = para_imagens(clipe, vertical, pasta, gancho, contexto)
     if not feito and cfg_crop.get("falante_ativo", {}).get("ativo", True):
         feito = crop_falante_ativo(clipe, vertical, cfg_crop, pasta)
 
@@ -377,7 +458,7 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
 
     final = pasta / "final.mp4"
     info = renderizar_final(vertical, final, srt, titulo, subtitulo, perfil,
-                            palavras_censuradas(ia["sensiveis"]), trilha, pasta)
+                            palavras_censuradas(ia["sensiveis"]), trilha, pasta, colagem=colagem)
     if not ja_vertical:
         vertical.unlink(missing_ok=True)
     return {

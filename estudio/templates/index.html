@@ -76,7 +76,7 @@
     <h1>🎬 Estúdio de cortes</h1>
     <span class="fraco">Publicação: <a id="link-publicador" href="#" target="_blank" rel="noopener">abrir o Publicador ↗</a></span>
   </div>
-  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16 que segue quem fala ou transparente, legenda, GC, trilha → revisão → fila de publicação.</p>
+  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16, transparente ou imagem do assunto, legenda, GC, trilha → revisão → fila de publicação.</p>
   <div id="aviso-conexao" hidden></div>
 
   <section>
@@ -273,8 +273,9 @@ function desenharCortes() {
     const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.trilha ? `trilha ${escapar(c.trilha.replace(/\.\w+$/, ""))}` : "",
                     c.silenciados ? `${c.silenciados} censura(s)` : "", c.falantes > 1 ? `${c.falantes} vozes` : ""].filter(Boolean).join(" · ");
     const v = c.versao ? `?v=${c.versao}` : "";
-    const formato = c.formato === "transparente" ? "transparente" : "crop que segue quem fala";
-    const outro = c.formato === "transparente" ? "dinamico" : "transparente";
+    const formato = FORMATOS[c.formato] || FORMATOS.dinamico;
+    const opcoesRefazer = Object.keys(FORMATOS).filter(f => f !== c.formato)
+      .map(f => `<option value="${f}">${FORMATOS[f]}</option>`).join("");
     return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
       <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
       <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
@@ -283,14 +284,15 @@ function desenharCortes() {
       <div class="acoes">
         <button class="principal enviar">📤 Enviar para a fila</button>
         <button class="perigo descartar">descartar</button>
-        <button class="refazer" data-formato="${outro}">↺ refazer em ${outro === "transparente" ? "transparente" : "crop"}</button>
+        <select class="refazer-formato" style="width:auto">${opcoesRefazer}</select>
+        <button class="refazer">↺ refazer</button>
         <a class="fraco" style="align-self:center;font-size:13px" href="${base + encodeURIComponent(c.arquivo)}" download>baixar</a>
       </div>
     </div>`;
   }).join("");
 }
 
-const FORMATOS = {dinamico: "crop que segue quem fala", transparente: "transparente"};
+const FORMATOS = {dinamico: "crop que segue quem fala", transparente: "transparente", imagens: "imagem do assunto + corte"};
 
 function desenharPropostas() {
   const lista = [];
@@ -306,14 +308,17 @@ function desenharPropostas() {
     const produzindo = c.status === "produzindo";
     const rodando = agora[0] === t.id && agora[1] === c.id;
     const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : ""].filter(Boolean).join(" · ");
-    const sugerido = c.formato_sugerido === "transparente" ? "transparente" : "dinamico";
+    const sugerido = FORMATOS[c.formato_sugerido] ? c.formato_sugerido : "dinamico";
+    const opcoesFormato = Object.keys(FORMATOS).map(f =>
+      `<option value="${f}" ${sugerido === f ? "selected" : ""}>${sugerido === f ? "🤖 " : ""}${FORMATOS[f]}</option>`).join("");
+    const nomesCanais = c.canal && !estado.canais.includes(c.canal) ? [...estado.canais, c.canal] : estado.canais;
+    const opcoesCanal = `<option value="">(escolha)</option>` +
+      nomesCanais.map(n => `<option ${n === c.canal ? "selected" : ""}>${escapar(n)}</option>`).join("");
     const acoes = produzindo
       ? `<span class="fraco">${rodando ? "⚙️ produzindo agora" : "⏳ na fila de produção"} (${FORMATOS[c.formato_pedido] || ""})</span>
          ${rodando ? "" : `<button class="mini cancelar">cancelar</button>`}`
-      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">
-           <option value="dinamico" ${sugerido === "dinamico" ? "selected" : ""}>${sugerido === "dinamico" ? "🤖 " : ""}crop que segue quem fala</option>
-           <option value="transparente" ${sugerido === "transparente" ? "selected" : ""}>${sugerido === "transparente" ? "🤖 " : ""}transparente</option>
-         </select>
+      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">${opcoesFormato}</select>
+         <select class="canal" style="width:auto" title="canal deste corte — dá para mandar cortes do mesmo trabalho para canais diferentes">${opcoesCanal}</select>
          <button class="principal produzir">✂ Produzir</button>
          <button class="perigo descartar">descartar</button>`;
     return `<div class="corte ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
@@ -330,7 +335,7 @@ $("propostas").addEventListener("click", async (e) => {
   try {
     if (e.target.classList.contains("produzir")) {
       e.target.disabled = true;
-      await api(url + "/produzir", {formato: card.querySelector(".formato").value});
+      await api(url + "/produzir", {formato: card.querySelector(".formato").value, canal: card.querySelector(".canal").value});
     } else if (e.target.classList.contains("descartar")) {
       await api(url + "/descartar");
     } else if (e.target.classList.contains("cancelar")) {
@@ -359,7 +364,7 @@ $("cortes").addEventListener("click", async (e) => {
       await api(url + "/descartar");
     } else if (e.target.classList.contains("refazer")) {
       e.target.disabled = true;
-      await api(url + "/produzir", {formato: e.target.dataset.formato});
+      await api(url + "/produzir", {formato: card.querySelector(".refazer-formato").value});
       recado("Refazendo — o corte aparece em Propostas até terminar e volta para a revisão.", "ok");
     } else return;
     assinaturaCortes = ""; atualizar();

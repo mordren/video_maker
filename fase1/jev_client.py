@@ -158,14 +158,18 @@ class JEV:
 
     # Proposta no Estúdio (estudio.py, sem custo extra: só texto já escrito) --
     def sugerir_formato(self, gancho: str, comentario: str) -> dict:
-        """Sugere o formato do crop 9:16 pelo texto que a Fase 1 já escreveu
+        """Sugere o formato do 9:16 pelo texto que a Fase 1 já escreveu
         (gancho + comentário do editor) — sem decodificar vídeo nem áudio, por
         isso cabe rodar num corte por proposta, antes de qualquer acabamento.
 
-        Só decide entre os dois formatos que o Estúdio sabe produzir hoje
-        (`dinamico`/crop e `transparente`); tela dividida e vídeo fixo com
-        imagens ainda não têm renderização — ver [[video-maker-microedicao-piloto]].
-        Isto é só a pré-seleção do dropdown da proposta: o usuário decide."""
+        Três formatos que o Estúdio sabe produzir hoje: `dinamico` (crop que
+        segue quem fala), `transparente` (16:9 sobre fundo desfocado) e
+        `imagens` (foto do assunto em cima, corte embaixo — a foto vem do
+        Wikidata pelo nome que o DeepSeek extrai do gancho/comentário só
+        quando o corte é de fato produzido nesse formato, não aqui).
+        Tela dividida (2 pessoas alternando) ainda não tem renderização — ver
+        [[video-maker-microedicao-piloto]]. Isto é só a pré-seleção do
+        dropdown da proposta: o usuário decide."""
         state = {"gancho": gancho or "(nenhum)", "comentario_do_editor": comentario or "(nenhum)"}
         a = self.decide(state, {
             "formato": {
@@ -173,25 +177,36 @@ class JEV:
                 "instructions": (
                     "Este corte vai virar um vídeo vertical (9:16) para redes sociais. "
                     "Pelo gancho e pelo comentário do editor, escolha o formato mais "
-                    "adequado. O que importa é se vale a pena VER O ROSTO de quem fala "
-                    "(reação, emoção, expressão, embate) — não se é um monólogo ou uma "
-                    "conversa: um depoimento emocional de uma pessoa só também é `crop`, "
-                    "porque a expressão dela é parte do corte."),
+                    "adequado entre os três."),
                 "criteria": {
                     "crop": ("A reação, a emoção ou a expressão de quem fala é parte do que "
                              "prende: depoimento emocional, discussão, entrevista, embate, "
-                             "confissão — não importa se é uma pessoa só ou várias"),
-                    "transparente": ("O interesse está só na ideia/dado falado, não em ver "
-                                     "quem fala (leitura de número, estatística, notícia, "
-                                     "explicação fria de um fato — o rosto não acrescenta), OU "
-                                     "o comentário descreve uma grade/mosaico com vários "
-                                     "quadrinhos pequenos lado a lado (chamada de vídeo com "
-                                     "muitos participantes, cada um no seu quadro) — a câmera "
-                                     "dinâmica não consegue seguir um mosaico assim"),
+                             "confissão. A pessoa em quadro muda pouco ou nada durante o "
+                             "corte — não importa se é uma pessoa só ou uma conversa entre "
+                             "poucas, o que importa é valer a pena VER o rosto de quem fala."),
+                    "transparente": ("QUANTO MAIS PESSOAS falando ou aparecendo, melhor esta "
+                                     "opção: grade/mosaico de chamada de vídeo com vários "
+                                     "quadrinhos, debate com muita gente alternando — a câmera "
+                                     "dinâmica não consegue seguir todo mundo. OU o interesse "
+                                     "está só na ideia/dado falado, sem um rosto específico que "
+                                     "valha a pena seguir (leitura de número, estatística, "
+                                     "notícia, explicação fria de um fato)."),
+                    "imagens": ("O corte inteiro fala de UM assunto específico e nomeável — "
+                                "uma pessoa, organização, partido, lugar ou evento — que dá "
+                                "para ilustrar com foto/logo dele, e ver o rosto de quem fala "
+                                "não é o ponto principal (é um comentário, uma crítica, uma "
+                                "explicação SOBRE esse assunto, não uma reação pessoal de quem "
+                                "fala). Não muda de assunto no meio do corte."),
                 },
             },
         })
-        formato = "transparente" if "transparente" in str(a["formato"]["choice"]).lower() else "dinamico"
+        escolha = str(a["formato"]["choice"]).lower()
+        if "imagens" in escolha:
+            formato = "imagens"
+        elif "transparente" in escolha:
+            formato = "transparente"
+        else:
+            formato = "dinamico"
         return {"formato_sugerido": formato}
 
     def tem_contexto(self, texto: str, gancho_do_editor: str = "", motivo_editor: str = "") -> dict:

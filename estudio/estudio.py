@@ -19,12 +19,13 @@ escolhe era processamento jogado fora:
        transição; fica guardado, então "refazer no outro formato" não roda
        de novo essa parte, só o acabamento
     4. acabamento (finalizar.py), no formato escolhido por corte: crop 9:16
-       que segue quem fala (LR-ASD) ou transparente (16:9 sobre fundo
-       desfocado); legenda, GC, marca d'água, censura, trilha e capa
+       que segue quem fala (LR-ASD), transparente (16:9 sobre fundo
+       desfocado) ou imagens (foto do assunto no topo, via Wikidata, e o
+       corte embaixo); legenda, GC, marca d'água, censura, trilha e capa
 
 Os produzidos ficam em "Revisar": assiste, ajusta o título e o canal, e
 manda para a fila do Publicador (outro serviço, na mesma máquina) — ou
-descarta, ou refaz no outro formato. Nada é publicado sem passar pela revisão.
+descarta, ou refaz em outro formato. Nada é publicado sem passar pela revisão.
 
 A mesma API que a página usa serve para automatizar depois (ex.: um bot do
 Telegram mandando links): POST /api/trabalhos com JSON {"url", "canal", "perfil"}.
@@ -67,6 +68,7 @@ sys.path.insert(0, str(AQUI))
 import finalizar  # noqa: E402  (também põe RAIZ e fase1 no sys.path)
 import pipeline_cortes  # noqa: E402  (Fase 2, chamada por bloco só na produção)
 import ai_srt  # noqa: E402
+import fila  # noqa: E402  (fila de trabalho/corte no Redis — sobrevive a reinício)
 from utils import parse_csv_moments, yt_dlp_path  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("ESTUDIO_DATA") or r"C:\VideoMaker\estudio")
@@ -78,6 +80,9 @@ CONFIG_PATH = DATA_DIR / "config.json"
 YTDLP = yt_dlp_path() or "yt-dlp"
 EXTENSOES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 TAMANHO_MAXIMO = 12 * 1024 * 1024 * 1024
+FORMATOS_VALIDOS = ("dinamico", "transparente", "imagens")
+NOMES_FORMATO = {"dinamico": "crop que segue quem fala", "transparente": "transparente",
+                 "imagens": "imagem do assunto + corte"}
 
 CONFIG_PADRAO = {
     "publicador_url": "http://127.0.0.1:8080",
@@ -351,10 +356,10 @@ def _jev_e_config(tid: str):
 
 
 def _sugerir_formato(jev, bloco: dict) -> str:
-    """Pré-seleção do dropdown da proposta: crop ou transparente, pelo texto
-    que a Fase 1 já escreveu (gancho + comentário) — sem decodificar vídeo
-    nem áudio de novo, então cabe rodar aqui, antes de qualquer produção.
-    Só decide entre os dois formatos que o Estúdio sabe produzir hoje."""
+    """Pré-seleção do dropdown da proposta: crop, transparente ou imagens,
+    pelo texto que a Fase 1 já escreveu (gancho + comentário) — sem
+    decodificar vídeo nem áudio de novo, então cabe rodar aqui, antes de
+    qualquer produção."""
     if jev is None:
         return "dinamico"
     try:
@@ -474,23 +479,27 @@ _produzindo_agora: tuple[str, str] | None = None
 
 def _produzir_pendente() -> bool:
     """Produz UM corte pedido (status "produzindo"), o mais antigo pedido
-    primeiro. Tem prioridade sobre trabalho novo: é curto e alguém está
-    esperando para revisar. Devolve se fez algo."""
+    primeiro (fila.py, Redis — sobrevive a reinício: reconstruída do
+    trabalhos.json ao subir). Tem prioridade sobre trabalho novo: é curto e
+    alguém está esperando para revisar. Devolve se fez algo (mesmo que o
+    corte tenha sido cancelado/descartado enquanto esperava na fila — nesse
+    caso só descarta o item e diz que "fez algo", para não esperar à toa)."""
     global _produzindo_agora
+    item = fila.proximo_corte()
+    if item is None:
+        return False
+    tid, cid = item
     with _TRAVA:
-        pedidos = [(c.get("pedido_em", ""), t, c) for t in carregar_trabalhos() for c in t.get("cortes", [])
-                   if c.get("status") in ("produzindo", "refazendo")]
-        if not pedidos:
-            return False
-        _, t, c = min(pedidos, key=lambda x: x[0])
-        _produzindo_agora = (t["id"], c["id"])
-    tid, cid = t["id"], c["id"]
-    formato = c.get("formato_pedido") or ("transparente" if c["status"] == "refazendo" else "dinamico")
+        t = next((tt for tt in carregar_trabalhos() if tt["id"] == tid), None)
+        c = next((cc for cc in (t or {}).get("cortes", []) if cc["id"] == cid), None)
+        if c is None or c.get("status") not in ("produzindo", "refazendo"):
+            return True    # cancelado/descartado enquanto esperava na fila
+        _produzindo_agora = (tid, cid)
+    formato = c.get("formato_pedido") or "dinamico"
     if c["status"] == "refazendo":
         _atualizar_corte(tid, cid, status="produzindo")
     _LogDoTrabalho.atual = tid
-    _registrar(tid, f"🎬 {cid}: produzindo em "
-                    f"{'transparente' if formato == 'transparente' else 'crop que segue quem fala'}")
+    _registrar(tid, f"🎬 {cid}: produzindo em {NOMES_FORMATO.get(formato, formato)}")
     try:
         ja_pronto = _fase2_pronto(tid, cid).exists()
         clipe = _preparar_fase2(tid, cid, c)
@@ -507,10 +516,15 @@ def _produzir_pendente() -> bool:
             textos = dict(titulo_sugerido=c.get("gancho", "") if csv else "",
                           manchete_sugerida=c.get("subtitulo_sugerido", "") if csv else c.get("gancho", ""),
                           musica_sugerida=c.get("musica_sugerida", ""), preferir_sugeridos=csv)
+        # usa o canal do corte (pode ser diferente do trabalho) pra pegar o perfil visual certo
+        canal_corte = c.get("canal") or t.get("canal")
+        cfg = carregar_config()
+        perfil_nome = cfg.get("canal_perfil", {}).get(canal_corte) or t["perfil"]
         meta = finalizar.finalizar_corte(
-            clipe, _pasta(tid) / "final" / cid, finalizar.carregar_perfil(t["perfil"]),
+            clipe, _pasta(tid) / "final" / cid, finalizar.carregar_perfil(perfil_nome),
             yaml.safe_load((FASE1 / "config_crop.yaml").read_text(encoding="utf-8")),
-            contexto=c.get("comentario", ""), pasta_trilhas=Path(musicas) if musicas else None,
+            contexto=c.get("comentario", ""), gancho=c.get("gancho", ""),
+            pasta_trilhas=Path(musicas) if musicas else None,
             formato=formato, **textos)
         if (_corte(tid, cid) or {}).get("status") == "produzindo":    # não foi cancelado no meio
             extra = {}
@@ -535,15 +549,15 @@ def _laco() -> None:
         try:
             if _produzir_pendente():
                 continue
-            with _TRAVA:
-                proximo = next((t for t in carregar_trabalhos() if t["status"] == "aguardando"), None)
-                if proximo:
-                    _atualizar(proximo["id"], status="processando", etapa="começando",
-                               iniciado_em=datetime.now().isoformat(timespec="seconds"))
-            if proximo is None:
-                time.sleep(3)
+            tid = fila.proximo_trabalho(timeout=3)      # bloqueia até 3s — nada de sleep(3) sempre
+            if tid is None:
                 continue
-            tid = proximo["id"]
+            with _TRAVA:
+                proximo = next((t for t in carregar_trabalhos() if t["id"] == tid), None)
+                if proximo is None or proximo["status"] != "aguardando":
+                    continue    # cancelado/removido enquanto esperava na fila
+                _atualizar(tid, status="processando", etapa="começando",
+                           iniciado_em=datetime.now().isoformat(timespec="seconds"))
             _LogDoTrabalho.atual = tid
             _registrar(tid, "▶ começou")
             try:
@@ -674,6 +688,7 @@ def novo_trabalho():
             cfg = carregar_config()
             cfg["canal_perfil"][canal] = perfil
             salvar_config(cfg)
+    fila.enfileirar_trabalho(tid)
     return jsonify({"id": tid})
 
 
@@ -694,6 +709,8 @@ def cancelar(tid: str):
 def repetir(tid: str):
     """Põe de novo na fila (retoma: a Fase 1 reaproveita o que já tinha feito)."""
     t = _atualizar(tid, status="aguardando", etapa="", mensagem="")
+    if t:
+        fila.enfileirar_trabalho(tid)
     return (jsonify({"ok": True}) if t else (jsonify({"erro": "Trabalho não existe."}), 404))
 
 
@@ -765,9 +782,14 @@ def voltar(tid: str, cid: str):
 
 @app.post("/api/cortes/<tid>/<cid>/produzir")
 def produzir(tid: str, cid: str):
-    """Manda produzir (ou refazer) o corte no formato pedido, a partir do 16:9."""
+    """Manda produzir (ou refazer) o corte no formato pedido, a partir do 16:9.
+
+    `canal` é opcional: o combobox de Propostas manda o canal escolhido ali
+    (pré-selecionado com o canal do trabalho, mas trocável por corte) — assim
+    dá para mandar cortes do mesmo trabalho para canais diferentes, em vez de
+    todos ficarem presos no canal escolhido lá no início."""
     dados = request.get_json(silent=True) or {}
-    formato = "transparente" if dados.get("formato") == "transparente" else "dinamico"
+    formato = dados.get("formato") if dados.get("formato") in FORMATOS_VALIDOS else "dinamico"
     c = _corte(tid, cid)
     if c is None:
         return jsonify({"erro": "Corte não existe."}), 404
@@ -775,8 +797,12 @@ def produzir(tid: str, cid: str):
         return jsonify({"erro": "Este corte já está na produção ou na fila."}), 409
     if not _fonte(tid, cid).exists():
         return jsonify({"erro": "O 16:9 deste corte não existe mais para produzir."}), 409
-    _atualizar_corte(tid, cid, status="produzindo", formato_pedido=formato, mensagem="",
-                     pedido_em=datetime.now().isoformat(timespec="seconds"))
+    campos = {"status": "produzindo", "formato_pedido": formato, "mensagem": "",
+              "pedido_em": datetime.now().isoformat(timespec="seconds")}
+    if str(dados.get("canal") or "").strip():
+        campos["canal"] = str(dados["canal"]).strip()
+    _atualizar_corte(tid, cid, **campos)
+    fila.enfileirar_corte(tid, cid)
     return jsonify({"ok": True})
 
 
@@ -826,6 +852,7 @@ with _TRAVA:
         if _t["status"] == "processando":   # o serviço caiu no meio: retoma
             _t["status"], _t["etapa"] = "aguardando", "retomando depois de reiniciar"
     salvar_trabalhos(_ts)
+    fila.reconstruir(_ts)    # fila do Redis do zero, a partir do que ficou pendente
 threading.Thread(target=_laco, daemon=True, name="trabalhos").start()
 
 
