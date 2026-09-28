@@ -172,7 +172,7 @@ def processa_bloco(bloco: dict, video: Path | None, pasta: Path, cfg: dict, jev:
                                                  duracao_bruta)
     inicio_ok, fim_ok = silencio.apara_bordas(silencios, duracao_bruta, cfg["bordas"]["max_silencio_borda"])
     cortes_silencio = silencio.plano_de_encolhimento(silencios, cs["limiar_corte"], cs["duracao_alvo"],
-                                                      cs["margem_seguranca"])
+                                                      cs["margem_seguranca"], cs.get("respiro"))
 
     cortes_recomeco = []
     if cfg["recomeco"]["ativo"]:

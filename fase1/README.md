@@ -218,6 +218,9 @@ o resto (silêncio, recomeço, render) leva uns 10-15s por bloco.
 3. **Silêncio** (`silencio.py`) — `ffmpeg silencedetect` acha as pausas; uma pausa mais
    longa que `limiar_corte` (0,8s por padrão) é **encolhida**, não removida inteira, para
    `duracao_alvo` (0,25s) — cortar a pausa toda deixaria o corte sem ar, tudo jump cut.
+   De vez em quando uma pausa ganha **respiro** (`silencio.respiro`, 0,5s): só a que já
+   era longa de verdade (≥ 1,2s, fim de ideia), fora do gancho (4s) e no máximo uma a
+   cada 10s — no geral o corte continua compacto.
    Silêncio sobrando nas bordas do bloco é aparado (`bordas.max_silencio_borda`).
 4. **Recomeço de frase** (`recomeco.py`) — a pessoa começa a dizer algo, para, recomeça
    repetindo o início ("eu acho, eu acho que..."). Só corta repetição literal de 2+

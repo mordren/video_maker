@@ -12,7 +12,15 @@ silencio:
   noise_db: -30         # abaixo disso (dB) conta como silêncio
   duracao_minima: 0.30  # pausa mais curta que isso nem entra na lista
   limiar_corte: 0.80    # pausa mais longa que isso é encolhida
-  duracao_alvo: 0.25    # para quanto encolher uma pausa longa
+  duracao_alvo: 0.25    # para quanto encolher uma pausa longa (compacto)
+  # De vez em quando um respiro, mas no geral compacto: só a pausa que já era
+  # longa de verdade (fim de ideia, não hesitação), fora do gancho e espaçada.
+  respiro:
+    ativo: true
+    duracao: 0.50       # a pausa que vira respiro fica com isso
+    pausa_minima: 1.20  # só pausa original >= isso (as de 0,8-1,2s continuam compactas)
+    depois_de: 4.0      # nada de respiro no gancho
+    intervalo: 10.0     # no máximo um respiro a cada tantos segundos
   margem_seguranca: 0.06  # nunca corta mais perto da palavra do que isso
 
 bordas:

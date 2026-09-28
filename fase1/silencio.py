@@ -35,22 +35,34 @@ def detectar_silencios(wav: Path, noise_db: float, duracao_minima: float,
 
 
 def plano_de_encolhimento(silencios: list[tuple[float, float]], limiar_corte: float,
-                          duracao_alvo: float, margem: float) -> list[dict]:
+                          duracao_alvo: float, margem: float, respiro: dict | None = None) -> list[dict]:
     """Para cada silêncio mais longo que `limiar_corte`, um corte interno que o
-    encolhe para `duracao_alvo`, sempre deixando `margem` de silêncio real nas
-    pontas (nunca corta rente à palavra vizinha)."""
+    encolhe para `duracao_alvo` (compacto), sempre deixando `margem` de
+    silêncio real nas pontas (nunca corta rente à palavra vizinha).
+
+    `respiro` (opcional): de vez em quando uma pausa fica um pouco maior, para
+    o corte não virar uma metralhadora de jump cuts — mas no geral continua
+    compacto. Só ganha respiro a pausa que já era longa de verdade (`pausa_minima`,
+    normalmente fim de ideia/frase, não hesitação), fora do gancho
+    (`depois_de` segundos) e no máximo uma a cada `intervalo` segundos."""
+    respiro = respiro or {}
     cortes = []
+    ultimo_respiro = None
     for inicio, fim in silencios:
         duracao = fim - inicio
         if duracao <= limiar_corte:
             continue
-        sobra = max(0.0, duracao_alvo - 2 * margem)
+        alvo, nota = duracao_alvo, ""
+        if (respiro.get("ativo") and inicio >= respiro["depois_de"] and duracao >= respiro["pausa_minima"]
+                and (ultimo_respiro is None or inicio - ultimo_respiro >= respiro["intervalo"])):
+            alvo, nota, ultimo_respiro = respiro["duracao"], " (respiro)", inicio
+        sobra = max(0.0, alvo - 2 * margem)
         corte_ini = inicio + margem + sobra / 2
         corte_fim = fim - margem - sobra / 2
         if corte_fim > corte_ini:
             cortes.append({"inicio": round(corte_ini, 3), "fim": round(corte_fim, 3),
                            "tipo": "silencio",
-                           "motivo": f"pausa de {duracao:.2f}s encolhida para ~{duracao_alvo:.2f}s"})
+                           "motivo": f"pausa de {duracao:.2f}s encolhida para ~{alvo:.2f}s{nota}"})
     return cortes
 
 
