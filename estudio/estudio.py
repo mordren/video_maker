@@ -20,8 +20,8 @@ escolhe era processamento jogado fora:
        de novo essa parte, só o acabamento
     4. acabamento (finalizar.py), no formato escolhido por corte: crop 9:16
        que segue quem fala (LR-ASD), transparente (16:9 sobre fundo
-       desfocado) ou imagens (foto do assunto no topo, via Wikidata, e o
-       corte embaixo); legenda, GC, marca d'água, censura, trilha e capa
+       desfocado) ou imagens (fotos do assunto no topo, trocando ao longo
+       do corte — imagens.py —, e o corte embaixo); legenda, GC, marca d'água, censura, trilha e capa
 
 Os produzidos ficam em "Revisar": assiste, ajusta o título e o canal, e
 manda para a fila do Publicador (outro serviço, na mesma máquina) — ou
@@ -33,7 +33,8 @@ Telegram mandando links): POST /api/trabalhos com JSON {"url", "canal", "perfil"
 Estado em ESTUDIO_DATA (padrão C:\\VideoMaker\\estudio):
     trabalhos.json          a lista de trabalhos e dos cortes de cada um
     config.json             canal -> perfil visual, endereço do Publicador, pastas
-    trabalhos/<id>/         entrada/, fase1/, cortes/, final/<corte>/, trabalho.log
+    estudio.log             log único de todos os trabalhos (gira em 50 MB)
+    trabalhos/<id>/         entrada/, fase1/, cortes/, final/<corte>/
 
 Situação de cada corte: proposta -> produzindo -> revisar -> na_fila (ou
 descartado). O 16:9 da proposta (cortes/<corte>.mp4) fica guardado até o
@@ -83,13 +84,100 @@ EXTENSOES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 TAMANHO_MAXIMO = 12 * 1024 * 1024 * 1024
 FORMATOS_VALIDOS = ("dinamico", "transparente", "imagens")
 NOMES_FORMATO = {"dinamico": "crop que segue quem fala", "transparente": "transparente",
-                 "imagens": "imagem do assunto + corte"}
+                 "imagens": "fotos do assunto + corte"}
 
 CONFIG_PADRAO = {
     "publicador_url": "http://127.0.0.1:8080",
     "pasta_transicoes": str(DATA_DIR / "transicoes"),
     "canal_perfil": {},             # canal do Publicador -> perfil visual (logo/cores)
 }
+
+# ──────────────────────────────────────────────────────────────────
+#  Pouca RAM: a máquina tem 32 GB, mas às vezes o BIOS sobe só com 8 GB
+#  (3 pentes misturados). Com 8 GB o crop que segue quem fala (LR-ASD,
+#  ~3 GB por minuto de vídeo) derruba a máquina ou cai no crop antigo —
+#  então o Estúdio avisa por e-mail e só produz transparente e fotos.
+# ──────────────────────────────────────────────────────────────────
+
+RAM_MINIMA_GB = 16
+# as mesmas variáveis PUBLICADOR_EMAIL_* do Publicador (servidor/LEIA-ME.md)
+EMAIL_ENV = Path(os.environ.get("ESTUDIO_EMAIL_ENV") or (DATA_DIR.parent / "publicador" / "publicador.env"))
+
+
+def _ram_total_gb() -> float | None:
+    try:
+        for linha in open("/proc/meminfo", encoding="ascii"):
+            if linha.startswith("MemTotal:"):
+                return int(linha.split()[1]) / 1024 / 1024
+    except OSError:
+        pass
+    return None    # Windows: não confere
+
+
+RAM_GB = float(os.environ["ESTUDIO_RAM_GB"]) if os.environ.get("ESTUDIO_RAM_GB") else _ram_total_gb()  # env: só p/ testar
+POUCA_RAM = RAM_GB is not None and RAM_GB < RAM_MINIMA_GB
+AVISO_POUCA_RAM = (f"O servidor está com só {RAM_GB:.0f} GB de RAM (o normal são 32 GB — o BIOS "
+                   "subiu sem todos os pentes). Crop que segue quem fala DESLIGADO: só produz "
+                   "transparente e fotos do assunto. Reinicie/ajuste o BIOS para voltar ao normal."
+                   if POUCA_RAM else "")
+_ultimo_email_cancelamento = 0.0
+
+
+def avisar_por_email(assunto: str, corpo: str) -> None:
+    """E-mail de aviso pelo mesmo SMTP do Publicador (PUBLICADOR_EMAIL_* em
+    EMAIL_ENV ou no ambiente). Sem configuração, só registra no log. Roda
+    numa thread: SMTP lento nunca segura a produção."""
+    def mandar():
+        import smtplib
+        from email.message import EmailMessage
+        cfg = dict(os.environ)
+        if EMAIL_ENV.exists():
+            for linha in EMAIL_ENV.read_text(encoding="utf-8-sig").splitlines():
+                if "=" in linha and not linha.strip().startswith("#"):
+                    k, v = linha.split("=", 1)
+                    cfg.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        para = cfg.get("PUBLICADOR_EMAIL_PARA", "").strip()
+        host = cfg.get("PUBLICADOR_EMAIL_SMTP_HOST", "smtp.gmail.com").strip()
+        porta = int(cfg.get("PUBLICADOR_EMAIL_SMTP_PORT") or 587)
+        usuario = cfg.get("PUBLICADOR_EMAIL_SMTP_USER", "").strip()
+        senha = cfg.get("PUBLICADOR_EMAIL_SMTP_SENHA", "")
+        if not (para and usuario and senha):
+            log.warning("e-mail de aviso NÃO enviado (sem PUBLICADOR_EMAIL_* em %s): %s", EMAIL_ENV, assunto)
+            return
+        msg = EmailMessage()
+        msg["Subject"], msg["From"], msg["To"] = assunto, cfg.get("PUBLICADOR_EMAIL_DE", "").strip() or usuario, para
+        msg.set_content(corpo)
+        try:
+            if porta == 465:
+                with smtplib.SMTP_SSL(host, porta, timeout=20) as smtp:
+                    smtp.login(usuario, senha)
+                    smtp.send_message(msg)
+            else:
+                with smtplib.SMTP(host, porta, timeout=20) as smtp:
+                    smtp.starttls()
+                    smtp.login(usuario, senha)
+                    smtp.send_message(msg)
+            log.info("e-mail de aviso enviado para %s: %s", para, assunto)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("e-mail de aviso falhou (%s): %s", exc, assunto)
+    threading.Thread(target=mandar, daemon=True, name="email").start()
+
+
+def _cancelar_por_pouca_ram(tid: str, cid: str, c: dict) -> None:
+    """Corte pedido em crop com a máquina em 8 GB: volta para onde estava,
+    com o motivo, e avisa por e-mail (no máximo um por hora)."""
+    global _ultimo_email_cancelamento
+    motivo = (f"cancelado: servidor com {RAM_GB:.0f} GB de RAM — crop desligado; "
+              "produza em transparente ou fotos do assunto")
+    _atualizar_corte(tid, cid, status="revisar" if c.get("arquivo") else "proposta", mensagem=motivo)
+    _registrar(tid, f"⛔ {cid}: {motivo}")
+    if time.time() - _ultimo_email_cancelamento > 3600:
+        _ultimo_email_cancelamento = time.time()
+        avisar_por_email(f"⚠️ Estúdio: corte cancelado — servidor com {RAM_GB:.0f} GB de RAM",
+                         f"O corte {cid} (trabalho {tid}) foi pedido em 'crop que segue quem fala' e foi "
+                         f"cancelado.\n\n{AVISO_POUCA_RAM}\n\n(Enquanto a RAM estiver baixa, este aviso "
+                         "vem no máximo uma vez por hora.)")
+
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = TAMANHO_MAXIMO
@@ -185,32 +273,30 @@ def _pasta(tid: str) -> Path:
     return TRABALHOS_DIR / Path(tid).name
 
 
+LOG_PATH = DATA_DIR / "estudio.log"
+
+
 def _registrar(tid: str, texto: str) -> None:
-    with (_pasta(tid) / "trabalho.log").open("a", encoding="utf-8") as f:
-        f.write(f"{datetime.now():%H:%M:%S}  {texto}\n")
+    log.info(texto, extra={"trabalho": tid})
 
 
-class _LogDoTrabalho(logging.Handler):
-    """Manda o logging dos módulos (finalizar, crop, falantes) para o log do
-    trabalho em andamento — o worker é uma thread só, então há no máximo um."""
+class _LogDoTrabalho(logging.Filter):
+    """Marca cada linha com o trabalho em andamento (o worker é uma thread só,
+    então há no máximo um), inclusive o logging dos módulos (finalizar, crop)."""
     atual: str | None = None
 
-    def emit(self, registro: logging.LogRecord) -> None:
-        if self.atual:
-            try:
-                _registrar(self.atual, registro.getMessage())
-            except OSError:
-                pass
+    def filter(self, registro: logging.LogRecord) -> bool:
+        if not getattr(registro, "trabalho", None):
+            registro.trabalho = self.atual or "-"
+        return True
 
 
-_handler = _LogDoTrabalho()
 _log_centralizado = logging.handlers.RotatingFileHandler(
-    DATA_DIR / "estudio.log", maxBytes=50*1024*1024, backupCount=5,
-    encoding="utf-8")
+    LOG_PATH, maxBytes=50*1024*1024, backupCount=5, encoding="utf-8")
+_log_centralizado.addFilter(_LogDoTrabalho())
 _log_centralizado.setFormatter(logging.Formatter(
-    "%(asctime)s [%(name)s] %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+    "%(asctime)s [%(trabalho)s] %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
 for nome in ("estudio", "fase1"):
-    logging.getLogger(nome).addHandler(_handler)
     logging.getLogger(nome).addHandler(_log_centralizado)
     logging.getLogger(nome).setLevel(logging.INFO)
 
@@ -503,6 +589,10 @@ def _produzir_pendente() -> bool:
             return True    # cancelado/descartado enquanto esperava na fila
         _produzindo_agora = (tid, cid)
     formato = c.get("formato_pedido") or "dinamico"
+    if POUCA_RAM and formato == "dinamico":
+        _cancelar_por_pouca_ram(tid, cid, c)
+        _produzindo_agora = None
+        return True
     if c["status"] == "refazendo":
         _atualizar_corte(tid, cid, status="produzindo")
     _LogDoTrabalho.atual = tid
@@ -523,16 +613,16 @@ def _produzir_pendente() -> bool:
             textos = dict(titulo_sugerido=c.get("gancho", "") if csv else "",
                           manchete_sugerida=c.get("subtitulo_sugerido", "") if csv else c.get("gancho", ""),
                           musica_sugerida=c.get("musica_sugerida", ""), preferir_sugeridos=csv)
-        # usa o canal do corte (pode ser diferente do trabalho) pra pegar o perfil visual certo
         canal_corte = c.get("canal") or t.get("canal")
-        cfg = carregar_config()
-        perfil_nome = cfg.get("canal_perfil", {}).get(canal_corte) or t["perfil"]
+        perfil_nome = (c.get("perfil") or carregar_config().get("canal_perfil", {}).get(canal_corte)
+                       or t["perfil"])
+        _registrar(tid, f"   visual: {perfil_nome} (canal {canal_corte or '—'})")
         meta = finalizar.finalizar_corte(
             clipe, _pasta(tid) / "final" / cid, finalizar.carregar_perfil(perfil_nome),
             yaml.safe_load((FASE1 / "config_crop.yaml").read_text(encoding="utf-8")),
             contexto=c.get("comentario", ""), gancho=c.get("gancho", ""),
             pasta_trilhas=Path(musicas) if musicas else None,
-            formato=formato, **textos)
+            formato=formato, permitir_crop=not POUCA_RAM, **textos)
         if (_corte(tid, cid) or {}).get("status") == "produzindo":    # não foi cancelado no meio
             extra = {}
             if not c.get("arquivo") and not c.get("titulo_editado"):
@@ -632,6 +722,7 @@ def estado():
         "publicador_porta": cfg["publicador_url"].rsplit(":", 1)[-1],
         "canal_perfil": cfg["canal_perfil"],
         "produzindo_agora": list(_produzindo_agora) if _produzindo_agora else None,
+        "pouca_ram": AVISO_POUCA_RAM,
     })
 
 
@@ -735,12 +826,17 @@ def remover(tid: str):
     return jsonify({"ok": True})
 
 
-@app.get("/api/trabalhos/<tid>/log")
-def ver_log(tid: str):
-    caminho = _pasta(tid) / "trabalho.log"
-    linhas = caminho.read_text(encoding="utf-8", errors="replace").splitlines()[-400:] \
-        if caminho.exists() else []
-    return jsonify({"linhas": linhas})
+@app.get("/api/log")
+def ver_log():
+    """As últimas linhas do estudio.log (todos os trabalhos) — lê só o fim do
+    arquivo, que pode chegar a 50 MB antes de girar."""
+    if not LOG_PATH.exists():
+        return jsonify({"linhas": []})
+    inicio = max(0, LOG_PATH.stat().st_size - 256 * 1024)
+    with LOG_PATH.open("rb") as f:
+        f.seek(inicio)
+        linhas = f.read().decode("utf-8", errors="replace").splitlines()[1 if inicio else 0:]
+    return jsonify({"linhas": linhas[-500:]})
 
 
 @app.get("/previa/<tid>/<cid>")
@@ -804,10 +900,23 @@ def produzir(tid: str, cid: str):
         return jsonify({"erro": "Este corte já está na produção ou na fila."}), 409
     if not _fonte(tid, cid).exists():
         return jsonify({"erro": "O 16:9 deste corte não existe mais para produzir."}), 409
+    if POUCA_RAM and formato == "dinamico":
+        return jsonify({"erro": AVISO_POUCA_RAM}), 409
     campos = {"status": "produzindo", "formato_pedido": formato, "mensagem": "",
               "pedido_em": datetime.now().isoformat(timespec="seconds")}
-    if str(dados.get("canal") or "").strip():
-        campos["canal"] = str(dados["canal"]).strip()
+    canal = str(dados.get("canal") or "").strip()
+    perfil = str(dados.get("perfil") or "").strip()
+    if perfil and perfil not in finalizar.perfis():
+        return jsonify({"erro": f"Perfil visual '{perfil}' não existe."}), 400
+    if canal:
+        campos["canal"] = canal
+    if perfil:
+        campos["perfil"] = perfil
+        if canal:  # lembra o visual usado com este canal
+            with _TRAVA:
+                cfg = carregar_config()
+                cfg["canal_perfil"][canal] = perfil
+                salvar_config(cfg)
     _atualizar_corte(tid, cid, **campos)
     fila.enfileirar_corte(tid, cid)
     return jsonify({"ok": True})
@@ -861,6 +970,11 @@ with _TRAVA:
     salvar_trabalhos(_ts)
     fila.reconstruir(_ts)    # fila do Redis do zero, a partir do que ficou pendente
 threading.Thread(target=_laco, daemon=True, name="trabalhos").start()
+if POUCA_RAM:
+    log.warning("⚠️ %s", AVISO_POUCA_RAM)
+    avisar_por_email(f"⚠️ Estúdio: servidor com {RAM_GB:.0f} GB de RAM — crop desligado",
+                     AVISO_POUCA_RAM + "\n\nCortes pedidos em 'crop que segue quem fala' serão "
+                     "cancelados até a RAM voltar; transparente e fotos do assunto seguem normais.")
 
 
 if __name__ == "__main__":

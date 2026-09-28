@@ -85,6 +85,8 @@ def carregar_perfil(nome: str) -> Perfil:
         salvo = str(dados.get(f"brand_color_{chave}") or "").strip()
         if salvo:
             cores[chave] = salvo
+    if logo and not logo.exists():
+        log.warning("   perfil %r: logo não encontrado (%s) — o corte sai sem a tarja", nome, logo)
     return Perfil(nome=nome, logo=logo if logo and logo.exists() else None,
                   marca_dagua=str(dados.get("brand_watermark") or ""),
                   cor_marca=str(dados.get("brand_wm_color") or "#FFFF00"), cores=cores)
@@ -305,59 +307,22 @@ def para_transparente(clipe: Path, destino: Path) -> None:
         raise RuntimeError(f"ffmpeg falhou no transparente: {r.stderr[-600:]}")
 
 
-def assunto_do_corte(gancho: str, comentario: str) -> str:
-    """Nome da pessoa/organização/lugar de que o corte inteiro trata, para
-    buscar a foto no Wikidata (formato "imagens") — um LLM barato (DeepSeek),
-    só texto, sem decodificar vídeo/áudio. Vazio se não há um assunto único
-    identificável (aí o formato cai para o crop dinâmico, ver `para_imagens`)."""
-    import deepseek_client
-    from llm_client import _json
-    resp = deepseek_client.post("/chat/completions", {
-        "model": "deepseek-chat", "temperature": 0,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": (
-                "Diga o nome da PESSOA, ORGANIZAÇÃO/PARTIDO ou LUGAR específico de "
-                "que este corte de vídeo trata — o assunto do corte inteiro — para "
-                "buscar a foto dele num verbete de enciclopédia. Responda só JSON: "
-                '{"assunto": "nome exato, como apareceria no título do verbete, ou '
-                'vazio se o corte não tem um assunto único e nomeável"}')},
-            {"role": "user", "content": f"Gancho: {gancho or '(nenhum)'}\nComentário: {comentario or '(nenhum)'}"},
-        ],
-    }, 30, 2)
-    return str(_json(resp["choices"][0]["message"].get("content") or "{}").get("assunto") or "").strip()
-
-
-def para_imagens(clipe: Path, destino: Path, pasta: Path, gancho: str, comentario: str) -> bool:
-    """Foto do assunto no topo (Wikidata, via `fase1/microedicao.buscar_imagem`
-    — mesma busca filtrada por tipo do verbete do piloto de micro-edição) e o
-    corte (crop dinâmico, seguindo quem fala) embaixo — o modo "imagem" que já
-    existia no programa de desktop (utils.build_clip_filter), só que aqui a
-    imagem é escolhida sozinha em vez de escolhida à mão.
-
-    Devolve False (sem gravar `destino`) se não achou um assunto nomeável ou
-    não achou foto dele — quem chama cai para o crop dinâmico comum."""
-    import microedicao
-    from utils import build_clip_filter
-    assunto = assunto_do_corte(gancho, comentario)
-    if not assunto:
-        log.warning("   formato imagens: sem assunto único identificável; usando crop dinâmico")
-        return False
-    img = microedicao.buscar_imagem(assunto, pasta)
-    if img is None:
-        log.warning("   formato imagens: sem foto no Wikidata para %r; usando crop dinâmico", assunto)
-        return False
-    log.info("   formato imagens: %r -> %s", assunto, img.get("verbete") or assunto)
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(clipe),
-                        "-loop", "1", "-i", str(img["arquivo"]), "-filter_complex",
-                        build_clip_filter("imagem", True, image_input=1),
-                        "-map", "[base]", "-map", "0:a?",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "copy",
-                        "-shortest", str(destino)],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg falhou no formato imagens: {r.stderr[-600:]}")
-    return True
+def para_imagens(clipe: Path, destino: Path, pasta: Path, gancho: str, comentario: str,
+                 palavras: list[dict]) -> list[dict] | None:
+    """Fotos do assunto em cima, trocando ao longo do corte, e o corte 16:9
+    embaixo (estudio/imagens.py: Commons + rosto conferido + nota do modelo de
+    visão). Devolve os créditos das fotos, ou None (sem gravar `destino`) se
+    não achou ninguém com foto — quem chama cai para o formato de reserva."""
+    import imagens
+    segmentos = json.loads((pasta / "legenda.json").read_text(encoding="utf-8"))["segments"]
+    _l, _a, fps, _d = crop_dinamico.resolucao_de(clipe)
+    try:
+        return imagens.montar(clipe, destino, pasta, gancho, comentario, segmentos, palavras,
+                              duracao_de(clipe), fps or 30.0)
+    except Exception as exc:  # noqa: BLE001 — sem fotos, o corte sai no formato de reserva
+        log.warning("   formato imagens falhou (%s)", exc)
+        destino.unlink(missing_ok=True)
+        return None
 
 
 def crop_falante_ativo(clipe: Path, destino: Path, cfg_crop: dict, pasta: Path) -> bool:
@@ -388,7 +353,8 @@ def crop_falante_ativo(clipe: Path, destino: Path, cfg_crop: dict, pasta: Path) 
 def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, contexto: str = "",
                     titulo_sugerido: str = "", manchete_sugerida: str = "",
                     pasta_trilhas: Path | None = None, preferir_sugeridos: bool = False,
-                    musica_sugerida: str = "", formato: str = "dinamico", gancho: str = "") -> dict:
+                    musica_sugerida: str = "", formato: str = "dinamico", gancho: str = "",
+                    permitir_crop: bool = True) -> dict:
     """Clipe da Fase 2 -> <pasta>/final.mp4 (9:16 pronto). Devolve os metadados
     do corte para a tela de revisão.
 
@@ -397,11 +363,14 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
     contrário — a IA leu a fala do corte e o sugerido é só o gancho da Fase 1.
 
     `formato`: "dinamico" (crop 9:16 que segue quem fala), "transparente"
-    (16:9 inteiro sobre fundo desfocado) ou "imagens" (foto do assunto em
-    cima, via Wikidata, e o corte 16:9 embaixo — cai para "dinamico" se não
-    achar um assunto nomeável ou foto dele). Só vale para clipe que chega
+    (16:9 inteiro sobre fundo desfocado) ou "imagens" (fotos do assunto em
+    cima, trocando ao longo do corte, e o corte 16:9 embaixo — cai para
+    "dinamico" se não achar ninguém com foto). Só vale para clipe que chega
     16:9; `gancho`/`contexto` são o texto que a Fase 1 já escreveu, usados
     para achar o assunto do "imagens".
+
+    `permitir_crop=False` (servidor com pouca RAM, ver estudio.py): nada de
+    crop — o "imagens" sem foto cai para o transparente, não para o crop.
     """
     pasta.mkdir(parents=True, exist_ok=True)
     cf = cfg_crop.get("falantes", {})
@@ -412,18 +381,29 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
     vertical = clipe if ja_vertical else pasta / "vertical.mp4"
 
     # O crop vem ANTES do Whisper: roda num processo à parte e precisa da
-    # placa livre (4 GB).
+    # placa livre (4 GB). O "imagens" é o contrário: precisa das palavras
+    # (quando trocar a foto, quem é citado) e não usa a placa.
     feito = ja_vertical
     colagem = False    # só True se o "imagens" realmente saiu assim (achou assunto e foto)
-    if not feito and formato == "transparente":
+    creditos: list[dict] = []
+    srt = palavras = None
+    if not feito and formato == "imagens":
+        srt, palavras = transcrever(clipe, pasta, cf.get("whisper_modelo", "small"), cf.get("idioma", "pt"))
+        creditos = para_imagens(clipe, vertical, pasta, gancho, contexto, palavras)
+        feito = colagem = creditos is not None
+        creditos = creditos or []
+        if not feito:
+            log.info("   sem fotos: o corte sai no %s", "crop que segue quem fala" if permitir_crop
+                     else "transparente (pouca RAM: crop desligado)")
+    reserva = None if feito else ("transparente" if not permitir_crop else "dinamico")
+    if not feito and (formato == "transparente" or not permitir_crop):
         para_transparente(clipe, vertical)
         feito = True
-    if not feito and formato == "imagens":
-        feito = colagem = para_imagens(clipe, vertical, pasta, gancho, contexto)
     if not feito and cfg_crop.get("falante_ativo", {}).get("ativo", True):
         feito = crop_falante_ativo(clipe, vertical, cfg_crop, pasta)
 
-    srt, palavras = transcrever(clipe, pasta, cf.get("whisper_modelo", "small"), cf.get("idioma", "pt"))
+    if srt is None:
+        srt, palavras = transcrever(clipe, pasta, cf.get("whisper_modelo", "small"), cf.get("idioma", "pt"))
 
     # Reserva: o crop antigo (MediaPipe + quem fala pela voz)
     turnos: list[dict] = []
@@ -473,4 +453,6 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
         "falantes": len({t["falante"] for t in turnos}),
         "duracao": round(duracao_de(final), 1),
         "texto": " ".join(p["word"] for p in palavras)[:600],
+        "creditos_imagens": creditos,
+        "formato_reserva": reserva if formato == "imagens" else None,
     }
