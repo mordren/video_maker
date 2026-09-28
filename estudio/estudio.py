@@ -85,6 +85,7 @@ TAMANHO_MAXIMO = 12 * 1024 * 1024 * 1024
 FORMATOS_VALIDOS = ("dinamico", "transparente", "imagens")
 NOMES_FORMATO = {"dinamico": "crop que segue quem fala", "transparente": "transparente",
                  "imagens": "fotos do assunto + corte"}
+LEGENDA_PADRAO = "new"   # finalizar.LEGENDAS: "new" (glow + karaokê com caixa) ou "old" (SRT amarelo)
 
 CONFIG_PADRAO = {
     "publicador_url": "http://127.0.0.1:8080",
@@ -562,6 +563,17 @@ def _preparar_fase2(tid: str, cid: str, c: dict) -> Path:
     return pronto
 
 
+def _fim_gancho(tid: str, cid: str) -> float:
+    """Duração da abertura (o gancho) que a Fase 2 pôs no começo do clipe; 0
+    se ela não teve abertura."""
+    rel = _fase2_pronto(tid, cid).parent / Path(cid).name / "relatorio.json"
+    try:
+        ab = json.loads(rel.read_text(encoding="utf-8")).get("abertura") or {}
+        return max(0.0, float(ab["fim"]) - float(ab["inicio"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0.0
+
+
 def _corte(tid: str, cid: str) -> dict | None:
     t = next((t for t in carregar_trabalhos() if t["id"] == tid), None)
     return next((c for c in (t or {}).get("cortes", []) if c["id"] == cid), None)
@@ -589,6 +601,7 @@ def _produzir_pendente() -> bool:
             return True    # cancelado/descartado enquanto esperava na fila
         _produzindo_agora = (tid, cid)
     formato = c.get("formato_pedido") or "dinamico"
+    legenda = c.get("legenda_pedida") or LEGENDA_PADRAO
     if POUCA_RAM and formato == "dinamico":
         _cancelar_por_pouca_ram(tid, cid, c)
         _produzindo_agora = None
@@ -596,7 +609,7 @@ def _produzir_pendente() -> bool:
     if c["status"] == "refazendo":
         _atualizar_corte(tid, cid, status="produzindo")
     _LogDoTrabalho.atual = tid
-    _registrar(tid, f"🎬 {cid}: produzindo em {NOMES_FORMATO.get(formato, formato)}")
+    _registrar(tid, f"🎬 {cid}: produzindo em {NOMES_FORMATO.get(formato, formato)}, legenda {legenda}")
     try:
         ja_pronto = _fase2_pronto(tid, cid).exists()
         clipe = _preparar_fase2(tid, cid, c)
@@ -622,7 +635,8 @@ def _produzir_pendente() -> bool:
             yaml.safe_load((FASE1 / "config_crop.yaml").read_text(encoding="utf-8")),
             contexto=c.get("comentario", ""), gancho=c.get("gancho", ""),
             pasta_trilhas=Path(musicas) if musicas else None,
-            formato=formato, permitir_crop=not POUCA_RAM, **textos)
+            formato=formato, permitir_crop=not POUCA_RAM,
+            legenda=legenda, fim_gancho=_fim_gancho(tid, cid), **textos)
         if (_corte(tid, cid) or {}).get("status") == "produzindo":    # não foi cancelado no meio
             extra = {}
             if not c.get("arquivo") and not c.get("titulo_editado"):
@@ -893,6 +907,7 @@ def produzir(tid: str, cid: str):
     todos ficarem presos no canal escolhido lá no início."""
     dados = request.get_json(silent=True) or {}
     formato = dados.get("formato") if dados.get("formato") in FORMATOS_VALIDOS else "dinamico"
+    legenda = dados.get("legenda") if dados.get("legenda") in finalizar.LEGENDAS else LEGENDA_PADRAO
     c = _corte(tid, cid)
     if c is None:
         return jsonify({"erro": "Corte não existe."}), 404
@@ -902,7 +917,7 @@ def produzir(tid: str, cid: str):
         return jsonify({"erro": "O 16:9 deste corte não existe mais para produzir."}), 409
     if POUCA_RAM and formato == "dinamico":
         return jsonify({"erro": AVISO_POUCA_RAM}), 409
-    campos = {"status": "produzindo", "formato_pedido": formato, "mensagem": "",
+    campos = {"status": "produzindo", "formato_pedido": formato, "legenda_pedida": legenda, "mensagem": "",
               "pedido_em": datetime.now().isoformat(timespec="seconds")}
     canal = str(dados.get("canal") or "").strip()
     perfil = str(dados.get("perfil") or "").strip()

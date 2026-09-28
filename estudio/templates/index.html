@@ -285,17 +285,20 @@ function desenharCortes() {
       ? `<details style="margin-top:4px"><summary class="fraco" style="cursor:pointer">📷 créditos das ${cred.length} fotos</summary>`
         + `<textarea readonly rows="3" style="width:100%;font-size:12px">${escapar("Fotos (Wikimedia Commons): " + cred.map(f => `${f.verbete} — ${f.autor || "autor não informado"} (${f.licenca || "licença livre"})`).join("; "))}</textarea></details>`
       : (c.formato === "imagens" && Array.isArray(c.creditos_imagens) ? `<br><span class="fraco">sem foto aproveitável — saiu em ${FORMATOS[c.formato_reserva] || FORMATOS.dinamico}</span>` : "");
-    const opcoesRefazer = Object.keys(FORMATOS).filter(f => f !== c.formato)
-      .map(f => `<option value="${f}" ${semCrop(f) ? "disabled" : ""}>${FORMATOS[f]}${semCrop(f) ? " (desligado: pouca RAM)" : ""}</option>`).join("");
+    // refazer: pode ser no mesmo formato (só trocando a legenda) ou em outro
+    const opcoesRefazer = Object.keys(FORMATOS)
+      .map(f => `<option value="${f}" ${f === c.formato ? "selected" : ""} ${semCrop(f) ? "disabled" : ""}>${FORMATOS[f]}${semCrop(f) ? " (desligado: pouca RAM)" : ""}</option>`).join("");
+    const legendaAtual = c.estilo_legenda || "old";
     return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
       <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
-      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${creditos}</div>
+      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato} · legenda ${legendaAtual}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${creditos}</div>
       <div><label>Título no YouTube</label><input class="titulo" maxlength="100" value="${escapar(c.titulo_publicacao || "")}"></div>
       <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
       <div class="acoes">
         <button class="principal enviar">📤 Enviar para a fila</button>
         <button class="perigo descartar">descartar</button>
         <select class="refazer-formato" style="width:auto">${opcoesRefazer}</select>
+        <select class="refazer-legenda" style="width:auto">${opcoesLegenda(legendaAtual)}</select>
         <button class="refazer">↺ refazer</button>
         <a class="fraco" style="align-self:center;font-size:13px" href="${base + encodeURIComponent(c.arquivo)}" download>baixar</a>
       </div>
@@ -305,6 +308,9 @@ function desenharCortes() {
 
 const semCrop = f => f === "dinamico" && !!(estado && estado.pouca_ram);
 const FORMATOS = {dinamico: "crop que segue quem fala", transparente: "transparente", imagens: "fotos do assunto + corte"};
+const LEGENDAS = {new: "legenda new (glow + karaokê)", old: "legenda old (amarela)"};
+const opcoesLegenda = atual => Object.keys(LEGENDAS).map(l =>
+  `<option value="${l}" ${l === (atual || "new") ? "selected" : ""}>${LEGENDAS[l]}</option>`).join("");
 
 function desenharPropostas() {
   const lista = [];
@@ -330,12 +336,12 @@ function desenharPropostas() {
     const acoes = produzindo
       ? `<span class="fraco">${rodando ? "⚙️ produzindo agora" : "⏳ na fila de produção"} (${FORMATOS[c.formato_pedido] || ""})</span>
          ${rodando ? "" : `<button class="mini cancelar">cancelar</button>`}`
-      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">${opcoesFormato}</select>         <select class="perfil" style="width:auto" title="visual (logo, cores da tarja, marca d'água) deste corte">${opcoesPerfil}</select>
+      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">${opcoesFormato}</select>         <select class="legenda" style="width:auto" title="estilo da legenda">${opcoesLegenda("new")}</select>         <select class="perfil" style="width:auto" title="visual (logo, cores da tarja, marca d'água) deste corte">${opcoesPerfil}</select>
          <button class="principal produzir">✂ Produzir</button>
          <button class="perigo descartar">descartar</button>`;
     return `<div class="corte ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
       <video controls preload="metadata" src="/previa/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}"></video>
-      <div class="meta"><b>${escapar(c.gancho || c.id)}</b><br>${extras} · de: ${escapar(t.titulo_video || "")}${c.comentario ? `<br>${escapar(c.comentario)}` : ""}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${creditos}</div>
+      <div class="meta"><b>${escapar(c.gancho || c.id)}</b><br>${extras} · de: ${escapar(t.titulo_video || "")}${c.comentario ? `<br>${escapar(c.comentario)}` : ""}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
       <div class="acoes">${acoes}</div>
     </div>`;
   }).join("");
@@ -347,7 +353,8 @@ $("propostas").addEventListener("click", async (e) => {
   try {
     if (e.target.classList.contains("produzir")) {
       e.target.disabled = true;
-      await api(url + "/produzir", {formato: card.querySelector(".formato").value, perfil: card.querySelector(".perfil").value});
+      await api(url + "/produzir", {formato: card.querySelector(".formato").value, legenda: card.querySelector(".legenda").value,
+                                    perfil: card.querySelector(".perfil").value});
     } else if (e.target.classList.contains("descartar")) {
       await api(url + "/descartar");
     } else if (e.target.classList.contains("cancelar")) {
@@ -376,7 +383,8 @@ $("cortes").addEventListener("click", async (e) => {
       await api(url + "/descartar");
     } else if (e.target.classList.contains("refazer")) {
       e.target.disabled = true;
-      await api(url + "/produzir", {formato: card.querySelector(".refazer-formato").value});
+      await api(url + "/produzir", {formato: card.querySelector(".refazer-formato").value,
+                                    legenda: card.querySelector(".refazer-legenda").value});
       recado("Refazendo — o corte aparece em Propostas até terminar e volta para a revisão.", "ok");
     } else return;
     assinaturaCortes = ""; atualizar();

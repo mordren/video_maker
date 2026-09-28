@@ -59,6 +59,20 @@ COLAGEM_EMENDA = 960                          # onde a foto termina e o vídeo c
 COLAGEM_LEGENDA_MARGIN_V = round(COLAGEM_EMENDA * 288 / 1920)
 COLAGEM_GC_BOTTOM_MARGIN = 96                 # GC centralizado na barra preta embaixo do vídeo
 
+# "new" (padrão): glow no gancho + karaokê com caixa (estudio/legenda_nova.py);
+# "old": o SRT amarelo de sempre (ESTILO_LEGENDA).
+LEGENDAS = ("new", "old")
+
+
+def _margem_legenda_px(colagem: bool, tem_gc: bool) -> int:
+    """Mesma posição da legenda antiga, em pixels do quadro de 1920 (a antiga
+    usa MarginV em unidades de 288, ver LT_CAPTION_MARGIN_V)."""
+    if colagem:
+        return COLAGEM_EMENDA
+    if tem_gc:
+        return LT_HEIGHT + LT_BOTTOM_MARGIN + LT_CAPTION_GAP
+    return round(60 * 1920 / 288)
+
 
 # ---------------------------------------------------------------------------
 # Perfil visual (logo, cores, marca d'água) — o mesmo do programa de desktop
@@ -188,9 +202,13 @@ def duracao_de(arquivo: Path) -> float:
 
 
 def _cadeia_video(srt: Path | None, cg_entrada: int | None, titulo: str, perfil: Perfil,
-                  capa_entrada: int | None, colagem: bool = False) -> str:
+                  capa_entrada: int | None, colagem: bool = False, ass: Path | None = None) -> str:
     cadeia, atual = "[0:v]setsar=1[base]", "base"
-    if srt is not None and srt_has_content(srt):
+    if ass is not None:
+        cadeia += (f";[{atual}]ass=filename='{filter_path(ass)}':"
+                   f"fontsdir='{filter_path(FONT_DIR)}'[leg]")
+        atual = "leg"
+    elif srt is not None and srt_has_content(srt):
         margem = (COLAGEM_LEGENDA_MARGIN_V if colagem
                  else LT_CAPTION_MARGIN_V if cg_entrada is not None else 60)
         estilo = ESTILO_LEGENDA.format(margem=margem)
@@ -223,12 +241,17 @@ def _cadeia_video(srt: Path | None, cg_entrada: int | None, titulo: str, perfil:
 
 def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: str, subtitulo: str,
                      perfil: Perfil, censura: list[str], trilha: Path | None, pasta: Path,
-                     colagem: bool = False) -> dict:
+                     colagem: bool = False, legenda: str = "new", palavras: list[dict] | None = None,
+                     fim_gancho: float = 0.0) -> dict:
     """Queima tudo no 9:16. Devolve {"capa": Path|None, "silenciados": n, "trocadas": n}.
 
     `colagem`: True quando o clipe já chegou no formato "imagens" (foto em
     cima, vídeo embaixo) — muda onde a legenda e o GC ficam (ver as
-    constantes COLAGEM_* acima)."""
+    constantes COLAGEM_* acima).
+
+    `legenda`: "new" (glow no gancho + karaokê com caixa, a partir das
+    `palavras`; `fim_gancho` = segundos iniciais que são o gancho) ou "old"
+    (o SRT amarelo). Sem palavras, a "new" cai para a "old"."""
     cfg = ai_srt.load_config()
     duracao = duracao_de(vertical)
 
@@ -257,6 +280,15 @@ def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: st
             trocadas = censor.censor_srt(srt, censura)
     filtro_censura = censor.mute_filter(silenciar)
 
+    ass = None
+    if legenda == "new" and palavras:
+        import legenda_nova
+        ass = pasta / "legenda.ass"
+        censura_texto = censura if cfg.get("censor_caption", True) else []
+        if not legenda_nova.gerar(palavras, ass, fim_gancho, _margem_legenda_px(colagem, cg is not None),
+                                  censura_texto):
+            ass = None
+
     entradas = ["-i", str(vertical)]
     n = 1
     cg_entrada = capa_entrada = trilha_entrada = None
@@ -270,7 +302,7 @@ def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: st
         entradas += ["-i", str(trilha)]
         trilha_entrada, n = n, n + 1
 
-    cadeia = _cadeia_video(srt, cg_entrada, titulo, perfil, capa_entrada, colagem)
+    cadeia = _cadeia_video(srt, cg_entrada, titulo, perfil, capa_entrada, colagem, ass)
     if trilha_entrada is not None:
         fala = "0:a"
         if filtro_censura:
@@ -354,7 +386,7 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
                     titulo_sugerido: str = "", manchete_sugerida: str = "",
                     pasta_trilhas: Path | None = None, preferir_sugeridos: bool = False,
                     musica_sugerida: str = "", formato: str = "dinamico", gancho: str = "",
-                    permitir_crop: bool = True) -> dict:
+                    permitir_crop: bool = True, legenda: str = "new", fim_gancho: float = 0.0) -> dict:
     """Clipe da Fase 2 -> <pasta>/final.mp4 (9:16 pronto). Devolve os metadados
     do corte para a tela de revisão.
 
@@ -371,6 +403,9 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
 
     `permitir_crop=False` (servidor com pouca RAM, ver estudio.py): nada de
     crop — o "imagens" sem foto cai para o transparente, não para o crop.
+
+    `legenda`: "new" ou "old" (ver renderizar_final). `fim_gancho`: duração
+    da abertura que a Fase 2 pôs no começo do clipe (relatorio.json).
     """
     pasta.mkdir(parents=True, exist_ok=True)
     cf = cfg_crop.get("falantes", {})
@@ -438,13 +473,15 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
 
     final = pasta / "final.mp4"
     info = renderizar_final(vertical, final, srt, titulo, subtitulo, perfil,
-                            palavras_censuradas(ia["sensiveis"]), trilha, pasta, colagem=colagem)
+                            palavras_censuradas(ia["sensiveis"]), trilha, pasta, colagem=colagem,
+                            legenda=legenda, palavras=palavras, fim_gancho=fim_gancho)
     if not ja_vertical:
         vertical.unlink(missing_ok=True)
     return {
         "arquivo": final.name,
         "capa": info["capa"].name if info["capa"] else "",
         "legenda": srt.name,
+        "estilo_legenda": legenda,
         "titulo": titulo,
         "subtitulo": subtitulo,
         "trilha": trilha.name if trilha else "",
