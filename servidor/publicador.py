@@ -68,6 +68,7 @@ LOG_PATH = DATA_DIR / "publicador.log"
 # dados, não junto do programa (que é instalado em /opt e pode ser substituído).
 os.environ.setdefault("VIDEOMAKER_DIR", str(DATA_DIR))
 
+import desempenho  # noqa: E402  (aba Desempenho: métricas pela API, só leitura)
 import tiktok_upload  # noqa: E402  (idem; opcional — só pesa se algum canal usar)
 import youtube_browser_upload  # noqa: E402  (precisa do VIDEOMAKER_DIR já definido)
 
@@ -439,8 +440,11 @@ def _escolher_proximo(fila: dict, config: dict) -> dict | None:
     acima na lista.
     """
     conectados = {c["nome"] for c in canais() if c["conectado"]}
+    # Com a janela de autorização do Desempenho aberta, o perfil do navegador
+    # desse canal está em uso — o envio dele espera a janela fechar.
     prontos = [item for item in _pendentes(fila)
-               if item.get("canal") in conectados and _canal_liberado(fila, item["canal"])]
+               if item.get("canal") in conectados and _canal_liberado(fila, item["canal"])
+               and not desempenho.login_em_andamento(item["canal"])]
     if not prontos:
         return None
     por_canal: dict[str, list[dict]] = {}
@@ -678,6 +682,7 @@ def _enviar_item(item_id: str) -> None:
         registrar(f"✅ Publicado “{titulo}”: {url}")
         _atualizar_item(item_id, status="enviado", url=url, mensagem="", tentativas=0,
                         enviado_em=datetime.now().isoformat(timespec="seconds"))
+        _anotar_publicado(item["arquivo"], titulo, canal)
         proximo = datetime.now() + _sortear_intervalo(_config_do_canal(carregar_config(), canal))
         _marcar_proximo(canal, proximo)
         if any(i.get("canal") == canal for i in _pendentes(carregar_fila())):
@@ -1133,6 +1138,204 @@ def youtube_login_status(conta: str):
     return jsonify(youtube_browser_upload.login_status(conta) or {"estado": "nenhum"})
 
 
+# ──────────────────────────────────────────────────────────────────
+#  Desempenho (métricas dos canais pela API do YouTube, só leitura)
+# ──────────────────────────────────────────────────────────────────
+
+_PADRAO_YOUTUBE_ID = re.compile(r"(?:v=|/shorts/|youtu\.be/|/video/)([A-Za-z0-9_-]{11})")
+PUBLICADOS_PATH = DATA_DIR / "publicados.jsonl"
+NOTAS_JEV_PATH = DATA_DIR / "notas_jev.json"
+ESTUDIO_URL = os.environ.get("PUBLICADOR_ESTUDIO_URL", "http://127.0.0.1:8090").strip()
+_NOTAS_CACHE: dict = {"quando": 0.0}
+
+
+def _anotar_publicado(arquivo: str, titulo: str, canal: str) -> None:
+    """Registro permanente de cada envio (arquivo → título final no YouTube).
+
+    A fila perde isso no "Limpar publicados", e o título pode ter sido editado
+    na fila — sem este registro, a nota do corte (que o Estúdio conhece pelo
+    nome do arquivo) não acharia mais o vídeo no YouTube.
+    """
+    try:
+        with PUBLICADOS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"arquivo": arquivo, "titulo": titulo, "canal": canal,
+                                "enviado_em": datetime.now().isoformat(timespec="seconds")},
+                               ensure_ascii=False) + "\n")
+    except OSError as erro:
+        registrar(f"⚠️ Não deu para anotar o envio em {PUBLICADOS_PATH.name}: {erro}")
+
+
+def _publicados() -> list[dict]:
+    try:
+        linhas = PUBLICADOS_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    registros = []
+    for linha in linhas:
+        try:
+            registros.append(json.loads(linha))
+        except ValueError:
+            continue
+    return registros
+
+
+def _notas_jev() -> list[dict]:
+    """Notas do JEV dos cortes que vieram do Estúdio (no máximo a cada 5 min).
+
+    Guarda uma cópia em notas_jev.json e só acrescenta: trabalho removido no
+    Estúdio ou log girado lá não apagam a nota de um vídeo já publicado.
+    """
+    import urllib.request
+
+    guardadas = _ler_json(NOTAS_JEV_PATH, {"cortes": {}}).get("cortes") or {}
+    if time.monotonic() - _NOTAS_CACHE["quando"] > 300:
+        _NOTAS_CACHE["quando"] = time.monotonic()
+        try:
+            with urllib.request.urlopen(ESTUDIO_URL + "/api/notas", timeout=5) as resposta:
+                novas = json.loads(resposta.read().decode("utf-8")).get("cortes") or []
+            mudou = False
+            for nota in novas:
+                chave = f"{nota.get('trabalho')}/{nota.get('corte')}"
+                anterior = guardadas.get(chave) or {}
+                # Uma nota completa (do trabalho) nunca é trocada pela resumida do log.
+                if nota.get("fonte") == "log" and anterior.get("fonte") == "trabalho":
+                    continue
+                if anterior != nota:
+                    guardadas[chave] = nota
+                    mudou = True
+            if mudou:
+                _gravar_json(NOTAS_JEV_PATH, {"cortes": guardadas})
+        except Exception as erro:                        # noqa: BLE001
+            _NOTAS_CACHE["erro"] = f"Estúdio fora do ar? ({erro})"
+        else:
+            _NOTAS_CACHE.pop("erro", None)
+    return list(guardadas.values())
+
+
+def _ids_publicados() -> set[str]:
+    """IDs dos vídeos que saíram por esta fila (a tela marca quais foram)."""
+    ids = set()
+    for item in carregar_fila()["itens"]:
+        achado = _PADRAO_YOUTUBE_ID.search(item.get("url") or "")
+        if achado:
+            ids.add(achado.group(1))
+    return ids
+
+
+def _atualizar_desempenho(canal: str) -> None:
+    try:
+        dados = desempenho.atualizar(canal, _ids_publicados())
+        registrar(f"📊 Desempenho de {canal} atualizado ({len(dados['videos'])} vídeos).")
+    except desempenho.ErroDesempenho as erro:
+        if "Já está atualizando" not in str(erro):
+            desempenho.marcar_falha(canal, str(erro))
+            registrar(f"⚠️ Desempenho de {canal}: {erro}")
+    except Exception as erro:                            # noqa: BLE001
+        desempenho.marcar_falha(canal, f"{type(erro).__name__}: {erro}"[:500])
+        registrar(f"⚠️ Desempenho de {canal}: {erro}")
+
+
+def _laco_de_desempenho() -> None:
+    """Relê as métricas de cada canal conectado a cada 6 horas, sozinho."""
+    time.sleep(60)                                       # deixa o serviço subir antes
+    while True:
+        for canal in [c["nome"] for c in canais()]:
+            try:
+                if desempenho.precisa_atualizar(canal):
+                    _atualizar_desempenho(canal)
+            except Exception as erro:                    # noqa: BLE001
+                registrar(f"⚠️ Erro no laço do desempenho: {erro}")
+        time.sleep(15 * 60)
+
+
+def _canal_valido(canal: str) -> bool:
+    return canal in {c["nome"] for c in canais()}
+
+
+@app.get("/api/desempenho")
+def desempenho_resumo():
+    return jsonify({"canais": [desempenho.resumo(c["nome"]) for c in canais()],
+                    "clientes": desempenho.clientes(),
+                    "pasta_dados": str(DATA_DIR)})
+
+
+@app.get("/api/desempenho/<canal>")
+def desempenho_do_canal(canal: str):
+    if not _canal_valido(canal):
+        return jsonify({"erro": "Canal desconhecido."}), 404
+    dados = desempenho.dados(canal)
+    if dados and dados.get("videos"):
+        desempenho.anexar_notas(dados["videos"], _notas_jev(), _publicados())
+    return jsonify({"resumo": desempenho.resumo(canal), "dados": dados})
+
+
+@app.get("/api/desempenho/notas")
+def desempenho_notas():
+    """Um ponto por vídeo com nota do JEV, de todos os canais — para o
+    cruzamento nota × desempenho da tela (a conta de correlação é feita lá)."""
+    notas, publicados = _notas_jev(), _publicados()
+    pontos = []
+    for c in canais():
+        dados = desempenho.dados(c["nome"]) or {}
+        videos = dados.get("videos") or []
+        desempenho.anexar_notas(videos, notas, publicados)
+        pontos += [desempenho.ponto_de_nota(c["nome"], v) for v in videos if v.get("jev")]
+    return jsonify({"pontos": pontos, "cortes_com_nota": len(notas),
+                    "aviso": _NOTAS_CACHE.get("erro")})
+
+
+@app.post("/api/desempenho/<canal>/conectar")
+def desempenho_conectar(canal: str):
+    """Abre a tela de autorização do Google num Chromium na sessão RDP ativa."""
+    if not _canal_valido(canal):
+        return jsonify({"erro": "Canal desconhecido."}), 404
+    cliente = str((request.get_json(silent=True) or {}).get("cliente") or "").strip()
+    if cliente not in desempenho.clientes():
+        return jsonify({"erro": "Escolha qual client_secret usar (nenhum encontrado na "
+                                 f"pasta {DATA_DIR}?)."}), 400
+    if desempenho.login_em_andamento(canal):
+        return jsonify({"erro": "Já tem uma janela de autorização aberta para este canal."}), 400
+    with _TRAVA:
+        enviando = next((i for i in carregar_fila()["itens"] if i["id"] == _ENVIANDO), None)
+    if enviando and enviando.get("canal") == canal:
+        return jsonify({"erro": "Este canal está enviando um vídeo agora (o navegador dele "
+                                 "está em uso). Tente de novo quando o envio terminar."}), 400
+    sessao = _display_rdp_ativo()
+    if sessao is None:
+        return jsonify({"erro": "Nenhuma sessão de área de trabalho remota (RDP) ativa "
+                                 "agora — conecte por RDP no servidor primeiro e tente de novo."}), 400
+    display, xauth = sessao
+    script = Path(desempenho.__file__).resolve()
+    env = {**os.environ, "DISPLAY": display, "XAUTHORITY": str(xauth)}
+    # Grava "abrindo" já aqui, antes do processo subir: o laço de envio
+    # enxerga na hora que o perfil deste canal vai ficar ocupado.
+    desempenho.gravar_status_login(canal, "abrindo", "Abrindo o navegador na tela remota…")
+    subprocess.Popen([sys.executable, str(script), "--login", canal, cliente],
+                     env=env, cwd=str(script.parent), start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    registrar(f"📊 Autorização de leitura do canal '{canal}' iniciada (tela remota, display {display}).")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/desempenho/<canal>/atualizar")
+def desempenho_atualizar(canal: str):
+    if not _canal_valido(canal):
+        return jsonify({"erro": "Canal desconhecido."}), 404
+    if not desempenho.conectado(canal):
+        return jsonify({"erro": "Canal não conectado à API ainda."}), 400
+    if desempenho.atualizando(canal):
+        return jsonify({"erro": "Já está atualizando este canal."}), 400
+    threading.Thread(target=_atualizar_desempenho, args=(canal,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/desempenho/<canal>/desconectar")
+def desempenho_desconectar(canal: str):
+    desempenho.desconectar(canal)
+    registrar(f"📊 Canal '{canal}' desconectado da leitura de métricas.")
+    return jsonify({"ok": True})
+
+
 @app.errorhandler(413)
 def arquivo_grande_demais(_erro):
     return jsonify({"erro": "Arquivo maior que o limite de 12 GB por envio."}), 413
@@ -1157,6 +1360,7 @@ for _item in _orfaos:
     registrar(f"↩️ “{_item.get('titulo') or _item['arquivo']}” estava sendo enviado quando o "
               "serviço caiu — voltou para a fila.")
 threading.Thread(target=_laco_de_envio, daemon=True, name="fila").start()
+threading.Thread(target=_laco_de_desempenho, daemon=True, name="desempenho").start()
 
 registrar("🟢 Publicador iniciado.")
 # Sinal indireto de queda: se a máquina/serviço tiver caído, este é o

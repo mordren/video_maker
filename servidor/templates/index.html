@@ -59,6 +59,29 @@
   .recado { margin-top: 10px; font-size: 14px; min-height: 20px; }
   .recado.erro { color: var(--erro); }
   .recado.ok { color: var(--ok); }
+  .abas { display: flex; gap: 6px; margin-top: 16px; border-bottom: 1px solid var(--linha); }
+  .abas button { border-radius: 8px 8px 0 0; border-bottom: 0; background: transparent; color: var(--fraco); margin-bottom: -1px; }
+  .abas button.ativa { background: var(--caixa); color: var(--texto); font-weight: 600; border-bottom: 1px solid var(--caixa); }
+  .cartoes { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+  .cartao { background: #14161b; border: 1px solid var(--linha); border-radius: 9px; padding: 10px 12px; cursor: pointer; }
+  .cartao:hover { border-color: #3d4452; }
+  .cartao.ativo { border-color: var(--destaque); }
+  .blocos { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .bloco { background: #14161b; border: 1px solid var(--linha); border-radius: 9px; padding: 10px 12px; }
+  .bloco .rotulo { font-size: 12px; color: var(--fraco); }
+  .numero { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .rolagem { overflow-x: auto; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th[data-ordem] { cursor: pointer; user-select: none; white-space: nowrap; }
+  th[data-ordem]:hover { color: var(--texto); }
+  .selo { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--linha); color: var(--fraco); white-space: nowrap; }
+  .barra-origem { height: 8px; background: var(--destaque); border-radius: 0 4px 4px 0; }
+  #dica {
+    position: fixed; z-index: 10; pointer-events: none; max-width: 300px;
+    background: #0d0f13; border: 1px solid var(--linha); border-radius: 7px;
+    padding: 6px 9px; font-size: 13px; line-height: 1.4; white-space: pre-line;
+  }
+  a { color: var(--destaque); }
   #aviso-conexao {
     background: #3a1f1f; border: 1px solid var(--erro); color: #ffd3d3;
     border-radius: 8px; padding: 10px 14px; margin-top: 10px; font-size: 14px;
@@ -73,6 +96,12 @@
        parecer travada: os cliques não fazem nada e nada explica o porquê. -->
   <div id="aviso-conexao" hidden></div>
 
+  <nav class="abas">
+    <button data-aba="fila" class="ativa">Fila</button>
+    <button data-aba="desempenho">📊 Desempenho</button>
+  </nav>
+
+  <div id="aba-fila">
   <section>
     <div class="barra-topo">
       <div>
@@ -257,6 +286,19 @@
     <h2>Histórico</h2>
     <pre id="log">—</pre>
   </section>
+  </div>
+
+  <div id="aba-desempenho" hidden>
+    <section>
+      <div class="barra-topo">
+        <h2 style="margin:0">Canais</h2>
+        <span class="fraco" style="font-size:13px">Atualiza sozinho a cada 6 horas. O YouTube Analytics atrasa 2 a 3 dias; as views chegam antes.</span>
+      </div>
+      <div id="d-canais" class="cartoes" style="margin-top:12px">Carregando…</div>
+    </section>
+    <div id="d-canal"></div>
+  </div>
+  <div id="dica" hidden></div>
 </main>
 
 <script>
@@ -719,8 +761,559 @@ el("btn-credenciais").onclick = async () => {
   await atualizar();
 };
 
+/* ── abas ──────────────────────────────────────────────────────── */
+let abaAtual = "fila";
+
+function mostrarAba(aba) {
+  abaAtual = aba === "desempenho" ? "desempenho" : "fila";
+  for (const botao of document.querySelectorAll(".abas button")) {
+    botao.classList.toggle("ativa", botao.dataset.aba === abaAtual);
+  }
+  el("aba-fila").hidden = abaAtual !== "fila";
+  el("aba-desempenho").hidden = abaAtual !== "desempenho";
+  if (abaAtual === "desempenho") atualizarDesempenho(true);
+}
+document.querySelector(".abas").addEventListener("click", (evento) => {
+  const botao = evento.target.closest("button[data-aba]");
+  if (!botao) return;
+  history.replaceState(null, "", botao.dataset.aba === "fila" ? location.pathname : "#desempenho");
+  mostrarAba(botao.dataset.aba);
+});
+
+/* ── dica ao passar o mouse (qualquer elemento com data-dica) ──── */
+document.addEventListener("mousemove", (evento) => {
+  const alvo = evento.target.closest && evento.target.closest("[data-dica]");
+  const dica = el("dica");
+  if (!alvo) { dica.hidden = true; return; }
+  dica.textContent = alvo.dataset.dica;
+  dica.hidden = false;
+  const largura = dica.offsetWidth, altura = dica.offsetHeight;
+  let x = evento.clientX + 14, y = evento.clientY + 14;
+  if (x + largura > innerWidth - 8) x = evento.clientX - largura - 14;
+  if (y + altura > innerHeight - 8) y = evento.clientY - altura - 14;
+  dica.style.left = Math.max(8, x) + "px";
+  dica.style.top = Math.max(8, y) + "px";
+});
+
+/* ── desempenho ────────────────────────────────────────────────── */
+const ORIGENS = {
+  SHORTS: "Feed de Shorts", YT_SEARCH: "Busca do YouTube", SUBSCRIBER: "Inscritos",
+  BROWSE: "Página inicial / navegação", RELATED_VIDEO: "Vídeos sugeridos",
+  EXT_URL: "Links externos", NO_LINK_OTHER: "Direto / desconhecido", NO_LINK_EMBEDDED: "Vídeo incorporado",
+  YT_CHANNEL: "Página do canal", YT_OTHER_PAGE: "Outras páginas do YouTube", NOTIFICATION: "Notificações",
+  PLAYLIST: "Playlists", HASHTAGS: "Hashtags", SOUND_PAGE: "Página do som", END_SCREEN: "Tela final",
+  SHORTS_CONTENT_LINKS: "Links em Shorts", VIDEO_REMIXES: "Remixes", ADVERTISING: "Anúncios",
+  CAMPAIGN_CARD: "Cards de campanha", ANNOTATION: "Cards e anotações", LIVE_REDIRECT: "Redirecionamento de live",
+  IMMERSIVE_LIVE: "Live imersiva", PRODUCT_PAGE: "Página de produto",
+};
+const ESTADOS_LOGIN_DESEMPENHO = {
+  abrindo: "Abrindo o navegador na tela remota…",
+  aguardando: "Navegador aberto na sessão RDP — escolha a conta/o canal e clique em Continuar/Permitir.",
+};
+let desempenhoResumo = null;
+let canalDesempenho = "";
+let dadosCanal = null;          // {resumo, dados} do canal aberto
+let assinaturaCanal = "";
+let ordemVideos = {campo: "publicado_em", desc: true};
+let soPublicador = false;
+
+const fmt = (n) => n == null ? "—" : Number(n).toLocaleString("pt-BR", {maximumFractionDigits: 0});
+const fmtPct = (v) => v == null ? "—" : Math.round(v * 100) + "%";
+const fmtData = (iso) => iso ? new Date(iso).toLocaleString("pt-BR",
+  {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) : "—";
+function diasAtras(iso) {
+  const dias = Math.floor((Date.now() - new Date(iso)) / 86400000);
+  return dias <= 0 ? "hoje" : dias === 1 ? "ontem" : "há " + dias + " dias";
+}
+// Links que o Google põe nas mensagens de erro (ex.: ativar a API no projeto).
+const comLinks = (texto) => escapar(texto).replace(/https?:\/\/[^\s&<]+/g,
+  (url) => '<a href="' + url + '" target="_blank" rel="noopener">' + url + "</a>");
+
+async function atualizarDesempenho(forcar) {
+  let resposta;
+  try { resposta = await fetch("/api/desempenho"); } catch (erro) { semConexao(true); return; }
+  if (!resposta.ok) return;
+  desempenhoResumo = await resposta.json();
+  const nomes = desempenhoResumo.canais.map((c) => c.nome);
+  if (!nomes.includes(canalDesempenho)) {
+    const primeiro = desempenhoResumo.canais.find((c) => c.conectado) || desempenhoResumo.canais[0];
+    canalDesempenho = primeiro ? primeiro.nome : "";
+  }
+  desenharCartoesDesempenho();
+  const resumo = desempenhoResumo.canais.find((c) => c.nome === canalDesempenho);
+  const nova = resumo ? [resumo.atualizado_em, resumo.conectado, resumo.atualizando, resumo.erro,
+    resumo.login && resumo.login.estado + resumo.login.atualizado_em].join("|") : "";
+  const editando = document.activeElement && document.activeElement.closest("#d-canal");
+  if (forcar || (nova !== assinaturaCanal && !editando)) {
+    assinaturaCanal = nova;
+    await abrirCanalDesempenho();
+  }
+}
+
+function desenharCartoesDesempenho() {
+  const alvo = el("d-canais");
+  if (!desempenhoResumo.canais.length) {
+    alvo.innerHTML = '<span class="fraco">Nenhum canal no Publicador ainda — conecte um na aba Fila.</span>';
+    return;
+  }
+  alvo.innerHTML = desempenhoResumo.canais.map((c) => {
+    const yt = c.canal_youtube;
+    const situacao = !c.conectado ? '<span class="pilula aguardando">não conectado</span>'
+      : c.erro ? '<span class="pilula falhou">com erro</span>'
+      : c.atualizando ? '<span class="pilula enviando">atualizando…</span>'
+      : '<span class="pilula enviado">conectado</span>';
+    const numeros = yt
+      ? '<div style="margin-top:6px;font-variant-numeric:tabular-nums">' + fmt(yt.inscritos) + " inscritos · "
+        + fmt(c.views_28d) + ' views <span class="fraco">(28 dias)</span></div>'
+      : '<div class="fraco" style="margin-top:6px">Sem leitura ainda.</div>';
+    return '<div class="cartao' + (c.nome === canalDesempenho ? " ativo" : "") + '" data-canal-d="'
+      + escapar(c.nome) + '"><div class="barra-topo" style="gap:6px"><b>' + escapar(c.nome) + "</b>" + situacao + "</div>"
+      + (yt ? '<div class="fraco" style="font-size:13px">' + escapar(yt.titulo) + "</div>" : "") + numeros + "</div>";
+  }).join("");
+}
+
+el("d-canais").addEventListener("click", (evento) => {
+  const cartao = evento.target.closest("[data-canal-d]");
+  if (!cartao || cartao.dataset.canalD === canalDesempenho) return;
+  canalDesempenho = cartao.dataset.canalD;
+  desenharCartoesDesempenho();
+  atualizarDesempenho(true);
+});
+
+async function abrirCanalDesempenho() {
+  if (!canalDesempenho) { el("d-canal").innerHTML = ""; return; }
+  try {
+    const [resposta, respostaNotas] = await Promise.all([
+      fetch("/api/desempenho/" + encodeURIComponent(canalDesempenho)), fetch("/api/desempenho/notas")]);
+    dadosCanal = await resposta.json();
+    notasJev = await respostaNotas.json().catch(() => ({pontos: []}));
+  } catch (erro) { semConexao(true); return; }
+  for (const v of (dadosCanal.dados && dadosCanal.dados.videos) || []) {
+    v.nota_jev = v.jev ? v.jev.nota_final : null;          // para a coluna ordenar
+  }
+  desenharCanalDesempenho();
+}
+
+function blocoConexao(r) {
+  const login = r.login || {};
+  const emAndamento = login.estado === "abrindo" || login.estado === "aguardando";
+  const clientes = desempenhoResumo.clientes || [];
+  const opcoes = clientes.map((nome) => '<option value="' + escapar(nome) + '"'
+    + (nome === r.cliente_sugerido ? " selected" : "") + ">client_secret_" + escapar(nome) + ".json</option>").join("");
+  let recadoLogin = "";
+  if (emAndamento) recadoLogin = '<div class="recado">' + escapar(ESTADOS_LOGIN_DESEMPENHO[login.estado]) + "</div>";
+  else if (login.estado === "sucesso") recadoLogin = '<div class="recado ok">' + escapar(login.mensagem) + "</div>";
+  else if (login.estado) recadoLogin = '<div class="recado erro">' + comLinks(login.mensagem || login.estado) + "</div>";
+  if (!clientes.length) {
+    return '<p class="fraco">Nenhum <code>client_secret_*.json</code> na pasta <code>'
+      + escapar(desempenhoResumo.pasta_dados) + "</code> do servidor.</p>";
+  }
+  return '<div class="grade" style="margin-top:4px">'
+    + '<div><label for="d-cliente">Projeto do Google Cloud (cliente OAuth)</label><select id="d-cliente">' + opcoes + "</select></div>"
+    + '<div style="align-self:end"><button id="d-conectar" class="' + (r.conectado ? "" : "principal") + '"'
+    + (emAndamento ? " disabled" : "") + ">🖥 " + (r.conectado ? "Reconectar" : "Autorizar")
+    + " pelo navegador remoto (RDP)</button></div></div>"
+    + '<p class="fraco" style="margin:8px 0 0;font-size:13px">Conecte por RDP no servidor antes de clicar. A janela abre com o '
+    + "navegador deste canal (já logado): na tela do Google, escolha o canal <b>" + escapar(r.nome)
+    + "</b> e autorize a leitura. Só leitura: o Publicador não consegue mudar nada no canal por aqui.</p>"
+    + '<div id="d-recado-login">' + recadoLogin + "</div>";
+}
+
+function desenharCanalDesempenho() {
+  const r = dadosCanal.resumo, d = dadosCanal.dados;
+  const alvo = el("d-canal");
+  const temDados = d && d.videos;
+  const cabecalho = '<section><div class="barra-topo"><div><h2 style="margin:0">' + escapar(r.nome)
+    + (d && d.canal_youtube ? ' <span class="fraco" style="font-weight:400">→ ' + escapar(d.canal_youtube.titulo) + "</span>" : "")
+    + '</h2><div class="fraco" style="font-size:13px">'
+    + (r.atualizando ? "Lendo o YouTube agora…" : d && d.atualizado_em ? "Lido em " + fmtData(d.atualizado_em) : "Ainda sem leitura.")
+    + "</div></div>"
+    + (r.conectado ? '<div class="acoes"><button id="d-atualizar" class="principal"' + (r.atualizando ? " disabled" : "")
+      + ">↻ Atualizar agora</button><button id=\"d-desconectar\">Desconectar</button></div>" : "")
+    + "</div>"
+    + (d && d.erro ? '<div class="recado erro">' + comLinks(d.erro) + "</div>" : "")
+    + (r.conectado ? '<details style="margin-top:10px"' + (r.login && ["abrindo", "aguardando"].includes(r.login.estado) ? " open" : "")
+        + '><summary class="fraco" style="cursor:pointer;font-size:13px">Autorização</summary>' + blocoConexao(r) + "</details>"
+      : blocoConexao(r))
+    + "</section>";
+  if (!temDados) { alvo.innerHTML = cabecalho; ligarBotoesDesempenho(); return; }
+
+  const dias = d.dias || [];
+  const soma = (campo) => dias.reduce((t, x) => t + (x[campo] || 0), 0);
+  const liquidos = soma("inscritos_ganhos") - soma("inscritos_perdidos");
+  const temEngajadas = dias.some((x) => x.engajadas != null);
+  const blocos = '<section><div class="blocos">'
+    + '<div class="bloco"><div class="rotulo">Inscritos</div><div class="numero">' + fmt(d.canal_youtube.inscritos) + "</div></div>"
+    + '<div class="bloco"><div class="rotulo">Views · 28 dias</div><div class="numero">' + fmt(soma("views")) + "</div>"
+    + (temEngajadas ? '<div class="fraco" style="font-size:12px">' + fmt(soma("engajadas")) + " engajadas</div>" : "") + "</div>"
+    + '<div class="bloco"><div class="rotulo">Inscritos · 28 dias</div><div class="numero">' + (liquidos > 0 ? "+" : "") + fmt(liquidos) + "</div>"
+    + '<div class="fraco" style="font-size:12px">+' + fmt(soma("inscritos_ganhos")) + " / −" + fmt(soma("inscritos_perdidos")) + "</div></div>"
+    + '<div class="bloco"><div class="rotulo">Horas assistidas · 28 dias</div><div class="numero">' + fmt(soma("minutos") / 60) + "</div></div>"
+    + "</div>"
+    + '<h2 style="margin:18px 0 6px">Views por dia</h2><div id="d-grafico-dias"></div>'
+    + '<h2 style="margin:18px 0 8px">De onde vieram as views · 28 dias</h2>' + listaOrigens(d.origens)
+    + (d.avisos && d.avisos.length ? '<details style="margin-top:12px"><summary class="fraco" style="cursor:pointer;font-size:13px">'
+        + d.avisos.length + " aviso(s) da última leitura</summary><div class=\"fraco\" style=\"font-size:13px\">"
+        + d.avisos.map(comLinks).join("<br>") + "</div></details>" : "")
+    + "</section>";
+  const tabela = '<section><div class="barra-topo"><h2 style="margin:0">Vídeos (últimos ' + d.videos.length + ")</h2>"
+    + '<label style="display:flex;gap:8px;align-items:center;color:var(--texto);margin:0"><input type="checkbox" id="d-so-publicador"'
+    + (soPublicador ? " checked" : "") + "> Só os que saíram por esta fila</label></div>"
+    + '<div class="rolagem" style="margin-top:8px"><table id="d-tabela"></table></div>'
+    + '<p class="fraco" style="font-size:13px;margin:8px 0 0">"Assistido" é a porcentagem média do vídeo que cada pessoa viu '
+    + '(passa de 100% quando o Short é revisto). "Aos 3 s" é a fração do público que ainda estava assistindo no terceiro segundo. '
+    + "A curva de retenção é relida só nos vídeos dos últimos " + 45 + " dias; clique no título das colunas para ordenar.</p></section>";
+  alvo.innerHTML = cabecalho + blocos + '<section id="d-notas"></section>' + tabela;
+  desenharGraficoDias(dias);
+  desenharNotas();
+  desenharTabelaVideos();
+  ligarBotoesDesempenho();
+}
+
+function listaOrigens(origens) {
+  const itens = Object.entries(origens || {}).sort((a, b) => b[1] - a[1]);
+  const total = itens.reduce((t, [, n]) => t + n, 0);
+  if (!total) return '<p class="fraco">Sem dados de origem ainda.</p>';
+  const principais = itens.slice(0, 7);
+  const resto = itens.slice(7).reduce((t, [, n]) => t + n, 0);
+  if (resto) principais.push(["_OUTRAS", resto]);
+  const maior = principais[0][1];
+  return '<div style="display:grid;grid-template-columns:minmax(120px,220px) 1fr 90px;gap:6px 12px;align-items:center">'
+    + principais.map(([chave, n]) => {
+      const nome = chave === "_OUTRAS" ? "Outras" : (ORIGENS[chave] || chave);
+      const pct = Math.round(n / total * 100);
+      return '<div style="font-size:14px">' + escapar(nome) + "</div>"
+        + '<div data-dica="' + escapar(nome + ": " + fmt(n) + " views (" + pct + "%)") + '" style="padding:4px 0">'
+        + '<div class="barra-origem" style="width:' + Math.max(1, n / maior * 100) + '%"></div></div>'
+        + '<div class="num fraco" style="font-size:13px;text-align:right">' + pct + "% · " + fmt(n) + "</div>";
+    }).join("") + "</div>";
+}
+
+function desenharGraficoDias(dias) {
+  const alvo = el("d-grafico-dias");
+  if (!dias.length) { alvo.innerHTML = '<p class="fraco">Sem dados diários ainda.</p>'; return; }
+  const largura = Math.max(300, alvo.clientWidth || 700), altura = 150;
+  const margem = {esq: 44, dir: 8, topo: 8, base: 22};
+  const w = largura - margem.esq - margem.dir, h = altura - margem.topo - margem.base;
+  const maximo = Math.max(1, ...dias.map((x) => x.views || 0));
+  const passo = w / dias.length, gap = 2, barra = Math.max(2, passo - gap);
+  const y = (v) => margem.topo + h - (v / maximo) * h;
+  const r = Math.min(4, barra / 2);
+  let svg = '<svg width="' + largura + '" height="' + altura + '" role="img" aria-label="Views por dia nos últimos 28 dias">';
+  for (const frac of [0.5, 1]) {
+    const yy = y(maximo * frac).toFixed(1);
+    svg += '<line x1="' + margem.esq + '" x2="' + (largura - margem.dir) + '" y1="' + yy + '" y2="' + yy
+      + '" stroke="var(--linha)" stroke-width="1"/>'
+      + '<text x="' + (margem.esq - 6) + '" y="' + yy + '" dy="4" text-anchor="end" font-size="11" fill="var(--fraco)">'
+      + fmt(maximo * frac) + "</text>";
+  }
+  const base = margem.topo + h;
+  dias.forEach((dia, i) => {
+    const v = dia.views || 0, x = margem.esq + i * passo + gap / 2, topo = y(v);
+    const alturaBarra = base - topo;
+    const dica = new Date(dia.dia + "T12:00").toLocaleDateString("pt-BR", {weekday: "short", day: "2-digit", month: "2-digit"})
+      + "\n" + fmt(v) + " views" + (dia.engajadas != null ? " · " + fmt(dia.engajadas) + " engajadas" : "")
+      + "\n+" + fmt(dia.inscritos_ganhos) + " / −" + fmt(dia.inscritos_perdidos) + " inscritos";
+    if (alturaBarra > 0.5) {
+      const rr = Math.min(r, alturaBarra);
+      svg += '<path fill="var(--destaque)" d="M' + x + "," + base + "V" + (topo + rr) + "Q" + x + "," + topo + " " + (x + rr) + "," + topo
+        + "H" + (x + barra - rr) + "Q" + (x + barra) + "," + topo + " " + (x + barra) + "," + (topo + rr) + "V" + base + 'Z"/>';
+    }
+    // Alvo do mouse = a coluna inteira, não só a barra (dias fracos também dão dica).
+    svg += '<rect x="' + (margem.esq + i * passo) + '" y="' + margem.topo + '" width="' + passo + '" height="' + h
+      + '" fill="transparent" data-dica="' + escapar(dica) + '"/>';
+  });
+  svg += '<line x1="' + margem.esq + '" x2="' + (largura - margem.dir) + '" y1="' + base + '" y2="' + base + '" stroke="var(--fraco)" stroke-width="1"/>';
+  for (const i of [0, Math.floor(dias.length / 2), dias.length - 1]) {
+    const rotulo = new Date(dias[i].dia + "T12:00").toLocaleDateString("pt-BR", {day: "2-digit", month: "2-digit"});
+    svg += '<text x="' + (margem.esq + i * passo + passo / 2) + '" y="' + (altura - 6) + '" text-anchor="middle" font-size="11" fill="var(--fraco)">'
+      + rotulo + "</text>";
+  }
+  alvo.innerHTML = svg + "</svg>";
+}
+
+function curvaRetencao(v) {
+  const curva = v.retencao_curva;
+  if (!curva || !curva.length) return '<span class="fraco">—</span>';
+  const w = 120, h = 34;
+  const maximo = Math.max(1, ...curva.map((c) => c[1]));
+  const pontos = curva.map(([x, yv]) => (x * w).toFixed(1) + "," + (h - yv / maximo * (h - 2) - 1).toFixed(1)).join(" ");
+  const y100 = (h - 1 / maximo * (h - 2) - 1).toFixed(1);
+  const dica = "Retenção de “" + v.titulo + "”\naos 3 s: " + fmtPct(v.retencao_3s) + " · no fim: " + fmtPct(v.retencao_fim)
+    + "\n(tracejado = 100%; acima dele, gente revendo)";
+  return '<svg width="' + w + '" height="' + h + '" data-dica="' + escapar(dica) + '" style="display:block">'
+    + '<line x1="0" x2="' + w + '" y1="' + y100 + '" y2="' + y100 + '" stroke="var(--linha)" stroke-dasharray="3 3"/>'
+    + '<polyline fill="none" stroke="var(--destaque)" stroke-width="2" stroke-linejoin="round" points="' + pontos + '"/></svg>';
+}
+
+/* ── notas do JEV × desempenho ─────────────────────────────────── */
+let notasJev = {pontos: []};
+let escopoNotas = "canal", eixoNota = "nota_final", eixoMetrica = "retencao_3s";
+const NOTAS = {nota_final: "Nota final", viral: "Viral (JEV)", abertura: "Abertura (JEV)", nota_duracao: "Duração",
+  ritmo: "Ritmo", llm: "Coerência (LLM)"};
+const METRICAS = {
+  views: {nome: "Views", fmt: fmt, log: true},
+  views_engajadas: {nome: "Views engajadas", fmt: fmt, log: true},
+  retencao_3s: {nome: "Aos 3 s", fmt: fmtPct},
+  media_percentual: {nome: "Assistido", fmt: (v) => v == null ? "—" : Math.round(v) + "%"},
+  inscritos_ganhos: {nome: "Inscritos", fmt: fmt},
+};
+// Views chegam na hora, mas vídeo de horas atrás ainda não teve tempo de juntá-las. As métricas do
+// Analytics (retenção, assistido, engajadas, inscritos) não precisam de filtro: ficam vazias até chegar.
+const IDADE_MINIMA_VIEWS_DIAS = 1;
+
+const num2 = (v) => v == null ? "—" : Number(v).toFixed(2).replace(".", ",");
+function dicaJev(j) {
+  return "Nota final " + num2(j.nota_final) + (j.viral != null ? " · viral " + num2(j.viral) : "")
+    + (j.abertura != null ? " · abertura " + num2(j.abertura) : "")
+    + (j.nota_duracao != null ? " · duração " + num2(j.nota_duracao) : "")
+    + (j.ritmo != null ? " · ritmo " + num2(j.ritmo) : "") + (j.llm != null ? " · LLM " + num2(j.llm) : "")
+    + (j.gancho ? "\nGancho: " + j.gancho : "") + (j.formato ? "\nFormato: " + j.formato : "")
+    + (j.video_origem ? "\nDo vídeo: " + j.video_origem : "") + (j.csv ? "\n(corte de lote CSV)" : "");
+}
+
+// Correlação de Spearman (por posição): aguenta views muito desiguais e poucos vídeos
+// melhor que a de Pearson. Vai de −1 a 1.
+function postos(valores) {
+  const ordem = valores.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+  const r = new Array(valores.length);
+  for (let i = 0; i < ordem.length;) {
+    let j = i;
+    while (j + 1 < ordem.length && ordem[j + 1][0] === ordem[i][0]) j++;
+    for (let k = i; k <= j; k++) r[ordem[k][1]] = (i + j) / 2 + 1;
+    i = j + 1;
+  }
+  return r;
+}
+function spearman(pares) {
+  if (pares.length < 5) return null;
+  const a = postos(pares.map((p) => p[0])), b = postos(pares.map((p) => p[1]));
+  const n = a.length, ma = a.reduce((t, x) => t + x, 0) / n, mb = b.reduce((t, x) => t + x, 0) / n;
+  let cov = 0, va = 0, vb = 0;
+  for (let i = 0; i < n; i++) { cov += (a[i] - ma) * (b[i] - mb); va += (a[i] - ma) ** 2; vb += (b[i] - mb) ** 2; }
+  return va && vb ? cov / Math.sqrt(va * vb) : null;
+}
+function leitura(r, n) {
+  if (r == null) return "precisa de pelo menos 5 vídeos com nota e métrica (hoje: " + n + ").";
+  const forca = Math.abs(r) < 0.2 ? "praticamente nenhuma relação" : Math.abs(r) < 0.4 ? "relação fraca"
+    : Math.abs(r) < 0.6 ? "relação moderada" : "relação forte";
+  const sentido = Math.abs(r) < 0.2 ? "" : r > 0 ? " — nota maior, número maior" : " — nota maior, número MENOR (ao contrário)";
+  return "correlação <b>" + num2(r) + "</b> em " + n + " vídeos: " + forca + sentido + "."
+    + (n < 12 && Math.abs(r) >= 0.2 ? " Com tão poucos vídeos isso ainda pode ser acaso." : "");
+}
+
+function pontosNotas() {
+  return (notasJev.pontos || []).filter((p) => escopoNotas === "todos" || p.canal === canalDesempenho);
+}
+function pares(pontos, nota, metrica) {
+  const limite = Date.now() - IDADE_MINIMA_VIEWS_DIAS * 86400000;
+  return pontos.filter((p) => p[nota] != null && p[metrica] != null
+      && (metrica !== "views" || new Date(p.publicado_em) <= limite))
+    .map((p) => [p[nota], p[metrica], p]);
+}
+
+function desenharNotas() {
+  const alvo = el("d-notas");
+  if (!alvo) return;
+  const todos = notasJev.pontos || [];
+  const doCanal = todos.filter((p) => p.canal === canalDesempenho);
+  const pontos = pontosNotas();
+  const semAnalytics = pontos.filter((p) => p.retencao_3s == null).length;
+  const cabecalho = '<div class="barra-topo"><h2 style="margin:0">Notas do JEV × desempenho</h2>'
+    + '<div class="acoes"><select id="d-escopo" style="width:auto">'
+    + '<option value="canal"' + (escopoNotas === "canal" ? " selected" : "") + ">Só este canal (" + doCanal.length + " vídeos)</option>"
+    + '<option value="todos"' + (escopoNotas === "todos" ? " selected" : "") + ">Todos os canais (" + todos.length + " vídeos)</option>"
+    + "</select></div></div>";
+  const rodape = '<p class="fraco" style="font-size:13px;margin:10px 0 0">Só entram cortes que vieram do Estúdio '
+    + "(ligados ao vídeo pelo título). Views só contam depois de " + IDADE_MINIMA_VIEWS_DIAS + " dia no ar; "
+    + "retenção, assistido e inscritos aparecem 2 a 3 dias depois de publicar (atraso do YouTube Analytics). "
+    + (semAnalytics ? semAnalytics + " vídeo(s) com nota ainda esperando essas métricas. " : "")
+    + "A nota final é a do ranking da Fase 1 (desde 29/09: viral + abertura do JEV + duração + ritmo; antes: viral + ritmo + coerência do LLM). "
+    + (notasJev.cortes_com_nota != null ? notasJev.cortes_com_nota + " corte(s) com nota conhecidos. " : "")
+    + (notasJev.aviso ? '<span style="color:var(--aviso)">' + escapar(notasJev.aviso) + "</span>" : "") + "</p>";
+  if (!pontos.length) {
+    alvo.innerHTML = cabecalho + '<p class="fraco">Nenhum vídeo ' + (escopoNotas === "canal" ? "deste canal " : "")
+      + "com nota do JEV publicado ainda.</p>" + rodape;
+    ligarNotas();
+    return;
+  }
+  // Matriz: cada nota × cada métrica. Fundo azul = relação a favor, vermelho = contra.
+  const matriz = '<div class="rolagem" style="margin-top:10px"><table style="width:auto;min-width:100%">'
+    + "<thead><tr><th></th>" + Object.values(METRICAS).map((m) => '<th class="num">' + m.nome + "</th>").join("") + "</tr></thead><tbody>"
+    + Object.entries(NOTAS).map(([chaveNota, nomeNota]) => "<tr><td>" + nomeNota + "</td>"
+      + Object.entries(METRICAS).map(([chaveMetrica, m]) => {
+        const pp = pares(pontos, chaveNota, chaveMetrica);
+        const r = spearman(pp);
+        const escolhido = chaveNota === eixoNota && chaveMetrica === eixoMetrica;
+        const fundo = r == null ? "transparent" : (r >= 0 ? "rgba(79,140,255," : "rgba(255,107,107,")
+          + (Math.min(1, Math.abs(r)) * 0.55).toFixed(2) + ")";
+        return '<td class="num" data-par="' + chaveNota + "|" + chaveMetrica + '" style="cursor:pointer;background:' + fundo
+          + (escolhido ? ";outline:2px solid var(--texto);outline-offset:-2px" : "") + '" data-dica="'
+          + escapar(nomeNota + " × " + m.nome + "\n" + (r == null ? "poucos vídeos (" + pp.length + ")" : "r = " + num2(r) + " em " + pp.length + " vídeos")
+            + "\nClique para ver o gráfico") + '">' + (r == null ? '<span class="fraco">n=' + pp.length + "</span>" : num2(r)) + "</td>";
+      }).join("") + "</tr>").join("") + "</tbody></table></div>";
+  const pp = pares(pontos, eixoNota, eixoMetrica);
+  const r = spearman(pp);
+  alvo.innerHTML = cabecalho + matriz
+    + '<p style="margin:12px 0 6px"><b>' + NOTAS[eixoNota] + " × " + METRICAS[eixoMetrica].nome + ":</b> " + leitura(r, pp.length) + "</p>"
+    + '<div id="d-dispersao"></div>' + rodape;
+  desenharDispersao(pp);
+  ligarNotas();
+}
+
+function desenharDispersao(pp) {
+  const alvo = el("d-dispersao");
+  if (!alvo || !pp.length) { if (alvo) alvo.innerHTML = ""; return; }
+  const metrica = METRICAS[eixoMetrica];
+  const largura = Math.max(300, alvo.clientWidth || 700), altura = 240;
+  const m = {esq: 52, dir: 12, topo: 10, base: 34};
+  const w = largura - m.esq - m.dir, h = altura - m.topo - m.base;
+  const xs = pp.map((p) => p[0]);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs);
+  if (x1 - x0 < 1e-9) { x0 -= 0.5; x1 += 0.5; }
+  const folga = (x1 - x0) * 0.06; x0 -= folga; x1 += folga;
+  const ty = metrica.log ? (v) => Math.log10(Math.max(1, v)) : (v) => v;
+  const ys = pp.map((p) => ty(p[1]));
+  let y0 = metrica.log ? 0 : Math.min(0, ...ys), y1 = Math.max(...ys);
+  if (metrica.log) y1 = Math.ceil(y1 || 1);
+  if (y1 - y0 < 1e-9) y1 = y0 + 1;
+  const X = (v) => m.esq + (v - x0) / (x1 - x0) * w, Y = (v) => m.topo + h - (v - y0) / (y1 - y0) * h;
+  let svg = '<svg width="' + largura + '" height="' + altura + '" role="img" aria-label="Dispersão nota × métrica">';
+  const marcas = metrica.log ? Array.from({length: y1 + 1}, (_, i) => i) : [y0, (y0 + y1) / 2, y1];
+  for (const v of marcas) {
+    const rotulo = metrica.log ? fmt(10 ** v) : metrica.fmt(v);
+    svg += '<line x1="' + m.esq + '" x2="' + (largura - m.dir) + '" y1="' + Y(v) + '" y2="' + Y(v) + '" stroke="var(--linha)"/>'
+      + '<text x="' + (m.esq - 6) + '" y="' + Y(v) + '" dy="4" text-anchor="end" font-size="11" fill="var(--fraco)">' + rotulo + "</text>";
+  }
+  for (const v of [x0 + folga, (x0 + x1) / 2, x1 - folga]) {
+    svg += '<text x="' + X(v) + '" y="' + (altura - 16) + '" text-anchor="middle" font-size="11" fill="var(--fraco)">' + num2(v) + "</text>";
+  }
+  svg += '<text x="' + (m.esq + w / 2) + '" y="' + (altura - 2) + '" text-anchor="middle" font-size="11" fill="var(--fraco)">'
+    + NOTAS[eixoNota] + (metrica.log ? " · eixo das views em escala log" : "") + "</text>";
+  for (const [nx, my, p] of pp) {
+    const dica = p.titulo + "\n" + NOTAS[eixoNota] + ": " + num2(nx) + " · " + metrica.nome + ": " + metrica.fmt(my)
+      + (escopoNotas === "todos" ? "\nCanal: " + p.canal : "") + (p.formato ? " · " + p.formato : "");
+    svg += '<circle cx="' + X(nx).toFixed(1) + '" cy="' + Y(ty(my)).toFixed(1) + '" r="5" fill="var(--destaque)" fill-opacity=".85"'
+      + ' stroke="var(--caixa)" stroke-width="2" data-dica="' + escapar(dica) + '"/>';
+  }
+  alvo.innerHTML = svg + "</svg>";
+}
+
+function ligarNotas() {
+  const escopo = el("d-escopo");
+  if (escopo) escopo.onchange = () => { escopoNotas = escopo.value; escopo.blur(); desenharNotas(); };
+  const alvo = el("d-notas");
+  if (alvo) alvo.onclick = (evento) => {
+    const celula = evento.target.closest("[data-par]");
+    if (!celula) return;
+    [eixoNota, eixoMetrica] = celula.dataset.par.split("|");
+    desenharNotas();
+  };
+}
+
+const COLUNAS_VIDEOS = [
+  {campo: "titulo", nome: "Vídeo"},
+  {campo: "views", nome: "Views", num: true, dica: "Contagem do YouTube, quase em tempo real"},
+  {campo: "views_engajadas", nome: "Engajadas", num: true, dica: "Views engajadas (Analytics, atrasa 2–3 dias)"},
+  {campo: "media_percentual", nome: "Assistido", num: true, dica: "Porcentagem média do vídeo vista por pessoa"},
+  {campo: "retencao_3s", nome: "Aos 3 s", num: true, dica: "Fração do público ainda assistindo no 3º segundo"},
+  {campo: "retencao_fim", nome: "Retenção", dica: "Curva de retenção (passe o mouse)"},
+  {campo: "nota_jev", nome: "JEV", num: true, dica: "Nota final do corte na Fase 1 (passe o mouse no número para ver as partes)"},
+  {campo: "likes", nome: "Curtidas", num: true},
+  {campo: "inscritos_ganhos", nome: "Inscritos", num: true, dica: "Inscritos ganhos por este vídeo"},
+];
+
+function desenharTabelaVideos() {
+  const tabela = el("d-tabela");
+  if (!tabela) return;
+  let videos = dadosCanal.dados.videos.slice();
+  if (soPublicador) videos = videos.filter((v) => v.via_publicador);
+  const {campo, desc} = ordemVideos;
+  videos.sort((a, b) => {
+    const va = a[campo], vb = b[campo];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    const comp = typeof va === "string" ? va.localeCompare(vb) : va - vb;
+    return desc ? -comp : comp;
+  });
+  const seta = (c) => c === campo ? (desc ? " ↓" : " ↑") : "";
+  tabela.innerHTML = "<thead><tr>" + COLUNAS_VIDEOS.map((c) => '<th data-ordem="' + c.campo + '"'
+      + (c.num ? ' class="num"' : "") + (c.dica ? ' data-dica="' + escapar(c.dica) + '"' : "") + ">"
+      + escapar(c.nome) + seta(c.campo) + "</th>").join("") + "</tr></thead><tbody>"
+    + (videos.length ? videos.map((v) => {
+      const link = "https://youtube.com/" + (v.duracao_s && v.duracao_s <= 180 ? "shorts/" : "watch?v=") + v.id;
+      const selos = (v.via_publicador ? ' <span class="selo">fila</span>' : "")
+        + (v.privacidade && v.privacidade !== "public" ? ' <span class="selo">' + escapar(v.privacidade === "unlisted" ? "não listado" : "privado") + "</span>" : "");
+      return "<tr>"
+        + '<td><div style="display:flex;gap:10px;align-items:center;min-width:260px">'
+        + (v.miniatura ? '<img src="' + escapar(v.miniatura) + '" alt="" width="64" height="48" loading="lazy" style="border-radius:5px;object-fit:cover;flex:none">' : "")
+        + '<div><a href="' + link + '" target="_blank" rel="noopener">' + escapar(v.titulo) + "</a>" + selos
+        + '<div class="fraco" style="font-size:12px" data-dica="' + escapar(fmtData(v.publicado_em)) + '">'
+        + diasAtras(v.publicado_em) + " · " + Math.round(v.duracao_s) + " s</div></div></div></td>"
+        + '<td class="num">' + fmt(v.views) + "</td>"
+        + '<td class="num">' + fmt(v.views_engajadas) + "</td>"
+        + '<td class="num"' + (v.media_visualizacao_s != null ? ' data-dica="' + escapar(Math.round(v.media_visualizacao_s) + " s de " + Math.round(v.duracao_s) + " s, em média") + '"' : "") + ">"
+        + (v.media_percentual != null ? Math.round(v.media_percentual) + "%" : "—") + "</td>"
+        + '<td class="num">' + fmtPct(v.retencao_3s) + "</td>"
+        + "<td>" + curvaRetencao(v) + "</td>"
+        + '<td class="num"' + (v.jev ? ' data-dica="' + escapar(dicaJev(v.jev)) + '"' : "") + ">"
+        + (v.nota_jev != null ? v.nota_jev.toFixed(2).replace(".", ",") : "—") + "</td>"
+        + '<td class="num">' + fmt(v.likes) + "</td>"
+        + '<td class="num">' + fmt(v.inscritos_ganhos) + "</td></tr>";
+    }).join("") : '<tr><td colspan="9" class="fraco">Nenhum vídeo com esse filtro.</td></tr>')
+    + "</tbody>";
+}
+
+function ligarBotoesDesempenho() {
+  const canal = canalDesempenho;
+  const botaoConectar = el("d-conectar");
+  if (botaoConectar) botaoConectar.onclick = async () => {
+    botaoConectar.disabled = true;
+    el("d-recado-login").innerHTML = '<div class="recado">Pedindo para abrir o navegador na tela remota…</div>';
+    try {
+      await pedir("/api/desempenho/" + encodeURIComponent(canal) + "/conectar", {cliente: el("d-cliente").value});
+      await atualizarDesempenho(true);
+    } catch (erro) {
+      botaoConectar.disabled = false;
+      el("d-recado-login").innerHTML = '<div class="recado erro">' + escapar(erro.message) + "</div>";
+    }
+  };
+  const botaoAtualizar = el("d-atualizar");
+  if (botaoAtualizar) botaoAtualizar.onclick = async () => {
+    botaoAtualizar.disabled = true;
+    try { await pedir("/api/desempenho/" + encodeURIComponent(canal) + "/atualizar"); }
+    catch (erro) { alert(erro.message); }
+    await atualizarDesempenho(true);
+  };
+  const botaoSair = el("d-desconectar");
+  if (botaoSair) botaoSair.onclick = async () => {
+    if (!confirm("Apagar a autorização de leitura deste canal? Os números já lidos continuam na tela.")) return;
+    await pedir("/api/desempenho/" + encodeURIComponent(canal) + "/desconectar");
+    await atualizarDesempenho(true);
+  };
+  const filtro = el("d-so-publicador");
+  if (filtro) filtro.onchange = () => { soPublicador = filtro.checked; desenharTabelaVideos(); };
+  const tabela = el("d-tabela");
+  if (tabela) tabela.onclick = (evento) => {
+    const th = evento.target.closest("th[data-ordem]");
+    if (!th) return;
+    const campo = th.dataset.ordem;
+    ordemVideos = {campo, desc: ordemVideos.campo === campo ? !ordemVideos.desc : campo !== "titulo"};
+    desenharTabelaVideos();
+  };
+}
+
+addEventListener("resize", () => {
+  if (abaAtual === "desempenho" && dadosCanal && dadosCanal.dados && dadosCanal.dados.dias) {
+    desenharGraficoDias(dadosCanal.dados.dias);
+  }
+});
+
 atualizar();
+mostrarAba(location.hash === "#desempenho" ? "desempenho" : "fila");
 setInterval(() => atualizar().catch(() => semConexao(true)), 7000);
+setInterval(() => { if (abaAtual === "desempenho") atualizarDesempenho(false); }, 7000);
 </script>
 </body>
 </html>

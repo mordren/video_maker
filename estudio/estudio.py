@@ -853,6 +853,77 @@ def ver_log():
     return jsonify({"linhas": linhas[-500:]})
 
 
+_LOG_ENVIO = re.compile(r"\[(?P<tid>[\w-]+)\] \w+: 📤 (?P<cid>\S+) foi para a fila do Publicador "
+                        r"\((?P<canal>[^)]*)\): (?P<arquivo>.+)$")
+_LOG_RANKING = re.compile(r"\[(?P<tid>[\w-]+)\] .*#\d+ (?P<cid>bloco_\d+)\s+\S+\s+viral (?P<viral>[\d.]+)"
+                          r"\s+nota (?P<nota>[\d.]+)")
+
+
+@app.get("/api/notas")
+def notas_dos_cortes():
+    """As notas do JEV/Fase 1 de cada corte que foi para o Publicador — para a
+    aba Desempenho de lá cruzar com as métricas do YouTube. O vínculo com o
+    vídeo publicado é o nome do arquivo (o Publicador usa como título).
+
+    Fonte principal: trabalhos.json + fase1/blocos_finais.json (nota completa).
+    Complemento: o estudio.log (e os girados), para cortes de trabalhos já
+    removidos da lista — ali só sobram a nota final e a viral do ranking.
+    """
+    def _blocos(tid: str) -> dict:
+        caminho = _pasta(tid) / "fase1" / "blocos_finais.json"
+        try:
+            return {b["id"]: b for b in json.loads(caminho.read_text(encoding="utf-8")).get("blocos") or []}
+        except (OSError, ValueError):
+            return {}
+
+    def _nota(bloco: dict) -> dict:
+        return {"nota_final": bloco.get("nota_final"), "viral": bloco.get("score_viral"),
+                "ritmo": bloco.get("qualidade_interna"), "llm": bloco.get("nota_llm"),
+                "precisa_melhora": bloco.get("precisa_melhora")}
+
+    cortes: dict[tuple[str, str], dict] = {}
+    for t in carregar_trabalhos():
+        blocos = _blocos(t["id"])
+        for c in t.get("cortes", []):
+            if not c.get("arquivo_publicador"):
+                continue
+            cortes[(t["id"], c["id"])] = {
+                "trabalho": t["id"], "corte": c["id"], "canal": c.get("canal"),
+                "arquivo": c["arquivo_publicador"], "enviado_em": c.get("enviado_em"),
+                "gancho": c.get("gancho"), "formato": c.get("formato"), "csv": c.get("csv"),
+                "duracao": c.get("duracao"), "video_origem": t.get("titulo_video"),
+                "url_origem": t.get("url"), "fonte": "trabalho",
+                **({"nota_final": c.get("nota")} | {k: v for k, v in _nota(blocos.get(c["id"], {})).items()
+                                                     if v is not None})}
+
+    ranking: dict[tuple[str, str], dict] = {}
+    envios: list[dict] = []
+    for caminho in sorted(LOG_PATH.parent.glob(LOG_PATH.name + "*"), reverse=True):
+        try:
+            texto = caminho.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for linha in texto.splitlines():
+            if "📤" in linha:
+                m = _LOG_ENVIO.search(linha)
+                if m:
+                    envios.append({**m.groupdict(), "enviado_em": linha[:19].replace(" ", "T")})
+            elif " viral " in linha:
+                m = _LOG_RANKING.search(linha)
+                if m:
+                    ranking[(m["tid"], m["cid"])] = {"viral": float(m["viral"]), "nota_final": float(m["nota"])}
+    for e in envios:
+        chave = (e["tid"], e["cid"])
+        if chave in cortes:
+            continue
+        bloco = _blocos(e["tid"]).get(e["cid"])
+        nota = _nota(bloco) if bloco else ranking.get(chave, {})
+        cortes[chave] = {"trabalho": e["tid"], "corte": e["cid"], "canal": e["canal"],
+                         "arquivo": e["arquivo"].strip(), "enviado_em": e["enviado_em"],
+                         "fonte": "log", **nota}
+    return jsonify({"cortes": list(cortes.values())})
+
+
 @app.get("/previa/<tid>/<cid>")
 def previa(tid: str, cid: str):
     """O 16:9 da proposta (Fase 2), para assistir antes de mandar produzir."""
