@@ -430,6 +430,16 @@ def _json_narrativa(h: dict) -> str:
 
 # ---------------------------------------------------------------- ganchos
 
+def dica_modo(projeto: dict, canal: dict) -> str:
+    """Canais com modos narrativos recebem um por vídeo, em rodízio, para não repetir o padrão de um vídeo para o outro."""
+    modos = canal["config"].get("modos_narrativos") or []
+    if not modos:
+        return ""
+    m = modos[projeto["id"] % len(modos)]
+    return (f"\n\nModo narrativo sugerido para este vídeo: {m['nome']} ({m['regra']}). Siga-o do começo ao fim; "
+            "troque só se o assunto já indicar outro modo claramente.")
+
+
 def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
     perguntas = canais.perguntas_do_canal(canal["config"])
     base = perguntas["gancho"]
@@ -447,11 +457,11 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
             {"role": "system", "content": sistema_escrita(canal)},
             {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\nEscreva 5 ganchos diferentes para abrir essa história. "
              "O gancho é a primeira frase da narração: curta, que faz quem está rolando o feed parar nos 3 primeiros "
-             "segundos (siga o tamanho que as regras do canal pedirem). Cada um com uma abordagem diferente "
-             f"(situação estranha, pergunta implícita, fato concreto, contradição).{hist}\n\nResponda com {{\"ganchos\": [5 textos]}}."},
+             "segundos, de até 15 palavras, sem explicar nada. Cada um com uma abordagem diferente "
+             f"(situação estranha, pergunta implícita, fato concreto, contradição).{dica_modo(projeto, canal)}{hist}\n\nResponda com {{\"ganchos\": [5 textos]}}."},
         ]
         resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="gancho",
-                                temperatura=1.0, max_tokens=1200, contexto={"assunto": projeto["assunto"]},
+                                temperatura=1.0, max_tokens=4000, contexto={"assunto": projeto["assunto"]},
                                 modelo=config.MODELO_GANCHO,
                                 preco=(config.PRECO_GANCHO_ENTRADA, config.PRECO_GANCHO_SAIDA))
         ganchos = [g.strip() for g in resp.get("ganchos", []) if g.strip()][:5]
@@ -484,7 +494,7 @@ def escrever(projeto: dict, canal: dict, gancho: str) -> dict:
     msgs = [
         {"role": "system", "content": sistema_escrita(canal)},
         {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\nA narração começa exatamente com este gancho, "
-                                    f"não mude: \"{gancho}\"\n\nEscreva a história completa em JSON."},
+                                    f"não mude: \"{gancho}\"{dica_modo(projeto, canal)}\n\nEscreva a história completa em JSON."},
     ]
     h, _ = clientes.chat("narrativa", msgs, SCHEMA_NARRATIVA, projeto_id=projeto["id"], etapa="historia",
                          contexto={"assunto": projeto["assunto"], "gancho": gancho})
@@ -503,6 +513,7 @@ def reescrever(projeto: dict, canal: dict, h: dict, problemas: list[str], avalia
             itens.append(f"- \"{v['pergunta']}\" recebeu {nota}; precisa de {corte}")
             gancho_livre = gancho_livre or k == "gancho"
     trava = "" if gancho_livre else f"\nMantenha a primeira frase exatamente igual: \"{h['gancho']}\"."
+    trava += dica_modo(projeto, canal)
     msgs = [
         {"role": "system", "content": sistema_escrita(canal)},
         {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\nVersão atual:\n{_json_narrativa(h)}\n\n"

@@ -107,6 +107,7 @@ CONFIG_PADRAO = {
     # Desligado: cada vídeo cria personagens e ambientes novos (tudo vai para a biblioteca mesmo assim).
     # Ligado: reaproveita ficha/placa com o mesmo id, descrição parecida e o MESMO estilo visual.
     "reaproveitar_biblioteca": False,
+    "modos_narrativos": [],  # [{"nome", "regra"}]: um por vídeo, em rodízio (ver historia.dica_modo)
     "publicador_canal": "",  # nome do canal no Publicador (ex.: garras)
     "sugestoes_trilha": [],
 }
@@ -142,6 +143,93 @@ TERROR_GARRAS = {
         "estilo": copy.deepcopy(ESTILOS["nanquim"]),
         "voz": {"provedor": "qwen", "modelo": "qwen/qwen-audio-3.0-tts-flash", "nome": "loongjohn", "taxa": "-4%", "tom": "+0Hz",
                 "instrucoes": "voz grave e calma de quem conta uma história de terror em voz baixa, ritmo lento, clima de suspense",
+                "instrucoes_tensao_alta": "mais tenso e baixo, quase sussurrando", "pausa_entre_cenas_s": 0.3},
+        "musica": {"volume_solo_db": -6.0, "volume_sob_voz_db": -21.0, "intro_s": 1.5, "cauda_s": 3.0,
+                   "rampa_s": 0.35, "humor": "suspense sombrio, drone grave, sem batida marcada"},
+        "sugestoes_trilha": [],
+    },
+}
+
+
+MODOS_TERROR = [
+    {"nome": "Confissão", "regra": "alguém relata algo que aconteceu consigo; 1ª pessoa, tom íntimo, como quem fala baixo"},
+    {"nome": "Relato encontrado", "regra": "a narração lê um áudio, gravação, laudo, bilhete ou mensagem achado por alguém; "
+     "o formato do documento aparece no próprio texto lido"},
+    {"nome": "Terror cotidiano", "regra": "começa banal, numa situação comum; o absurdo entra sem alarde"},
+    {"nome": "Horror psicológico", "regra": "o medo nasce da percepção e da dúvida; nada é confirmado, "
+     "o ouvinte duvida do narrador"},
+    {"nome": "Sobrenatural", "regra": "presenças e fatos que desafiam a realidade, com regras próprias e consistentes "
+     "(o que a coisa pode e não pode fazer)"},
+    {"nome": "Horror cósmico", "regra": "a descoberta de algo incompreensível sobre a existência; escala humana contra "
+     "algo indiferente, e a linguagem do narrador falha"},
+    {"nome": "Final retroativo", "regra": "a última frase muda o sentido de tudo; a pista é plantada cedo, sem destaque"},
+    {"nome": "Terror silencioso", "regra": "narração enxuta, com pausas; o medo vem do que se vê e se ouve "
+     "(olhar, som, objeto, ausência), não do que se explica"},
+]
+
+GARRAS_NOVO = {
+    "nome": "Garras Novo",
+    "idioma": "pt-BR",
+    "formato": "short",
+    "descricao": "Terror curto e atmosférico em qualquer época e lugar: cidade, estrada, prédio, floresta, castelo, "
+                 "aldeia medieval. Fantasmas, aparições, gente que não devia estar ali, assassinos, maldições. "
+                 "Gancho imediato, tensão crescente e final perturbador, em um dos oito modos narrativos do canal.",
+    "config": {
+        "regras_escrita": [
+            "Escolha UM modo narrativo e o respeite do começo ao fim, sem misturar. O vídeo recebe um modo sugerido, "
+            "para o canal variar; troque só se o assunto já indicar outro claramente.",
+            "O assunto pode trazer preferências (medo a ativar, quem conta e como, tipo de final, tom, época, objeto "
+            "obrigatório ou proibido). Use o que vier. O que faltar, decida sem perguntar: medo de ser observado, "
+            "vítima em 1ª pessoa, final em corte seco.",
+            "Gancho na primeira frase, de até 15 palavras: situação estranha ou detalhe impossível, sem explicar.",
+            "Crie tensão antes de revelar qualquer coisa; imagens sensoriais (som, cheiro, luz, temperatura).",
+            "Uma reviravolta ou um detalhe impossível no terço final, plantado antes sem destaque.",
+            "Final ambíguo, incômodo ou macabro. Não explique tudo: o medo mora no que falta.",
+            "Vocabulário, objetos e cenário da época e do lugar do assunto (celular e semáforo na cidade, tocha e "
+            "taverna na Idade Média), sem trazer o clima de outro cenário.",
+            "Nada de clichê (\"era só um sonho\", espelho que mostra outra pessoa, criança que canta). Nada de gore "
+            "gratuito: prefira o terror psicológico e atmosférico.",
+            "Não repita a estrutura \"ouvi passos, vi uma figura, era algo no final\" sem que o tema peça.",
+            "Frases de tamanhos variados, com ritmo crescente; a frase curta vale como golpe isolado, nunca em fileira.",
+            "Texto dentro da imagem só quando for essencial.",
+        ],
+        "modos_narrativos": MODOS_TERROR,
+        "estrutura": ["gancho", "contexto", "tensao", "reviravolta", "fecho"],
+        "max_personagens": 2,
+        "max_ambientes": 4,
+        "juiz": {"perguntas": {
+            "gancho": {"tipo": "score", "corte": 8, "trava": False,
+                       "pergunta": "Quem está rolando o feed para nos 3 primeiros segundos com esse gancho? Ele traz uma "
+                                   "situação estranha ou um detalhe impossível, sem explicar, em poucas palavras?"},
+            "modo_respeitado": {"tipo": "noul", "corte": 0.80, "trava": False,
+                                "pergunta": "A história segue um único modo narrativo (confissão, relato encontrado, terror "
+                                            "cotidiano, horror psicológico, sobrenatural, horror cósmico, final retroativo "
+                                            "ou terror silencioso) do começo ao fim, sem misturar?"},
+            "medo_especifico": {"tipo": "score", "corte": 7, "trava": False,
+                                "pergunta": "A história ativa um medo específico e reconhecível (ser observado, perder o "
+                                            "controle, ser esquecido, estar errado sobre algo), e não só sustos soltos?"},
+            "tensao_antes_da_revelacao": {"tipo": "score", "corte": 7, "trava": False,
+                                          "pergunta": "A tensão cresce antes de qualquer revelação, com imagens sensoriais "
+                                                      "concretas em vez de adjetivos de medo?"},
+            "reviravolta_plantada": {"tipo": "score", "corte": 7, "trava": False,
+                                     "pergunta": "A reviravolta ou o detalhe impossível tem uma pista plantada antes, sem "
+                                                 "destaque, e muda o sentido de algo já mostrado?"},
+            "final_incomodo": {"tipo": "score", "corte": 7, "trava": False,
+                               "pergunta": "O final é ambíguo, incômodo ou macabro e deixa algo sem explicar, em vez de "
+                                           "fechar tudo com uma explicação?"},
+            "sem_cliche": {"tipo": "noul", "corte": 0.80, "trava": False,
+                           "pergunta": "A história evita clichês (era só um sonho, espelho com outra pessoa, criança "
+                                       "cantando, passos e figura no final) e gore gratuito?"},
+            "regra_sobrenatural": {"tipo": "noul", "corte": 0.80, "trava": False,
+                                   "pergunta": "O que é sobrenatural ou impossível segue uma regra própria e consistente "
+                                               "(o que a coisa pode e não pode fazer), sem mudar no meio?"},
+            "epoca_e_lugar": {"tipo": "noul", "corte": 0.85, "trava": False,
+                              "pergunta": "Objetos, vocabulário e cenário combinam com a época e o lugar do assunto?"},
+        }},
+        "estilo": copy.deepcopy(ESTILOS["nanquim"]),
+        "voz": {"provedor": "qwen", "modelo": "qwen/qwen-audio-3.0-tts-flash", "nome": "loongjohn", "taxa": "-4%", "tom": "+0Hz",
+                "instrucoes": "voz grave e contida de quem conta uma história de terror em voz baixa, ritmo lento, "
+                              "pausas antes das revelações, clima de suspense",
                 "instrucoes_tensao_alta": "mais tenso e baixo, quase sussurrando", "pausa_entre_cenas_s": 0.3},
         "musica": {"volume_solo_db": -6.0, "volume_sob_voz_db": -21.0, "intro_s": 1.5, "cauda_s": 3.0,
                    "rampa_s": 0.35, "humor": "suspense sombrio, drone grave, sem batida marcada"},
@@ -216,6 +304,8 @@ def salvar(dados: dict, canal_id: int | None = None) -> int:
 def semear():
     if not db.um("SELECT id FROM canais LIMIT 1"):
         salvar(TERROR_GARRAS)
+    if not db.um("SELECT id FROM canais WHERE slug = ?", (slugify(GARRAS_NOVO["nome"]),)):
+        salvar(GARRAS_NOVO)
     migrar_voz_qwen()
 
 

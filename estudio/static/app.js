@@ -614,6 +614,7 @@ async function telaCanal(id) {
     return {
       nome: $('#cNome').value.trim(), idioma: $('#cIdioma').value, formato: $('#cFormato').value, descricao: $('#cDesc').value.trim(),
       config: {
+        ...cfg,  // mantém o que a tela não edita (ex.: modos_narrativos)
         regras_escrita: $('#cRegras').value.split('\n').map(s => s.trim()).filter(Boolean),
         estrutura: $('#cEstrutura').value.split(',').map(s => s.trim()).filter(Boolean),
         max_personagens: +$('#cMaxP').value, max_ambientes: +$('#cMaxA').value,
