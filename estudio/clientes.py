@@ -67,15 +67,19 @@ def extrair_json(txt: str):
 # ---------------------------------------------------------------- texto
 
 def chat(tarefa: str, mensagens: list[dict], schema: dict | None = None, *, projeto_id=None, etapa="texto",
-         temperatura: float = 0.8, max_tokens: int = 6000, contexto: dict | None = None):
-    """Devolve (resposta, custo_usd). Com schema, a resposta já vem como dict."""
+         temperatura: float = 0.8, max_tokens: int = 6000, contexto: dict | None = None,
+         modelo: str | None = None, preco: tuple[float, float] | None = None):
+    """Devolve (resposta, custo_usd). Com schema, a resposta já vem como dict.
+    modelo: troca o MODELO_TEXTO nesta chamada; preco: (entrada, saída) por token, se a API não devolver o custo."""
+    modelo = modelo or config.MODELO_TEXTO
+    preco = preco or (config.PRECO_TEXTO_ENTRADA, config.PRECO_TEXTO_SAIDA)
     if config.SIMULACAO:
         resp = simulacao.chat(tarefa, mensagens, contexto or {})
-        custos.registrar(projeto_id, etapa, "simulacao", config.MODELO_TEXTO, 0.0, True, tarefa)
+        custos.registrar(projeto_id, etapa, "simulacao", modelo, 0.0, True, tarefa)
         return resp, 0.0
 
     corpo = {
-        "model": config.MODELO_TEXTO,
+        "model": modelo,
         "messages": mensagens,
         "temperature": temperatura,
         "max_tokens": max_tokens,
@@ -102,10 +106,9 @@ def chat(tarefa: str, mensagens: list[dict], schema: dict | None = None, *, proj
     custo = uso.get("cost")
     real = custo is not None
     if custo is None:
-        custo = (uso.get("prompt_tokens", 0) * config.PRECO_TEXTO_ENTRADA
-                 + uso.get("completion_tokens", 0) * config.PRECO_TEXTO_SAIDA)
+        custo = uso.get("prompt_tokens", 0) * preco[0] + uso.get("completion_tokens", 0) * preco[1]
     em_cache = (uso.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
-    custos.registrar(projeto_id, etapa, "openrouter", config.MODELO_TEXTO, custo, real,
+    custos.registrar(projeto_id, etapa, "openrouter", modelo, custo, real,
                      f"{tarefa} · {uso.get('prompt_tokens', '?')}+{uso.get('completion_tokens', '?')} tokens"
                      f"{f' ({em_cache} do cache)' if em_cache else ''}")
     conteudo = dados["choices"][0]["message"].get("content") or ""

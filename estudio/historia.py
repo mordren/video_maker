@@ -68,6 +68,7 @@ FOLGA_PALAVRAS = 0.05      # 5% para mais ou para menos no total
 FOLGA_PALAVRAS_CENA = 2    # palavras a mais por cena
 EST_TEXTO = 0.003   # estimativa por chamada de escrita antes de haver medição
 EST_JEV = 0.001
+EST_GANCHO = 0.015  # 5 ganchos com o Opus, antes de haver medição
 
 
 # ---------------------------------------------------------------- utilidades
@@ -293,9 +294,9 @@ def perguntas_narrativa(canal: dict) -> dict:
     return {k: v for k, v in canais.perguntas_do_canal(canal["config"]).items() if k not in PERGUNTAS_VISUAIS}
 
 
-def _media_custo(projeto_id, servico_modelo: str, padrao: float) -> float:
-    r = db.um("SELECT AVG(valor_usd) AS m FROM custos WHERE projeto_id = ? AND modelo = ? AND etapa = 'historia'",
-              (projeto_id, servico_modelo))
+def _media_custo(projeto_id, servico_modelo: str, padrao: float, etapa: str = "historia") -> float:
+    r = db.um("SELECT AVG(valor_usd) AS m FROM custos WHERE projeto_id = ? AND modelo = ? AND etapa = ?",
+              (projeto_id, servico_modelo, etapa))
     return float(r["m"]) if r and r["m"] else padrao
 
 
@@ -308,6 +309,12 @@ def _checar_teto(projeto: dict, estimativa):
     # Conta só o que esta execução do laço gastou: tentativas anteriores do mesmo projeto não comem o teto novo.
     custos.verificar(projeto["id"], "historia", estimativa, projeto.get("_teto_laco", config.LACO_TETO_USD),
                      "Laço da história", base=projeto.get("_base_laco", 0.0))
+
+
+def _checar_teto_gancho(projeto: dict, canal: dict, estimativa):
+    """Os ganchos (Opus) ficam de fora do teto do laço, que é de centavos; contam no orçamento do vídeo."""
+    custos.verificar(projeto["id"], None, estimativa, float(canal["config"].get("orcamento_usd") or 0.10),
+                     "Orçamento do vídeo (ganchos)")
 
 
 # ---------------------------------------------------------------- prompts
@@ -430,8 +437,8 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
     anteriores: list[dict] = []
     melhor = ("", -1.0)
     for rodada in range(1, config.GANCHO_MAX_RODADAS + 1):
-        _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, EST_TEXTO) +
-                     _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
+        _checar_teto_gancho(projeto, canal, _media_custo(projeto["id"], config.MODELO_GANCHO, EST_GANCHO, "gancho") +
+                            _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
         hist = ""
         if anteriores:
             hist = "\n\nGanchos anteriores e a nota que tiveram (0-10, corte " + f"{corte}" + "). Não repita; faça melhor:\n" + \
@@ -443,8 +450,10 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
              "segundos (siga o tamanho que as regras do canal pedirem). Cada um com uma abordagem diferente "
              f"(situação estranha, pergunta implícita, fato concreto, contradição).{hist}\n\nResponda com {{\"ganchos\": [5 textos]}}."},
         ]
-        resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="historia",
-                                temperatura=1.0, max_tokens=1200, contexto={"assunto": projeto["assunto"]})
+        resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="gancho",
+                                temperatura=1.0, max_tokens=1200, contexto={"assunto": projeto["assunto"]},
+                                modelo=config.MODELO_GANCHO,
+                                preco=(config.PRECO_GANCHO_ENTRADA, config.PRECO_GANCHO_SAIDA))
         ganchos = [g.strip() for g in resp.get("ganchos", []) if g.strip()][:5]
         if not ganchos:
             continue

@@ -33,6 +33,8 @@ API_TOKEN = os.getenv("ESTUDIO_API_TOKEN", "").strip()
 SIMULACAO = os.getenv("ESTUDIO_SIMULACAO", "0") == "1"
 
 MODELO_TEXTO = os.getenv("MODELO_TEXTO", "deepseek/deepseek-v4.1-flash")
+# Só os ganchos (a frase que abre o vídeo) saem deste modelo; o resto da história continua no MODELO_TEXTO.
+MODELO_GANCHO = os.getenv("MODELO_GANCHO", "anthropic/claude-opus-5.5")
 MODELO_JUIZ = os.getenv("MODELO_JUIZ", "typesafe/jev-1.13")
 MODELO_IMAGEM = os.getenv("MODELO_IMAGEM", "black-forest-labs/flux.2-klein-4b")
 
@@ -50,6 +52,8 @@ PRECO_IMAGEM_PADRAO = 0.005           # Klein, por imagem
 PRECO_JEV_TOKEN_ENTRADA = 0.00000004431  # Pollinations; OpenRouter costuma ser parecido
 PRECO_TEXTO_ENTRADA = 0.0000003
 PRECO_TEXTO_SAIDA = 0.0000012
+PRECO_GANCHO_ENTRADA = float(os.getenv("PRECO_GANCHO_ENTRADA", "0.000004"))   # Opus: US$ 4 por milhão
+PRECO_GANCHO_SAIDA = float(os.getenv("PRECO_GANCHO_SAIDA", "0.00002"))        # estimativa; o custo real vem da API
 
 # Laço da história (Etapa 2)
 LACO_TETO_USD = float(os.getenv("LACO_TETO_USD", "0.01"))

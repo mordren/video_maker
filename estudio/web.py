@@ -81,7 +81,7 @@ def status():
     return {
         "simulacao": config.SIMULACAO,
         "chaves": {"openrouter": bool(config.OPENROUTER_API_KEY), "pollinations": bool(config.POLLINATIONS_API_KEY)},
-        "modelos": {"texto": config.MODELO_TEXTO, "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
+        "modelos": {"texto": config.MODELO_TEXTO, "gancho": config.MODELO_GANCHO, "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
         "ffmpeg": shutil.which(config.FFMPEG) is not None or Path(config.FFMPEG).exists(),
         "humanizer": {"arquivo": str(config.HUMANIZER_SKILL), "existe": config.HUMANIZER_SKILL.exists(),
                       "vocabulario": len(revisao.vocabulario_ia())},
