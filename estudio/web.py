@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import canais, config, custos, db, efeitos, historia, montagem, narracao, pipeline, registro, relatorio, revisao, youtube
+from . import canais, config, custos, db, efeitos, historia, montagem, narracao, pipeline, publicador, registro, relatorio, revisao, youtube
 
 ESTATICOS = Path(__file__).parent / "static"
 INICIO = time.time()
@@ -253,7 +253,8 @@ def ver_projeto(pid: int):
     p["metricas"] = db.carregar_json(met["dados_json"]) if met else None
     canal = canais.obter(p["canal_id"])
     p["canal"] = {"id": canal["id"], "nome": canal["nome"], "slug": canal["slug"], "formato": canal["formato"],
-                  "trilhas": canal["trilhas"]}
+                  "trilhas": canal["trilhas"], "publicador_canal": (canal["config"].get("publicador_canal") or "")}
+    p["publicador"] = db.carregar_json(p.pop("publicador_json", None))
     return p
 
 
@@ -430,6 +431,18 @@ def log_atual():
     if not registro.ARQUIVO.exists():
         raise HTTPException(404, "ainda não há log")
     return FileResponse(registro.ARQUIVO, filename="estudio.log", media_type="text/plain; charset=utf-8")
+
+
+# ---------------------------------------------------------------- Publicador
+
+@app.post("/api/projetos/{pid}/publicador", dependencies=[api])
+def enviar_publicador(pid: int):
+    p = _projeto(pid)
+    canal = canais.obter(p["canal_id"])
+    try:
+        return publicador.enviar(p, canal)
+    except publicador.ErroPublicador as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------------------------------------------------------------- YouTube

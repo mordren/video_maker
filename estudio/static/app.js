@@ -349,11 +349,23 @@ function abaVideo(p) {
     : `<p class="small">O canal ainda não tem trilhas. O vídeo sai só com a narração. <a href="#/canal/${p.canal.id}">Adicionar trilhas no canal</a>.</p>`}
   </div>
   ${p.historia ? `<div class="panel"><h3 style="margin-top:0">Texto para o YouTube</h3><b>${esc(p.historia.titulo)}</b><p>${esc(p.historia.descricao_youtube || '')}</p></div>` : ''}
+  ${p.arquivos.video ? `<div class="panel"><h3 style="margin-top:0">Enviar ao Publicador</h3>
+    ${p.canal.publicador_canal ? `<div class="row"><button class="fix" id="vPub">${p.publicador ? 'Enviar de novo' : 'Enviar ao Publicador'}</button>
+      <span class="small">canal no publicador: <b>${esc(p.canal.publicador_canal)}</b></span></div>` :
+      `<p class="small">Defina o "canal no publicador" na <a href="#/canal/${p.canal.id}">tela do canal</a> antes de enviar.</p>`}
+    ${p.publicador ? `<div class="small" style="margin-top:6px">Enviado em ${esc((p.publicador.enviado_em || '').replace('T', ' '))} como "${esc(p.publicador.arquivo)}".</div>` : ''}
+  </div>` : ''}
   <div class="panel"><h3 style="margin-top:0">Publicado no YouTube</h3>
     <div class="row"><input type="text" id="vYt" placeholder="cole o link do Short depois de publicar" value="${p.youtube_id ? 'https://youtube.com/shorts/' + esc(p.youtube_id) : ''}">
       <button class="fix" id="vYtSalvar">Salvar link</button>${p.youtube_id ? '<button class="fix" id="vYtAtualizar">Atualizar métricas</button>' : ''}</div>
     ${p.metricas ? cartaoMetricas(p.metricas) : '<p class="small">As métricas aparecem aqui e na página Desempenho depois de ligar o vídeo e atualizar.</p>'}
   </div>`;
+  const pub = $('#vPub');
+  if (pub) pub.onclick = async () => {
+    if (p.publicador && !confirm('Este vídeo já foi enviado. Enviar de novo cria outro item na fila. Continuar?')) return;
+    pub.disabled = true; pub.textContent = 'Enviando...';
+    try { await acao(() => api(`/api/projetos/${p.id}/publicador`, {method: 'POST'}), 'Enviado ao publicador.'); } finally { telaProjeto(p.id); }
+  };
   const s = $('#vSalvarTrilha');
   if (s) s.onclick = () => acao(() => api(`/api/projetos/${p.id}/trilha`, {method: 'PUT', body: {arquivo: $('#vTrilha').value || null}}), 'Trilha salva.');
   $('#vYtSalvar').onclick = async () => {
@@ -498,6 +510,7 @@ async function telaCanal(id) {
       <label class="inline"><input type="checkbox" id="cHuman" ${cfg.humanizer ? 'checked' : ''}> passar o texto pelo humanizer-br (só português)</label>
       <div class="row"><div><label>Orçamento por vídeo (US$)</label><input type="number" step="0.01" id="cOrc" value="${cfg.orcamento_usd}"></div>
         <div><label>Teto do laço da história (US$)</label><input type="number" step="0.005" id="cTetoLaco" value="${cfg.teto_laco_usd ?? ''}" placeholder="${statusSis ? statusSis.teto_laco : '0.01'} (padrão)"></div></div>
+      <div class="row"><div><label>Canal no Publicador</label><input type="text" id="cPubCanal" value="${esc(cfg.publicador_canal || '')}" placeholder="ex.: garras"></div></div>
       <div class="small">O laço (ganchos, escrita, Jev e reescritas) para quando gasta o teto e fica com a melhor versão. O orçamento por vídeo inclui o laço, as imagens e a narração.</div>
     </div>
     <div class="panel"><h3 style="margin-top:0">Juiz (Jev)</h3>
@@ -605,7 +618,7 @@ async function telaCanal(id) {
         estrutura: $('#cEstrutura').value.split(',').map(s => s.trim()).filter(Boolean),
         max_personagens: +$('#cMaxP').value, max_ambientes: +$('#cMaxA').value,
         palavras_min: num($('#cPMin').value), palavras_max: num($('#cPMax').value),
-        humanizer: $('#cHuman').checked, orcamento_usd: +$('#cOrc').value, teto_laco_usd: num($('#cTetoLaco').value),
+        humanizer: $('#cHuman').checked, orcamento_usd: +$('#cOrc').value, publicador_canal: $('#cPubCanal').value.trim(), teto_laco_usd: num($('#cTetoLaco').value),
         juiz: {perguntas},
         estilo: {nome: $('#cEstiloNome').value, prefixo: $('#cEstiloPrefixo').value.trim(), sufixo: $('#cEstiloSufixo').value.trim()},
         reaproveitar_biblioteca: $('#cReaproveitar').checked,
