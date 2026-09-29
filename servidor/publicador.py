@@ -783,8 +783,17 @@ def estado():
 
 @app.post("/api/videos")
 def subir_videos():
-    """Recebe os arquivos do navegador, grava no HD e põe no fim da lista."""
+    """Recebe os arquivos (do navegador ou de uma chamada de API), grava no
+    HD e põe no fim da lista.
+
+    'titulo' é opcional e só vale quando esta chamada manda **um** arquivo só
+    — com vários, não haveria como saber qual título é de qual, então nesse
+    caso cada um sai com o nome do próprio arquivo (editável depois pela tela
+    ou com POST /api/itens/<id> {"titulo": "..."}, usando o id devolvido aqui
+    em 'itens').
+    """
     canal = (request.form.get("canal") or canal_padrao()).strip()
+    titulo_pedido = (request.form.get("titulo") or "").strip()[:100]
     arquivos = [a for a in request.files.getlist("arquivos") if a and a.filename]
     if not arquivos:
         return jsonify({"erro": "Nenhum arquivo escolhido."}), 400
@@ -802,13 +811,15 @@ def subir_videos():
         enviado.save(VIDEOS_DIR / nome)
         adicionados.append(nome)
 
+    titulo_unico = titulo_pedido if (titulo_pedido and len(adicionados) == 1) else ""
+    itens_novos = []
     with _TRAVA:
         fila = carregar_fila()
         for nome in adicionados:
-            fila["itens"].append({
+            item = {
                 "id": _novo_id(),
                 "arquivo": nome,
-                "titulo": Path(nome).stem,
+                "titulo": titulo_unico or Path(nome).stem,
                 "canal": canal,
                 "status": "aguardando",
                 "mensagem": "",
@@ -817,11 +828,13 @@ def subir_videos():
                 "tentativas": 0,
                 "tiktok_status": "",
                 "tiktok_mensagem": "",
-            })
+            }
+            fila["itens"].append(item)
+            itens_novos.append({"id": item["id"], "arquivo": nome, "titulo": item["titulo"]})
         salvar_fila(fila)
     for nome in adicionados:
         registrar(f"➕ {nome} entrou na fila (canal {canal or 'nenhum'}).")
-    resposta = {"adicionados": adicionados}
+    resposta = {"adicionados": adicionados, "itens": itens_novos}
     if recusados:
         resposta["erro"] = "Formato não aceito: " + ", ".join(recusados)
     return jsonify(resposta)
