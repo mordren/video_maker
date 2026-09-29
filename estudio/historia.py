@@ -26,8 +26,8 @@ ESCALA = ["péssimo: falha por completo", "fraco: funciona pouco", "mediano: fun
 MAX_NIVEIS_JEV = 10
 
 SCHEMA_GANCHOS = {
-    "type": "object", "additionalProperties": False, "required": ["ganchos"],
-    "properties": {"ganchos": {"type": "array", "items": {"type": "string"}}},
+    "type": "object", "additionalProperties": False, "required": ["modo", "ganchos"],
+    "properties": {"modo": {"type": "string"}, "ganchos": {"type": "array", "items": {"type": "string"}}},
 }
 
 SCHEMA_NARRATIVA = {
@@ -68,7 +68,6 @@ FOLGA_PALAVRAS = 0.05      # 5% para mais ou para menos no total
 FOLGA_PALAVRAS_CENA = 2    # palavras a mais por cena
 EST_TEXTO = 0.003   # estimativa por chamada de escrita antes de haver medição
 EST_JEV = 0.001
-EST_GANCHO = 0.01  # um gancho com o Opus
 
 
 # ---------------------------------------------------------------- utilidades
@@ -446,74 +445,38 @@ def _ultimo_modo(projeto: dict) -> str | None:
 
 
 def dica_modo(projeto: dict, canal: dict) -> str:
-    """Modo narrativo que o DeepSeek segue. Com gancho do Opus, é o modo que o Opus escolheu;
-    sem ele, um modo em rodízio, para o canal não repetir o padrão de um vídeo para o outro."""
+    """Modo narrativo escolhido junto com os ganchos; o roteirista segue esse modo na história e nas reescritas."""
     m = _modo(canal, projeto.get("modo"))
-    if m:
-        return f"\n\nModo narrativo deste vídeo: {m['nome']} ({m['regra']}). Siga-o do começo ao fim."
-    modos = canal["config"].get("modos_narrativos") or []
-    if not modos:
-        return ""
-    m = modos[projeto["id"] % len(modos)]
-    return (f"\n\nModo narrativo sugerido para este vídeo: {m['nome']} ({m['regra']}). Siga-o do começo ao fim; "
-            "troque só se o assunto já indicar outro modo claramente.")
+    return f"\n\nModo narrativo deste vídeo: {m['nome']} ({m['regra']}). Siga-o do começo ao fim." if m else ""
 
 
-def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None) -> list[dict]:
-    """O que vai para o Opus. Separado para a tela do canal mostrar o prompt exato."""
-    regras = "\n".join(f"- {r}" for r in canal["config"].get("regras_escrita", []))
+def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None, historico: str = "") -> list[dict]:
+    """Pedido dos 5 ganchos (e do modo narrativo). Separado para a tela do canal mostrar o prompt exato."""
     modos = canal["config"].get("modos_narrativos") or []
-    bloco_modo, formato = "", "Responda só com a frase."
+    bloco_modo, campo_modo = "", "\"modo\": \"\""
     if modos:
-        bloco_modo = ("\n\nModos narrativos do canal (escolha o que melhor serve ao assunto"
-                      f"{'; evite repetir ' + ultimo + ', usado no vídeo anterior, se outro servir' if ultimo else ''}):\n" +
-                      "\n".join(f"- {m['nome']}: {m['regra']}" for m in modos))
-        formato = ("Responda em duas linhas: na primeira, só a frase; na segunda, \"Modo: \" e o nome exato do modo "
-                   "escolhido.")
-    msgs = [
-        {"role": "system", "content": f"Você escreve ganchos para o canal \"{canal['nome']}\". {canal['descricao']}\n\n"
-                                      f"Regras do canal:\n{regras}"},
-        {"role": "user", "content": f"Assunto: {assunto}{bloco_modo}\n\n"
-         "Escreva o gancho: a primeira frase que o narrador lê, uma frase só, entre 120 e 150 caracteres, em "
-         f"{canal['idioma']}. Ela já carrega a premissa da história (quem, onde e o que há de impossível) e faz quem "
-         "rola o feed parar nos 3 primeiros segundos. Não revele o final. Sem aspas, sem título, sem explicação. "
-         f"{formato}"},
+        bloco_modo = ("\n\nPrimeiro escolha o modo narrativo que melhor serve ao assunto"
+                      f"{' (evite repetir ' + ultimo + ', usado no vídeo anterior, se outro servir)' if ultimo else ''}; "
+                      "os 5 ganchos são escritos nesse modo:\n" + "\n".join(f"- {m['nome']}: {m['regra']}" for m in modos))
+        campo_modo = "\"modo\": nome exato do modo escolhido"
+    return [
+        {"role": "system", "content": sistema_escrita(canal)},
+        {"role": "user", "content": f"Assunto: {assunto}{bloco_modo}\n\nEscreva 5 ganchos diferentes para abrir essa "
+         "história. O gancho é a primeira frase da narração, entre 120 e 150 caracteres: já carrega a premissa (quem, "
+         "onde e o que há de impossível) e faz quem está rolando o feed parar nos 3 primeiros segundos, sem revelar o "
+         f"final. Cada um com uma abordagem diferente.{historico}\n\nResponda com {{{campo_modo}, \"ganchos\": [5 textos]}}."},
     ]
-    return msgs
-
-
-def criar_gancho(projeto: dict, canal: dict) -> str:
-    """Uma chamada só ao modelo forte (Opus): a primeira frase da narração, com a premissa da história dentro,
-    e o modo narrativo que serve ao assunto. O gancho fica fixo; o DeepSeek escreve e reescreve o resto.
-    Conta no orçamento do vídeo, fora do teto do laço."""
-    custos.verificar(projeto["id"], None, EST_GANCHO, float(canal["config"].get("orcamento_usd") or 0.10),
-                     "Orçamento do vídeo (gancho)")
-    msgs = mensagens_gancho(projeto["assunto"], canal, _ultimo_modo(projeto))
-    txt, custo = clientes.chat("gancho", msgs, projeto_id=projeto["id"], etapa="gancho", temperatura=1.0,
-                               max_tokens=2500, modelo=config.MODELO_GANCHO,
-                               preco=(config.PRECO_GANCHO_ENTRADA, config.PRECO_GANCHO_SAIDA),
-                               raciocinio={"effort": config.GANCHO_RACIOCINIO},
-                               contexto={"assunto": projeto["assunto"]})
-    linhas = [l.strip() for l in str(txt).splitlines() if l.strip()]
-    nome_modo = next((re.sub(r"^modo\s*:\s*", "", l, flags=re.I) for l in linhas if re.match(r"^modo\s*:", l, re.I)), None)
-    gancho = next((l for l in linhas if not re.match(r"^modo\s*:", l, re.I)), "")
-    gancho = re.sub(r"\s+", " ", gancho).strip().strip('"“”').strip()
-    if not gancho:
-        raise clientes.ErroAPI(f"{config.MODELO_GANCHO} não devolveu o gancho")
-    m = _modo(canal, (nome_modo or "").strip(" .*"))
-    projeto["modo"] = m["nome"] if m else None
-    db.executar("UPDATE projetos SET modo = ? WHERE id = ?", (projeto["modo"], projeto["id"]))
-    db.evento(projeto["id"], f"Gancho fixo ({config.MODELO_GANCHO}, US$ {custo:.4f}, {len(gancho)} caracteres"
-                             f"{', modo ' + projeto['modo'] if projeto['modo'] else ''}): {gancho}")
-    return gancho
 
 
 def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
+    """5 ganchos por rodada (com o modo narrativo), notas do Jev, até passar do corte ou acabar as rodadas.
+    O melhor fica fixo e define o modo da história."""
     perguntas = canais.perguntas_do_canal(canal["config"])
     base = perguntas["gancho"]
     corte = base["corte"]
+    ultimo = _ultimo_modo(projeto)
     anteriores: list[dict] = []
-    melhor = ("", -1.0)
+    melhor = ("", -1.0, None)
     for rodada in range(1, config.GANCHO_MAX_RODADAS + 1):
         _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, EST_TEXTO) +
                      _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
@@ -521,18 +484,13 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
         if anteriores:
             hist = "\n\nGanchos anteriores e a nota que tiveram (0-10, corte " + f"{corte}" + "). Não repita; faça melhor:\n" + \
                    "\n".join(f"- ({a['nota']:.1f}) {a['texto']}" for a in anteriores)
-        msgs = [
-            {"role": "system", "content": sistema_escrita(canal)},
-            {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\nEscreva 5 ganchos diferentes para abrir essa história. "
-             "O gancho é a primeira frase da narração: curta, que faz quem está rolando o feed parar nos 3 primeiros "
-             "segundos, de até 15 palavras, sem explicar nada. Cada um com uma abordagem diferente "
-             f"(situação estranha, pergunta implícita, fato concreto, contradição).{dica_modo(projeto, canal)}{hist}\n\nResponda com {{\"ganchos\": [5 textos]}}."},
-        ]
+        msgs = mensagens_gancho(projeto["assunto"], canal, ultimo, hist)
         resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="historia",
                                 temperatura=1.0, max_tokens=1200, contexto={"assunto": projeto["assunto"]})
         ganchos = [g.strip() for g in resp.get("ganchos", []) if g.strip()][:5]
         if not ganchos:
             continue
+        m = _modo(canal, str(resp.get("modo") or "").strip(" .*"))
         state = f"Canal: {canal['nome']}. {canal['descricao']}\nAssunto do vídeo: {projeto['assunto']}\n" \
                 f"Formato: vídeo curto vertical, narração em {canal['idioma']}. O gancho é a primeira frase que o narrador lê."
         qs = {f"g{i}": {"type": "score", "instructions": f"{base['pergunta']}\nGancho: \"{g}\"", "criteria": ESCALA}
@@ -543,13 +501,16 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
         for g, n in notas:
             anteriores.append({"texto": g, "nota": n})
         top = max(notas, key=lambda x: x[1])
-        db.evento(projeto["id"], f"Ganchos rodada {rodada}: melhor nota {top[1]:.1f} (corte {corte}) · \"{top[0]}\"")
+        db.evento(projeto["id"], f"Ganchos rodada {rodada}{' (' + m['nome'] + ')' if m else ''}: melhor nota "
+                                 f"{top[1]:.1f} (corte {corte}) · \"{top[0]}\"")
         if top[1] > melhor[1]:
-            melhor = top
+            melhor = (top[0], top[1], m["nome"] if m else None)
         if top[1] >= corte:
             break
     if not melhor[0]:
         raise clientes.ErroAPI("O modelo não devolveu ganchos")
+    projeto["modo"] = melhor[2]
+    db.executar("UPDATE projetos SET modo = ? WHERE id = ?", (projeto["modo"], projeto["id"]))
     return melhor[0], melhor[1], anteriores
 
 
@@ -842,10 +803,9 @@ def laco(projeto: dict, canal: dict) -> dict:
     melhor = None  # (nota, historia, avaliacao, versao)
     ultima = None
     try:
-        if config.MODELO_GANCHO:
-            gancho = projeto["gancho_fixo"] = criar_gancho(projeto, canal)
-        else:
-            gancho, _nota_g, _ = escolher_gancho(projeto, canal)
+        # O gancho escolhido pelo Jev fica fixo: as reescritas mexem só no resto da história.
+        gancho, _nota_g, _ = escolher_gancho(projeto, canal)
+        projeto["gancho_fixo"] = gancho
         h = escrever(projeto, canal, gancho)
         sem_melhora = 0
         for rodada in range(1, config.LACO_MAX_RODADAS + 1):

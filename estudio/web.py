@@ -81,7 +81,7 @@ def status():
     return {
         "simulacao": config.SIMULACAO,
         "chaves": {"openrouter": bool(config.OPENROUTER_API_KEY), "pollinations": bool(config.POLLINATIONS_API_KEY)},
-        "modelos": {"texto": config.MODELO_TEXTO, "gancho": config.MODELO_GANCHO, "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
+        "modelos": {"texto": config.MODELO_TEXTO, "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
         "ffmpeg": shutil.which(config.FFMPEG) is not None or Path(config.FFMPEG).exists(),
         "humanizer": {"arquivo": str(config.HUMANIZER_SKILL), "existe": config.HUMANIZER_SKILL.exists(),
                       "vocabulario": len(revisao.vocabulario_ia())},
@@ -144,17 +144,18 @@ def editar_canal(cid: int, dados: CanalIn):
 
 @app.post("/api/canais/previa-prompt", dependencies=[api])
 def previa_prompt(dados: CanalIn):
-    """Os prompts exatos que o Opus (gancho) e o DeepSeek (roteirista) recebem com a configuração da tela."""
+    """Os prompts exatos que o roteirista recebe com a configuração da tela: ganchos e história."""
     d = dados.model_dump()
     canal = {"nome": d["nome"] or "(sem nome)", "idioma": d.get("idioma") or "pt-BR", "descricao": d.get("descricao") or "",
              "formato": d.get("formato") or "short", "config": canais.mesclar(canais.CONFIG_PADRAO, d.get("config") or {})}
     assunto = "<assunto do vídeo>"
-    gancho = historia.mensagens_gancho(assunto, canal) if config.MODELO_GANCHO else None
-    return {"modelo_gancho": config.MODELO_GANCHO, "gancho": gancho, "modelo_texto": config.MODELO_TEXTO,
+    modo = "\n\nModo narrativo deste vídeo: <modo escolhido com os ganchos> (...). Siga-o do começo ao fim." \
+        if canal["config"].get("modos_narrativos") else ""
+    return {"modelo": config.MODELO_TEXTO, "gancho": historia.mensagens_gancho(assunto, canal),
             "roteirista": [{"role": "system", "content": historia.sistema_escrita(canal)},
-                           {"role": "user", "content": f"Assunto: {assunto}\n\n" + (historia._pedido_continuacao(canal, "<gancho do Opus>")
-                            if config.MODELO_GANCHO else "A narração começa exatamente com este gancho, não mude: \"<gancho>\"") +
-                            "\n\nModo narrativo deste vídeo: <modo escolhido> (...). Siga-o do começo ao fim.\n\nEscreva a história em JSON."}]}
+                           {"role": "user", "content": f"Assunto: {assunto}\n\n" +
+                            historia._pedido_continuacao(canal, "<gancho escolhido pelo Jev>") + modo +
+                            "\n\nEscreva a história em JSON."}]}
 
 
 @app.post("/api/canais/sugerir", dependencies=[api])

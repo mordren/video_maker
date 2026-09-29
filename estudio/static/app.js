@@ -524,13 +524,13 @@ async function telaCanal(id) {
       <div class="panel">
         <div class="row" style="align-items:center"><h3 style="margin:0">Regras do roteirista</h3>
           <button class="fix" id="cVerPrompt">Ver o prompt completo</button></div>
-        <p class="small">O Opus (gancho) e o DeepSeek (história e reescritas) leem estas regras em todo vídeo. Escreva cada uma como instrução direta. Evite exemplos concretos: o modelo tende a copiá-los.</p>
+        <p class="small">O roteirista lê estas regras em todo vídeo: nos ganchos, na história e nas reescritas. Escreva cada uma como instrução direta. Evite exemplos concretos: o modelo tende a copiá-los.</p>
         <div id="cRegras">${(cfg.regras_escrita || []).map(linhaRegra).join('')}</div>
         <button class="small" id="cAddR" style="margin-top:6px">+ regra</button>
       </div>
       <div class="panel">
         <h3 style="margin-top:0">Modos narrativos</h3>
-        <p class="small">O Opus escolhe um por vídeo, o que melhor serve ao assunto, evitando repetir o do vídeo anterior. O DeepSeek segue o modo escolhido do começo ao fim. Sem modos, o canal não usa essa escolha.</p>
+        <p class="small">O roteirista escolhe um por vídeo junto com os ganchos, o que melhor serve ao assunto, evitando repetir o do vídeo anterior, e segue esse modo do começo ao fim. Sem modos, o canal não usa essa escolha.</p>
         <div id="cModos">${(cfg.modos_narrativos || []).map(linhaModo).join('')}</div>
         <button class="small" id="cAddM" style="margin-top:6px">+ modo</button>
       </div>
@@ -551,7 +551,7 @@ async function telaCanal(id) {
       <table id="cPerg"><tr><th>chave</th><th>tipo</th><th>pergunta</th><th>corte</th><th></th></tr>
       ${Object.entries(cfg.juiz.perguntas || {}).map(([k, q]) => linhaPergunta(k, q)).join('')}</table>
       <button class="small" id="cAddP" style="margin-top:6px">+ pergunta</button>
-      <div class="small" style="margin-top:6px">Com o gancho escrito pelo Opus, a pergunta "gancho" não é usada: o gancho fica fixo e o Jev julga só o resto da história.</div>
+      <div class="small" style="margin-top:6px">A pergunta "gancho" escolhe entre os 5 ganchos de cada rodada. Depois disso o gancho fica fixo e o Jev julga só o resto da história.</div>
       <div class="small" style="margin-top:6px">score: nota 0 a 10 (corte típico 6 a 8). noul: probabilidade de sim, 0 a 1 (corte típico 0,80 a 0,90). Uma chave igual à de uma universal (ex.: gancho) muda o corte dela.</div>
     </div></section>
 
@@ -624,7 +624,7 @@ async function telaCanal(id) {
       <div class="row"><div><label>Orçamento por vídeo (US$)</label><input type="number" step="0.01" id="cOrc" value="${cfg.orcamento_usd}"></div>
         <div><label>Teto do laço da história (US$)</label><input type="number" step="0.005" id="cTetoLaco" value="${cfg.teto_laco_usd ?? ''}" placeholder="${statusSis ? statusSis.teto_laco : '0.01'} (padrão)"></div>
         <div><label>Canal no Publicador</label><input type="text" id="cPubCanal" value="${esc(cfg.publicador_canal || '')}" placeholder="nome do canal lá"></div></div>
-      <div class="small" style="margin-top:8px">O laço (escrita, Jev e reescritas do DeepSeek) para quando gasta o teto e fica com a melhor versão. O orçamento por vídeo inclui o gancho do Opus, o laço, as imagens e a narração.</div>
+      <div class="small" style="margin-top:8px">O laço (ganchos, escrita, Jev e reescritas) para quando gasta o teto e fica com a melhor versão. O orçamento por vídeo inclui o laço, as imagens e a narração.</div>
     </div></section>`;
     mostrarSecao();
     ligar();
@@ -703,8 +703,8 @@ async function telaCanal(id) {
       const bloco = (titulo, msgs) => `<h3>${esc(titulo)}</h3>` + msgs.map(m => `<div class="small">${m.role === 'system' ? 'instruções fixas (system)' : 'pedido do vídeo (user)'}</div><pre class="prompt">${esc(m.content)}</pre>`).join('');
       const d = document.createElement('div'); d.className = 'lightbox';
       d.innerHTML = `<div class="modal"><div class="row" style="align-items:center"><h2 style="margin:0">O que cada modelo recebe</h2><button class="fix" data-fechar>Fechar</button></div>
-        ${r.gancho ? bloco('1. Gancho · ' + r.modelo_gancho + ' (uma chamada por vídeo)', r.gancho) : ''}
-        ${bloco((r.gancho ? '2. ' : '') + 'História · ' + r.modelo_texto + ' (escrita e reescritas)', r.roteirista)}</div>`;
+        ${bloco('1. Ganchos · ' + r.modelo + ' (5 por rodada; o Jev escolhe)', r.gancho)}
+        ${bloco('2. História · ' + r.modelo + ' (escrita; as reescritas usam as mesmas instruções fixas)', r.roteirista)}</div>`;
       d.onclick = e => { if (e.target === d || e.target.dataset.fechar !== undefined) d.remove(); };
       document.body.append(d);
     };
