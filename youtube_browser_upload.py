@@ -23,6 +23,7 @@ Sem Qt, para poder ser chamado de qualquer fluxo sem depender da interface.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -328,6 +329,82 @@ def login_manual(account: str) -> None:
     print(f"Perfil salvo em {pasta}. A conta '{account}' já pode ser usada nos envios.")
 
 
+_LOGIN_STATUS_PREFIX = "youtube_browser_login_status_"
+
+
+def login_status_path(account: str) -> Path:
+    return _base_dir() / f"{_LOGIN_STATUS_PREFIX}{account}.json"
+
+
+def login_status(account: str) -> dict | None:
+    """Último estado salvo por `login_manual_async` para esta conta, se houver."""
+    caminho = login_status_path(account)
+    if not caminho.exists():
+        return None
+    try:
+        return json.loads(caminho.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def login_manual_async(account: str, timeout_min: int = 20) -> None:
+    """Como `login_manual`, mas sem terminal: pensada para rodar como processo
+    à parte, disparado pelo botão do Publicador (veja servidor/publicador.py),
+    já com DISPLAY/XAUTHORITY apontando para a tela de uma sessão RDP aberta
+    de verdade — é lá que a janela do Chromium aparece para o usuário logar.
+
+    Sem terminal não tem como esperar um Enter como o `login_manual` faz; em
+    vez disso, fica de olho na URL da aba: o Studio manda para
+    accounts.google.com sem sessão válida, então assim que a URL sair de lá
+    (login concluído) fecha o navegador sozinho e salva o perfil. O progresso
+    vai para um .json (`login_status`) que o Publicador consulta e mostra na
+    tela, já que aqui não tem ninguém olhando o console.
+    """
+    from playwright.sync_api import sync_playwright
+
+    def _status(estado: str, mensagem: str = "") -> None:
+        login_status_path(account).write_text(json.dumps({
+            "estado": estado, "mensagem": mensagem,
+            "atualizado_em": datetime.now().isoformat(timespec="seconds"),
+        }), encoding="utf-8")
+
+    pasta = profile_dir(account)
+    pasta.mkdir(parents=True, exist_ok=True)
+    _status("abrindo", "Abrindo o navegador na tela remota…")
+    logado = False
+    try:
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(pasta), headless=False,
+                locale="pt-BR", viewport={"width": 1366, "height": 900},
+                args=_ARGS_CHROMIUM)
+            page = context.new_page()
+            page.goto("https://studio.youtube.com/", wait_until="domcontentloaded")
+            _status("aguardando",
+                    "Navegador aberto na tela remota — faça o login normalmente. "
+                    "Ele fecha sozinho assim que o Studio carregar logado; não "
+                    "feche a janela na mão antes disso.")
+            inicio = time.monotonic()
+            while (time.monotonic() - inicio) < timeout_min * 60:
+                time.sleep(3)
+                try:
+                    url = page.url
+                except Exception:
+                    break  # a janela foi fechada
+                if "accounts.google.com" not in url and "signin" not in url.lower():
+                    logado = True
+                    break
+            context.close()
+    except Exception as erro:
+        _status("falhou", f"{type(erro).__name__}: {str(erro).strip()[:300]}")
+        return
+    if logado:
+        _status("sucesso", f"Conta '{account}' logada — perfil salvo em {pasta}.")
+    else:
+        _status("tempo esgotado",
+                "A janela fechou (ou o tempo esgotou) antes do login ser confirmado.")
+
+
 # ── Diagnóstico ──────────────────────────────────────────────────────────────
 
 def _retrato_da_tela(page, etapa: str) -> str:
@@ -484,6 +561,7 @@ def _aguardar_verificacoes_concluidas(page, teto_ms: int, log=None) -> None:
     inicio = time.monotonic()
     ultimo = None
     while (time.monotonic() - inicio) * 1000 < teto_ms:
+        _checar_processamento(page)
         linhas = page.locator(_LINHA_VERIFICACAO)
         try:
             total = linhas.count()
@@ -524,6 +602,29 @@ def _aguardar_verificacoes_concluidas(page, teto_ms: int, log=None) -> None:
 _LINK_DO_VIDEO = 'a.ytcp-video-info, .video-url-fadeable a, a[href*="youtu"]'
 _PERCENTUAL = re.compile(r"\d+\s*%")
 
+# Quando o YouTube não consegue processar o vídeo, o rodapé do diálogo mostra
+# "Processamento interrompido — Não foi possível processar o vídeo" e a
+# verificação de direitos autorais fica "Em verificação…" para sempre (visto
+# em 28/09/2026: a fila inteira parou esperando o teto de 1h). O arquivo
+# estava íntegro — é falha do lado do YouTube, reenviar resolve.
+_PROCESSAMENTO_FALHOU = re.compile(
+    r"Processamento interrompido|Não foi possível processar|Processing abandoned|"
+    r"couldn.t process|could not process", re.IGNORECASE)
+
+
+def _checar_processamento(page) -> None:
+    """Levanta erro na hora se o Studio avisou que o processamento falhou —
+    quem chama (o Publicador) devolve o vídeo à fila para reenviar."""
+    try:
+        aviso = page.get_by_text(_PROCESSAMENTO_FALHOU).first
+        falhou = aviso.is_visible()
+    except Exception:
+        return
+    if falhou:
+        raise YoutubeBrowserUploadError(
+            "O YouTube não conseguiu processar o vídeo (\"Processamento interrompido\"). "
+            "O arquivo está bom — é falha do YouTube; reenviar costuma resolver.")
+
 
 def _aguardar_envio_completo(page, teto_ms: int, log=None) -> None:
     """Espera o upload do arquivo terminar.
@@ -540,6 +641,7 @@ def _aguardar_envio_completo(page, teto_ms: int, log=None) -> None:
     inicio = time.monotonic()
     ultimo = None
     while (time.monotonic() - inicio) * 1000 < teto_ms:
+        _checar_processamento(page)
         try:
             if page.locator(_LINK_DO_VIDEO).first.is_visible():
                 _emit(log, "Link do vídeo já apareceu no painel — considerando o envio concluído.")
@@ -922,6 +1024,10 @@ if __name__ == "__main__":
     import sys as _sys
     if len(_sys.argv) == 3 and _sys.argv[1] == "--login":
         login_manual(_sys.argv[2])
+    elif len(_sys.argv) == 3 and _sys.argv[1] == "--login-web":
+        # Sem terminal (chamado pelo botão do Publicador) — veja login_manual_async.
+        login_manual_async(_sys.argv[2])
     else:
         print("Uso: python youtube_browser_upload.py --login <apelido-da-conta>")
+        print("  ou: python youtube_browser_upload.py --login-web <apelido-da-conta>")
         _sys.exit(1)

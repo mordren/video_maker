@@ -204,8 +204,25 @@
   <section>
     <h2>Canais</h2>
     <div id="lista-canais" class="fraco">—</div>
+
     <p class="fraco" style="margin:12px 0 6px">
-      O YouTube não tem login programático aqui: logue em
+      Jeito recomendado: conecte por RDP no servidor e clique no botão abaixo —
+      abre um Chromium de verdade na tela do RDP para você logar; a sessão fica
+      salva sozinha (sem precisar reexportar cookies depois).
+    </p>
+    <div class="grade">
+      <div>
+        <label for="login-canal">Apelido do canal (novo ou já existente)</label>
+        <input type="text" id="login-canal" placeholder="ex.: politica">
+      </div>
+      <div style="align-self:end">
+        <button id="btn-login-youtube">🖥 Logar pelo navegador remoto (RDP)</button>
+      </div>
+    </div>
+    <div class="recado" id="recado-login-youtube"></div>
+
+    <p class="fraco" style="margin:12px 0 6px">
+      Alternativa sem RDP: logue em
       <code>studio.youtube.com</code> num navegador normal (no canal certo),
       exporte os cookies com uma extensão (ex.: "Get cookies.txt") e mande aqui
       o arquivo renomeado para <code>youtube_browser_cookies_&lt;canal&gt;.txt</code>
@@ -641,6 +658,51 @@ el("btn-testar-tiktok").onclick = async () => {
     recado("recado-config", erro.message, "erro");
   } finally {
     el("btn-testar-tiktok").disabled = false;
+  }
+};
+
+/* ── login do YouTube pelo navegador remoto (RDP) ─────────────── */
+const ESTADOS_LOGIN_YOUTUBE = {
+  abrindo: "Abrindo o navegador na tela remota…",
+  aguardando: "Navegador aberto — faça o login na janela que apareceu na sessão RDP.",
+  sucesso: "Login concluído! O canal já pode ser usado.",
+  "tempo esgotado": "A janela fechou (ou o tempo esgotou) antes do login ser confirmado.",
+  falhou: "Falhou.",
+};
+let _sondaLoginYoutube = null;
+
+function _pararSondaLoginYoutube() {
+  if (_sondaLoginYoutube) { clearInterval(_sondaLoginYoutube); _sondaLoginYoutube = null; }
+}
+
+function _sondarLoginYoutube(conta) {
+  _pararSondaLoginYoutube();
+  _sondaLoginYoutube = setInterval(async () => {
+    let dados;
+    try { dados = await (await fetch("/api/youtube-login/" + encodeURIComponent(conta))).json(); }
+    catch (erro) { return; }
+    const texto = ESTADOS_LOGIN_YOUTUBE[dados.estado] || dados.mensagem || dados.estado;
+    const emAndamento = dados.estado === "abrindo" || dados.estado === "aguardando";
+    recado("recado-login-youtube", texto, emAndamento ? "" : (dados.estado === "sucesso" ? "ok" : "erro"));
+    el("btn-login-youtube").disabled = emAndamento;
+    if (!emAndamento) {
+      _pararSondaLoginYoutube();
+      if (dados.estado === "sucesso") await atualizar();
+    }
+  }, 3000);
+}
+
+el("btn-login-youtube").onclick = async () => {
+  const conta = el("login-canal").value.trim();
+  if (!conta) { recado("recado-login-youtube", "Diga o apelido do canal primeiro.", "erro"); return; }
+  el("btn-login-youtube").disabled = true;
+  recado("recado-login-youtube", "Pedindo para abrir o navegador na tela remota…");
+  try {
+    await pedir("/api/youtube-login", {conta});
+    _sondarLoginYoutube(conta);
+  } catch (erro) {
+    el("btn-login-youtube").disabled = false;
+    recado("recado-login-youtube", erro.message, "erro");
   }
 };
 

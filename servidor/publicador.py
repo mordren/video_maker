@@ -39,11 +39,14 @@ justamente o tipo de padrão que se quer evitar aqui.
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import random
 import re
 import smtplib
+import subprocess
+import sys
 import threading
 import time
 from copy import deepcopy
@@ -304,6 +307,35 @@ def canais() -> list[dict]:
     """
     return [{"nome": nome, "conectado": True}
             for nome in youtube_browser_upload.list_accounts()]
+
+
+def _display_rdp_ativo() -> tuple[str, Path] | None:
+    """DISPLAY e XAUTHORITY da sessão gráfica remota (RDP/xrdp) ativa agora,
+    se houver uma — para abrir um navegador visível na tela do usuário.
+
+    O Publicador roda sob Xvfb (display virtual — veja publicador.service);
+    um Playwright aberto de dentro deste processo, sem trocar isso, mostraria
+    a janela só nesse display virtual, que ninguém vê. Uma conexão de RDP
+    (xrdp/xorgxrdp — veja o LEIA-ME de servidor/) sobe seu próprio Xorg, com
+    display e Xauthority próprios; é essa tela que o login do YouTube precisa.
+    """
+    try:
+        saida = subprocess.run(["ps", "-eo", "user,args"], capture_output=True,
+                                text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    usuario = getpass.getuser()
+    for linha in saida.splitlines():
+        partes = linha.split(None, 1)
+        if len(partes) != 2 or partes[0] != usuario:
+            continue
+        tokens = partes[1].split()
+        if not any(t.endswith("Xorg") or t == "Xorg" for t in tokens):
+            continue
+        display = next((t for t in tokens if re.fullmatch(r":\d+", t)), None)
+        if display:
+            return display, Path.home() / ".Xauthority"
+    return None
 
 
 def canal_padrao() -> str:
@@ -1055,6 +1087,39 @@ def subir_credenciais():
     return jsonify(resposta)
 
 
+@app.post("/api/youtube-login")
+def youtube_login():
+    """Abre o Chromium de verdade na tela de uma sessão RDP já conectada, para
+    logar uma conta do YouTube sem precisar do usuário rodar nada na mão no
+    servidor — só clicar aqui, conectar por RDP (se ainda não estiver) e fazer
+    o login normal na janela que aparece.
+    """
+    conta = str((request.get_json(silent=True) or {}).get("conta") or "").strip()
+    if not conta:
+        return jsonify({"erro": "Diga o apelido da conta."}), 400
+    if not re.fullmatch(r"[\w.-]+", conta):
+        return jsonify({"erro": "Apelido inválido (só letras, números, ponto, traço e underline)."}), 400
+    sessao = _display_rdp_ativo()
+    if sessao is None:
+        return jsonify({"erro": "Nenhuma sessão de área de trabalho remota (RDP) "
+                                 "ativa agora — conecte por RDP no servidor primeiro "
+                                 "e tente de novo."}), 400
+    display, xauth = sessao
+    script = Path(youtube_browser_upload.__file__).resolve()
+    env = {**os.environ, "DISPLAY": display, "XAUTHORITY": str(xauth)}
+    subprocess.Popen([sys.executable, str(script), "--login-web", conta],
+                      env=env, cwd=str(script.parent), start_new_session=True,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    registrar(f"🔑 Login do YouTube iniciado para a conta '{conta}' (tela remota, display {display}).")
+    return jsonify({"ok": True})
+
+
+@app.get("/api/youtube-login/<conta>")
+def youtube_login_status(conta: str):
+    """Estado do login em andamento (ou do último), para a tela acompanhar."""
+    return jsonify(youtube_browser_upload.login_status(conta) or {"estado": "nenhum"})
+
+
 @app.errorhandler(413)
 def arquivo_grande_demais(_erro):
     return jsonify({"erro": "Arquivo maior que o limite de 12 GB por envio."}), 413
@@ -1064,6 +1129,20 @@ def arquivo_grande_demais(_erro):
 # só (waitress com threads), então existe exatamente um laço de envio.
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+# Item "enviando" ao subir = o serviço (ou a máquina) caiu no meio do envio.
+# Nada mais o pegaria (o laço só envia "aguardando") e ele ficaria em
+# "Enviando…" para sempre — volta para a fila, no mesmo lugar.
+with _TRAVA:
+    _fila_ao_subir = carregar_fila()
+    _orfaos = [i for i in _fila_ao_subir["itens"] if i.get("status") == "enviando"]
+    for _item in _orfaos:
+        _item["status"] = "aguardando"
+        _item["mensagem"] = "O envio foi interrompido (o serviço reiniciou); vai ser enviado de novo."
+    if _orfaos:
+        salvar_fila(_fila_ao_subir)
+for _item in _orfaos:
+    registrar(f"↩️ “{_item.get('titulo') or _item['arquivo']}” estava sendo enviado quando o "
+              "serviço caiu — voltou para a fila.")
 threading.Thread(target=_laco_de_envio, daemon=True, name="fila").start()
 
 registrar("🟢 Publicador iniciado.")
