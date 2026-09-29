@@ -127,6 +127,9 @@ def humanizar(projeto: dict, canal: dict, h: dict) -> tuple[dict, dict]:
     resp, _ = clientes.chat("humanizer", msgs, SCHEMA_REVISAO, projeto_id=pid, etapa="revisao", temperatura=0.8,
                             contexto={"entrada": entrada})
     novo = _aplicar(h, resp)
+    fixo = projeto.get("gancho_fixo")
+    if novo is not None and fixo:
+        novo = historia.normalizar_narrativa(novo, fixo)
     if novo is None:
         rel["motivo"] = "a passada veio vazia; mantida a versão aprovada"
         db.evento(pid, rel["motivo"], "aviso")
@@ -147,6 +150,8 @@ def humanizar(projeto: dict, canal: dict, h: dict) -> tuple[dict, dict]:
         novo2 = _aplicar(novo, resp2)
         if novo2 is None:
             break
+        if fixo:
+            novo2 = historia.normalizar_narrativa(novo2, fixo)
         novo = novo2
     rel["achados_depois"] = verificar(_texto_publico(novo))
 
@@ -165,6 +170,10 @@ def humanizar(projeto: dict, canal: dict, h: dict) -> tuple[dict, dict]:
         rel["motivo"] = f"a coerência caiu para {coer:.2f} depois da passada; mantida a versão aprovada"
         db.evento(pid, rel["motivo"], "aviso")
         return h, rel
+    if fixo:  # gancho fixo: não há o que reverter
+        rel["aplicado"] = True
+        rel["motivo"] = "aplicado; gancho fixo mantido"
+        return novo, rel
     gancho = aval["perguntas"]["gancho"]
     if gancho["valor"] < base["gancho"]["corte"] - GANCHO_FOLGA and novo["gancho"] != h["gancho"]:
         fs = historia.frases(novo["narracao"])

@@ -68,9 +68,10 @@ def extrair_json(txt: str):
 
 def chat(tarefa: str, mensagens: list[dict], schema: dict | None = None, *, projeto_id=None, etapa="texto",
          temperatura: float = 0.8, max_tokens: int = 6000, contexto: dict | None = None,
-         modelo: str | None = None, preco: tuple[float, float] | None = None):
+         modelo: str | None = None, preco: tuple[float, float] | None = None, raciocinio: dict | None = None):
     """Devolve (resposta, custo_usd). Com schema, a resposta já vem como dict.
-    modelo: troca o MODELO_TEXTO nesta chamada; preco: (entrada, saída) por token, se a API não devolver o custo."""
+    modelo: troca o MODELO_TEXTO nesta chamada; preco: (entrada, saída) por token, se a API não devolver o custo;
+    raciocinio: configuração de raciocínio do OpenRouter (o padrão é desligado)."""
     modelo = modelo or config.MODELO_TEXTO
     preco = preco or (config.PRECO_TEXTO_ENTRADA, config.PRECO_TEXTO_SAIDA)
     if config.SIMULACAO:
@@ -84,7 +85,7 @@ def chat(tarefa: str, mensagens: list[dict], schema: dict | None = None, *, proj
         "temperature": temperatura,
         "max_tokens": max_tokens,
         "usage": {"include": True},
-        "reasoning": {"enabled": False},
+        "reasoning": raciocinio or {"enabled": False},
     }
     if schema:
         corpo["response_format"] = {"type": "json_schema",

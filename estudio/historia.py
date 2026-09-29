@@ -68,7 +68,7 @@ FOLGA_PALAVRAS = 0.05      # 5% para mais ou para menos no total
 FOLGA_PALAVRAS_CENA = 2    # palavras a mais por cena
 EST_TEXTO = 0.003   # estimativa por chamada de escrita antes de haver medição
 EST_JEV = 0.001
-EST_GANCHO = 0.015  # 5 ganchos com o Opus, antes de haver medição
+EST_GANCHO = 0.01  # um gancho com o Opus
 
 
 # ---------------------------------------------------------------- utilidades
@@ -311,10 +311,7 @@ def _checar_teto(projeto: dict, estimativa):
                      "Laço da história", base=projeto.get("_base_laco", 0.0))
 
 
-def _checar_teto_gancho(projeto: dict, canal: dict, estimativa):
-    """Os ganchos (Opus) ficam de fora do teto do laço, que é de centavos; contam no orçamento do vídeo."""
-    custos.verificar(projeto["id"], None, estimativa, float(canal["config"].get("orcamento_usd") or 0.10),
-                     "Orçamento do vídeo (ganchos)")
+
 
 
 # ---------------------------------------------------------------- prompts
@@ -440,6 +437,33 @@ def dica_modo(projeto: dict, canal: dict) -> str:
             "troque só se o assunto já indicar outro modo claramente.")
 
 
+def criar_gancho(projeto: dict, canal: dict) -> str:
+    """Uma chamada só ao modelo forte (Opus): a primeira frase da narração, com a premissa da história dentro.
+    Ela fica fixa; o DeepSeek escreve e reescreve o resto. Conta no orçamento do vídeo, fora do teto do laço."""
+    custos.verificar(projeto["id"], None, EST_GANCHO, float(canal["config"].get("orcamento_usd") or 0.10),
+                     "Orçamento do vídeo (gancho)")
+    regras = "\n".join(f"- {r}" for r in canal["config"].get("regras_escrita", []))
+    msgs = [
+        {"role": "system", "content": f"Você escreve ganchos para o canal \"{canal['nome']}\". {canal['descricao']}\n\n"
+                                      f"Regras do canal:\n{regras}"},
+        {"role": "user", "content": f"Assunto: {projeto['assunto']}{dica_modo(projeto, canal)}\n\n"
+         "Escreva o gancho: a primeira frase que o narrador lê, uma frase só, entre 120 e 150 caracteres, em "
+         f"{canal['idioma']}. Ela já carrega a premissa da história (quem, onde e o que há de impossível) e faz quem "
+         "rola o feed parar nos 3 primeiros segundos. Não revele o final. Sem aspas, sem título, sem explicação. "
+         "Responda só com a frase."},
+    ]
+    txt, custo = clientes.chat("gancho", msgs, projeto_id=projeto["id"], etapa="gancho", temperatura=1.0,
+                               max_tokens=2500, modelo=config.MODELO_GANCHO,
+                               preco=(config.PRECO_GANCHO_ENTRADA, config.PRECO_GANCHO_SAIDA),
+                               raciocinio={"effort": config.GANCHO_RACIOCINIO},
+                               contexto={"assunto": projeto["assunto"]})
+    gancho = re.sub(r"\s+", " ", str(txt)).strip().strip('"“”').strip()
+    if not gancho:
+        raise clientes.ErroAPI(f"{config.MODELO_GANCHO} não devolveu o gancho")
+    db.evento(projeto["id"], f"Gancho fixo ({config.MODELO_GANCHO}, US$ {custo:.4f}, {len(gancho)} caracteres): {gancho}")
+    return gancho
+
+
 def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
     perguntas = canais.perguntas_do_canal(canal["config"])
     base = perguntas["gancho"]
@@ -447,8 +471,8 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
     anteriores: list[dict] = []
     melhor = ("", -1.0)
     for rodada in range(1, config.GANCHO_MAX_RODADAS + 1):
-        _checar_teto_gancho(projeto, canal, _media_custo(projeto["id"], config.MODELO_GANCHO, EST_GANCHO, "gancho") +
-                            _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
+        _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, EST_TEXTO) +
+                     _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
         hist = ""
         if anteriores:
             hist = "\n\nGanchos anteriores e a nota que tiveram (0-10, corte " + f"{corte}" + "). Não repita; faça melhor:\n" + \
@@ -460,10 +484,8 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
              "segundos, de até 15 palavras, sem explicar nada. Cada um com uma abordagem diferente "
              f"(situação estranha, pergunta implícita, fato concreto, contradição).{dica_modo(projeto, canal)}{hist}\n\nResponda com {{\"ganchos\": [5 textos]}}."},
         ]
-        resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="gancho",
-                                temperatura=1.0, max_tokens=4000, contexto={"assunto": projeto["assunto"]},
-                                modelo=config.MODELO_GANCHO,
-                                preco=(config.PRECO_GANCHO_ENTRADA, config.PRECO_GANCHO_SAIDA))
+        resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="historia",
+                                temperatura=1.0, max_tokens=1200, contexto={"assunto": projeto["assunto"]})
         ganchos = [g.strip() for g in resp.get("ganchos", []) if g.strip()][:5]
         if not ganchos:
             continue
@@ -512,7 +534,10 @@ def reescrever(projeto: dict, canal: dict, h: dict, problemas: list[str], avalia
             corte = f"{v['corte']}/10" if v["tipo"] == "score" else f"{v['corte']}"
             itens.append(f"- \"{v['pergunta']}\" recebeu {nota}; precisa de {corte}")
             gancho_livre = gancho_livre or k == "gancho"
-    trava = "" if gancho_livre else f"\nMantenha a primeira frase exatamente igual: \"{h['gancho']}\"."
+    fixo = projeto.get("gancho_fixo")
+    gancho_livre = gancho_livre and not fixo
+    gancho = fixo or h["gancho"]
+    trava = "" if gancho_livre else f"\nMantenha o começo exatamente igual: \"{gancho}\"."
     trava += dica_modo(projeto, canal)
     msgs = [
         {"role": "system", "content": sistema_escrita(canal)},
@@ -523,11 +548,13 @@ def reescrever(projeto: dict, canal: dict, h: dict, problemas: list[str], avalia
     ]
     nova, _ = clientes.chat("reescrita", msgs, SCHEMA_NARRATIVA, projeto_id=projeto["id"], etapa="historia",
                             contexto={"historia": h, "problemas": problemas})
-    return normalizar_narrativa(nova, None if gancho_livre else h["gancho"])
+    return normalizar_narrativa(nova, None if gancho_livre else gancho)
 
 
 def avaliar(projeto: dict, canal: dict, h: dict, perguntas: dict | None = None, etapa: str = "historia") -> dict:
     perguntas = perguntas or perguntas_narrativa(canal)
+    if projeto.get("gancho_fixo"):
+        perguntas = {k: v for k, v in perguntas.items() if k != "gancho"}
     if etapa == "historia":
         _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
     state = texto_para_juiz(h, canal, projeto["assunto"])
@@ -741,7 +768,10 @@ def laco(projeto: dict, canal: dict) -> dict:
     melhor = None  # (nota, historia, avaliacao, versao)
     ultima = None
     try:
-        gancho, _nota_g, _ = escolher_gancho(projeto, canal)
+        if config.MODELO_GANCHO:
+            gancho = projeto["gancho_fixo"] = criar_gancho(projeto, canal)
+        else:
+            gancho, _nota_g, _ = escolher_gancho(projeto, canal)
         h = escrever(projeto, canal, gancho)
         sem_melhora = 0
         for rodada in range(1, config.LACO_MAX_RODADAS + 1):
