@@ -1,0 +1,342 @@
+"""Etapa 3: consistência visual e imagens.
+
+Ordem fixa: ficha do personagem -> placa de cada ambiente recorrente -> cenas com as referências que lhes cabem.
+Ficha e placa ficam na biblioteca do canal e são reaproveitadas de um vídeo para outro sem custo.
+"""
+import difflib
+import hashlib
+import json
+import re
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+from . import clientes, config, custos, db, historia
+
+VALIDADE_URL = timedelta(days=25)  # o media.pollinations.ai guarda por 30 dias
+
+
+def pasta(projeto) -> Path:
+    return config.BASE / projeto["pasta"]
+
+
+def dims_cena(canal) -> tuple[int, int]:
+    fmt = config.FORMATOS.get(canal["formato"], config.FORMATOS["short"])
+    base = int(canal["config"].get("resolucao_base") or 1080)
+    w, h = fmt["img_largura"], fmt["img_altura"]
+    if base < 1080:
+        fator = base / min(w, h)
+        w, h = int(round(w * fator / 16) * 16), int(round(h * fator / 16) * 16)
+    return w, h
+
+
+def _orientacao(canal) -> str:
+    return "vertical composition" if canal["formato"] == "short" else "horizontal widescreen composition"
+
+
+def _verificar_orcamento(projeto, canal, preco=None):
+    teto = float(canal["config"].get("orcamento_usd") or 0.10)
+    custos.verificar(projeto["id"], None, preco if preco is not None else clientes._preco_imagem(config.MODELO_IMAGEM),
+                     teto, "Orçamento do vídeo")
+
+
+def _salvar(dados: bytes, destino: Path):
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_bytes(dados)
+
+
+def _url_valida(item: dict) -> str | None:
+    if not item.get("url") or not item.get("url_em"):
+        return None
+    try:
+        if datetime.now() - datetime.fromisoformat(item["url_em"]) > VALIDADE_URL:
+            return None
+    except ValueError:
+        return None
+    return item["url"]
+
+
+def url_referencia(item: dict) -> str:
+    """URL pública da ficha/placa; sobe de novo se a antiga estiver perto de expirar."""
+    url = _url_valida(item)
+    if url:
+        return url
+    url = clientes.enviar_midia(config.BASE / item["arquivo"])
+    db.executar("UPDATE biblioteca SET url = ?, url_em = ? WHERE id = ?", (url, db.agora(), item["id"]))
+    item["url"], item["url_em"] = url, db.agora()
+    return url
+
+
+def _parecido(a: str, b: str) -> bool:
+    return difflib.SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio() >= 0.8
+
+
+# ---------------------------------------------------------------- estilo
+
+# Marcador no texto do estilo que recebe o objeto de destaque de cada cena (ex.: [ELEMENTO EM VERMELHO]).
+_MARCADOR = re.compile(r"\[[^\]]*(vermelh|destaque|red|highlight)[^\]]*\]", re.I)
+SEM_DESTAQUE = "none, keep everything monochrome"
+
+
+def _limpar(txt: str) -> str:
+    return re.sub(r"\s+", " ", txt or "").strip().strip(",").strip()
+
+
+def assinatura_estilo(canal: dict) -> str:
+    est = canal["config"].get("estilo") or {}
+    base = _limpar(est.get("prefixo", "")) + "|" + _limpar(est.get("sufixo", ""))
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:12]
+
+
+def aplicar_estilo(canal: dict, miolo: list[str], destaque: str | None = None) -> str:
+    """prefixo do estilo + conteúdo + orientação + sufixo, com o marcador trocado pelo destaque da cena."""
+    est = canal["config"].get("estilo") or {}
+    troca = (destaque or "").strip() or SEM_DESTAQUE
+    prefixo = _MARCADOR.sub(troca, _limpar(est.get("prefixo", "")))
+    sufixo = _MARCADOR.sub(troca, _limpar(est.get("sufixo", "")))
+    partes = [prefixo] + [_limpar(m).rstrip(".") for m in miolo] + [_orientacao(canal), sufixo]
+    return ". ".join(p for p in partes if p)
+
+
+def usa_destaque(canal: dict) -> bool:
+    est = canal["config"].get("estilo") or {}
+    return bool(_MARCADOR.search(est.get("prefixo", "") + est.get("sufixo", "")))
+
+
+# ---------------------------------------------------------------- biblioteca
+
+def _chave_livre(canal, tipo: str, chave: str, projeto_id: int) -> str:
+    existe = lambda k: db.um("SELECT id FROM biblioteca WHERE canal_id = ? AND tipo = ? AND chave = ?",
+                             (canal["id"], tipo, k))
+    if not existe(chave):
+        return chave
+    candidata, i = f"{chave}-p{projeto_id}", 2
+    while existe(candidata):
+        candidata, i = f"{chave}-p{projeto_id}-{i}", i + 1
+    return candidata
+
+
+def _entrada_biblioteca(canal, projeto, tipo: str, chave: str, descricao: str) -> tuple[dict | None, str]:
+    """Devolve (item reaproveitável, chave a usar). Só reaproveita com a opção ligada no canal, mesmo id,
+    descrição parecida e o MESMO estilo visual; senão cria uma entrada nova (a biblioteca só cresce)."""
+    if canal["config"].get("reaproveitar_biblioteca"):
+        assinatura = assinatura_estilo(canal)
+        for item in db.todos("SELECT * FROM biblioteca WHERE canal_id = ? AND tipo = ? AND (chave = ? OR chave LIKE ?) "
+                             "AND estilo = ? ORDER BY id DESC", (canal["id"], tipo, chave, f"{chave}-p%", assinatura)):
+            if _parecido(item["descricao_fixa"], descricao) and item.get("arquivo") and \
+                    (config.BASE / item["arquivo"]).exists():
+                return item, item["chave"]
+    return None, _chave_livre(canal, tipo, chave, projeto["id"])
+
+
+def _pasta_bib(canal, tipo, chave) -> Path:
+    return config.BIBLIOTECA / canal["slug"] / ("personagens" if tipo == "personagem" else "ambientes") / chave
+
+
+def _gerar_referencia(projeto: dict, canal: dict, tipo: str, obj: dict, idx: int) -> dict:
+    """Ficha (personagem) ou placa (ambiente) nova, salva na biblioteca com a assinatura do estilo."""
+    pid = projeto["id"]
+    item, chave = _entrada_biblioteca(canal, projeto, tipo, obj["id"], obj["descricao_fixa"])
+    rotulo = "Ficha" if tipo == "personagem" else "Placa"
+    if item:
+        obj["descricao_fixa"] = item["descricao_fixa"]
+        obj["bib_chave"] = chave
+        db.evento(pid, f"{rotulo} de {obj['id']} reaproveitada da biblioteca (mesmo estilo, custo zero).")
+        return item
+    _verificar_orcamento(projeto, canal)
+    fmt = config.FORMATOS.get(canal["formato"], config.FORMATOS["short"])
+    if tipo == "personagem":
+        miolo = [f"Character reference sheet of {obj.get('nome') or obj['id']}, {obj['descricao_fixa']}",
+                 "Full body front view, side view, back view, plus three face close-ups (neutral, surprised, afraid)",
+                 "Plain light background, consistent proportions"]
+        w, hh, seed, arquivo = fmt["ficha_largura"], fmt["ficha_altura"], projeto["seed_base"] + idx, "ficha"
+    else:
+        miolo = [f"Establishing shot of {obj['descricao_fixa']}", "Empty location, no people, no characters"]
+        w, hh = dims_cena(canal)
+        seed, arquivo = projeto["seed_base"] + 500 + idx, "placa"
+    prompt = aplicar_estilo(canal, miolo)
+    db.evento(pid, f"Gerando {rotulo.lower()} de {obj['id']}...")
+    dados, link, _ = clientes.gerar_imagem(prompt, w, hh, seed, projeto_id=pid, etapa=arquivo)
+    destino = _pasta_bib(canal, tipo, chave) / f"{arquivo}.jpg"
+    _salvar(dados, destino)
+    rel = destino.relative_to(config.BASE).as_posix()
+    estilo = canal["config"].get("estilo") or {}
+    (destino.parent / f"{arquivo}.json").write_text(json.dumps(
+        {**obj, "prompt": prompt, "url": link, "estilo": estilo.get("nome"), "projeto": pid},
+        ensure_ascii=False, indent=2), encoding="utf-8")
+    db.executar("INSERT INTO biblioteca (canal_id, tipo, chave, descricao_fixa, arquivo, url, url_em, criado_em, estilo, "
+                "projeto_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (canal["id"], tipo, chave, obj["descricao_fixa"], rel, link, db.agora() if link else None, db.agora(),
+                 assinatura_estilo(canal), pid))
+    obj["bib_chave"] = chave
+    return db.um("SELECT * FROM biblioteca WHERE canal_id = ? AND tipo = ? AND chave = ?", (canal["id"], tipo, chave))
+
+
+def preparar_referencias(projeto: dict, canal: dict, h: dict) -> dict:
+    """Garante ficha de cada personagem e placa de cada ambiente recorrente. Devolve {('personagem', id): item}."""
+    refs = {}
+    usados = {c["personagem"] for c in h["cenas"] if c.get("personagem")}
+    for idx, p in enumerate(h.get("personagens", [])):
+        if p["id"] in usados:
+            refs[("personagem", p["id"])] = _gerar_referencia(projeto, canal, "personagem", p, idx)
+    recorrentes = historia.ambientes_recorrentes(h)
+    for idx, a in enumerate(h.get("ambientes", [])):
+        if a["id"] in recorrentes:
+            refs[("ambiente", a["id"])] = _gerar_referencia(projeto, canal, "ambiente", a, idx)
+    return refs
+
+
+def montar_prompt(h: dict, c: dict, canal: dict, refs: dict) -> tuple[str, list[str]]:
+    miolo = [c["prompt_imagem"]]
+    urls = []
+    if c.get("personagem"):
+        p = next((x for x in h.get("personagens", []) if x["id"] == c["personagem"]), None)
+        if p:
+            item = refs.get(("personagem", p["id"]))
+            if item:
+                urls.append(url_referencia(item))
+                miolo.append(f"{p.get('nome') or p['id']} is the character from the reference sheet: {p['descricao_fixa']}")
+            else:
+                miolo.append(f"{p.get('nome') or p['id']}: {p['descricao_fixa']}")
+    if c.get("ambiente"):
+        a = next((x for x in h.get("ambientes", []) if x["id"] == c["ambiente"]), None)
+        if a:
+            item = refs.get(("ambiente", a["id"]))
+            if item:
+                urls.append(url_referencia(item))
+                miolo.append(f"Setting, same place as the location reference image: {a['descricao_fixa']}")
+            else:
+                miolo.append(f"Setting: {a['descricao_fixa']}")
+    return aplicar_estilo(canal, miolo, c.get("destaque")), urls
+
+
+def gerar_cena(projeto: dict, canal: dict, h: dict, c: dict, refs: dict, versao: int = 0) -> Path:
+    pid = projeto["id"]
+    n = c["n"]
+    prompt, urls = montar_prompt(h, c, canal, refs)
+    seed = projeto["seed_base"] + n + versao * 1000
+    db.executar("INSERT INTO cenas (projeto_id, n, status, seed, versao, prompt_final) VALUES (?, ?, 'gerando', ?, ?, ?) "
+                "ON CONFLICT(projeto_id, n) DO UPDATE SET status='gerando', seed=excluded.seed, versao=excluded.versao, "
+                "prompt_final=excluded.prompt_final, erro=NULL", (pid, n, seed, versao, prompt))
+    try:
+        _verificar_orcamento(projeto, canal)
+        w, hh = dims_cena(canal)
+        dados, _, _ = clientes.gerar_imagem(prompt, w, hh, seed, urls, projeto_id=pid, etapa="cenas")
+        destino = pasta(projeto) / "cenas" / f"{n:02d}.jpg"
+        if destino.exists() and versao > 0:
+            destino.replace(destino.with_name(f"{n:02d}_v{versao - 1}.jpg"))
+        _salvar(dados, destino)
+        db.executar("UPDATE cenas SET status = 'ok', arquivo = ? WHERE projeto_id = ? AND n = ?",
+                    (destino.relative_to(config.BASE).as_posix(), pid, n))
+        return destino
+    except Exception as e:
+        db.executar("UPDATE cenas SET status = 'erro', erro = ? WHERE projeto_id = ? AND n = ?", (str(e)[:500], pid, n))
+        raise
+
+
+def gerar_todas(projeto: dict, canal: dict, h: dict) -> dict:
+    """Gera só as cenas que ainda não têm imagem ok. Devolve o h atualizado (com bib_chave)."""
+    aviso = clientes.verificar_preco_imagem()
+    if aviso:
+        db.evento(projeto["id"], aviso, "aviso")
+    refs = preparar_referencias(projeto, canal, h)
+    feitas = {r["n"] for r in db.todos("SELECT n FROM cenas WHERE projeto_id = ? AND status = 'ok'", (projeto["id"],))}
+    pendentes = [c for c in h["cenas"] if c["n"] not in feitas and not c.get("mesma_imagem_de")]
+    copias = sum(1 for c in h["cenas"] if c.get("mesma_imagem_de"))
+    db.evento(projeto["id"], f"Gerando {len(pendentes)} cena(s)..."
+                             f"{f' ({copias} reaproveitam a imagem anterior com outro movimento)' if copias else ''}")
+    erros = []
+
+    def uma(c):
+        try:
+            gerar_cena(projeto, canal, h, c, refs)
+            db.evento(projeto["id"], f"Cena {c['n']} pronta.")
+        except custos.OrcamentoEstourado:
+            raise
+        except Exception as e:
+            erros.append((c["n"], str(e)))
+            db.evento(projeto["id"], f"Cena {c['n']} falhou: {e}", "erro")
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        list(ex.map(uma, pendentes))
+    copiar_reaproveitadas(projeto, h)
+    folha_contato(projeto, h)
+    if erros:
+        db.evento(projeto["id"], f"{len(erros)} cena(s) com erro; use Refazer nelas.", "aviso")
+    return h
+
+
+def copiar_reaproveitadas(projeto: dict, h: dict):
+    """Cenas marcadas com mesma_imagem_de recebem uma cópia da imagem da cena de origem (custo zero)."""
+    pid = projeto["id"]
+    for c in h["cenas"]:
+        origem = c.get("mesma_imagem_de")
+        if not origem:
+            continue
+        fonte = db.um("SELECT arquivo, seed FROM cenas WHERE projeto_id = ? AND n = ? AND status = 'ok'", (pid, origem))
+        if not fonte or not (config.BASE / fonte["arquivo"]).exists():
+            continue
+        destino = pasta(projeto) / "cenas" / f"{c['n']:02d}.jpg"
+        destino.write_bytes((config.BASE / fonte["arquivo"]).read_bytes())
+        db.executar("INSERT INTO cenas (projeto_id, n, status, seed, versao, prompt_final, arquivo) "
+                    "VALUES (?, ?, 'ok', ?, 0, ?, ?) ON CONFLICT(projeto_id, n) DO UPDATE SET status='ok', "
+                    "seed=excluded.seed, prompt_final=excluded.prompt_final, arquivo=excluded.arquivo, erro=NULL",
+                    (pid, c["n"], fonte["seed"], f"mesma imagem da cena {origem}",
+                     destino.relative_to(config.BASE).as_posix()))
+
+
+def refazer(projeto: dict, canal: dict, h: dict, n: int) -> Path:
+    c = next(x for x in h["cenas"] if x["n"] == n)
+    if c.pop("mesma_imagem_de", None):
+        # Pedir para refazer uma cena reaproveitada = ela passa a ter imagem própria.
+        db.evento(projeto["id"], f"Cena {n} deixa de reaproveitar a imagem anterior e ganha imagem própria.")
+        db.atualizar("projetos", projeto["id"], historia_json=h)
+    atual = db.um("SELECT versao FROM cenas WHERE projeto_id = ? AND n = ?", (projeto["id"], n))
+    versao = (atual["versao"] + 1) if atual else 0
+    # Só usa a ficha/placa criada para ESTE projeto (bib_chave); nunca cai numa entrada antiga com o mesmo id.
+    refs = {}
+    for tipo, lista in (("personagem", h.get("personagens", [])), ("ambiente", h.get("ambientes", []))):
+        for obj in lista:
+            if not obj.get("bib_chave"):
+                continue
+            if tipo == "ambiente" and obj["id"] not in historia.ambientes_recorrentes(h):
+                continue
+            item = db.um("SELECT * FROM biblioteca WHERE canal_id = ? AND tipo = ? AND chave = ?",
+                         (canal["id"], tipo, obj["bib_chave"]))
+            if item:
+                refs[(tipo, obj["id"])] = item
+    destino = gerar_cena(projeto, canal, h, c, refs, versao)
+    copiar_reaproveitadas(projeto, h)  # quem reaproveita esta cena recebe a imagem nova
+    folha_contato(projeto, h)
+    return destino
+
+
+def folha_contato(projeto: dict, h: dict) -> Path | None:
+    cenas = db.todos("SELECT n, arquivo FROM cenas WHERE projeto_id = ? AND status = 'ok' ORDER BY n", (projeto["id"],))
+    if not cenas:
+        return None
+    thumbs = []
+    for c in cenas:
+        im = Image.open(config.BASE / c["arquivo"]).convert("RGB")
+        im.thumbnail((360, 360))
+        thumbs.append((c["n"], im))
+    cw = max(t.width for _, t in thumbs)
+    ch = max(t.height for _, t in thumbs)
+    cols = 4 if cw < ch else 3
+    linhas = (len(thumbs) + cols - 1) // cols
+    folha = Image.new("RGB", (cols * (cw + 10) + 10, linhas * (ch + 10) + 10), (15, 15, 18))
+    d = ImageDraw.Draw(folha)
+    try:
+        fonte = ImageFont.truetype("arialbd.ttf", 36)
+    except OSError:
+        fonte = ImageFont.load_default()
+    for i, (n, t) in enumerate(thumbs):
+        x, y = 10 + (i % cols) * (cw + 10), 10 + (i // cols) * (ch + 10)
+        folha.paste(t, (x, y))
+        d.rectangle([x, y, x + 56, y + 46], fill=(0, 0, 0))
+        d.text((x + 8, y + 4), str(n), fill=(255, 210, 0), font=fonte)
+    destino = pasta(projeto) / "folha_contato.jpg"
+    folha.save(destino, "JPEG", quality=85)
+    return destino
