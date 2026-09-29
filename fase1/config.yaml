@@ -7,8 +7,9 @@ transcricao:
 # Etapa 3: segmentação semântica. O DeepSeek lê a transcrição (inteira, numa
 # chamada só, a não ser que estoure o limite de contexto) e aponta os próprios
 # limites dos blocos candidatos — não é janela de tempo fixo. Prompt igual ao
-# que o app já usa em produção no painel "Cortes IA" (ai_srt._CUTS_PROMPT):
-# pede duração de 1min-2min30 e qualidade acima de quantidade.
+# que o app já usa em produção no painel "Cortes IA" (ai_srt._CUTS_PROMPT),
+# com a duração trocada para 30-50s (ver `bloco` abaixo) e qualidade acima de
+# quantidade.
 segmentacao:
   modelo: "deepseek-chat"
   contexto_seg: 45   # segundos de transcrição extra em cada borda do pedaço,
@@ -17,9 +18,13 @@ segmentacao:
   timeout: 180
   tentativas: 3
 
+# Análise de 29/09/2026 no canal info (95 Shorts com YouTube Analytics): o
+# público assiste ~30-35s qualquer que seja a duração, e o % assistido é o que
+# decide as views (ρ=+0,59). Até 30s: 5/5 passaram de 1.500 views; 31-50s: 7/17;
+# acima de 70s: 0/48 (todos travaram em ~1.000). Antes era 55-155s.
 bloco:
-  duracao_minima: 55   # o prompt já pede 1min-2min30; a margem cobre arredondamento
-  duracao_maxima: 155  # de segmento na borda
+  duracao_minima: 25   # o prompt pede 30-50s; a margem cobre arredondamento
+  duracao_maxima: 60   # de segmento na borda (a Fase 2 tira silêncio e põe a abertura)
 
 # Etapa 4: qualificação rápida e barata de cada candidato, numa chamada só
 # (viral + ritmo + ajuste fino de limites).
@@ -46,7 +51,16 @@ llm:
 consolidacao:
   sobreposicao_maxima: 0.7  # acima disso dois blocos contam como o mesmo
 
+# nota_final = soma ponderada (os pesos somam 1). Na mesma análise de 29/09 a
+# nota antiga (0,5 viral + 0,2 ritmo + 0,3 LLM) não previu views nem retenção
+# (ρ≈0); o viral previu inscritos ganhos (+0,37) e compartilhamentos; ritmo e LLM
+# não previram nada (o LLM dá 0,67 em quase todos). Por isso o LLM continua
+# ajustando limites, mas não pesa mais na nota.
 ranking:
-  peso_viral: 0.5
-  peso_ritmo: 0.2
-  peso_llm: 0.3
+  peso_viral: 0.45
+  peso_abertura: 0.2   # JEV: os primeiros 5-10s prendem? (maior queda da retenção é aí)
+  peso_duracao: 0.25   # 1 até duracao_ideal, cai em linha reta até 0 em duracao_zero
+  peso_ritmo: 0.1
+  peso_llm: 0.0
+  duracao_ideal: 45
+  duracao_zero: 90

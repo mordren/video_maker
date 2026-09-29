@@ -537,7 +537,7 @@ def ponto_de_nota(canal: str, video: dict) -> dict:
     jev = video["jev"]
     return {"canal": canal, "id": video["id"], "titulo": video["titulo"],
             "publicado_em": video["publicado_em"],
-            **{k: jev.get(k) for k in ("nota_final", "viral", "ritmo", "llm", "formato")},
+            **{k: jev.get(k) for k in ("nota_final", "viral", "abertura", "nota_duracao", "ritmo", "llm", "formato")},
             **{k: video.get(k) for k in ("views", "views_engajadas", "retencao_3s",
                                          "media_percentual", "inscritos_ganhos")}}
 

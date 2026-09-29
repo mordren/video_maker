@@ -8,7 +8,7 @@ probabilidades calibradas.
 
 Uma única chamada `decide()` roda várias perguntas em paralelo sobre o mesmo
 `state` sem custo extra de latência (é assim que a API foi desenhada) — por
-isso `qualificar()` faz viral + ritmo + ajuste de limites numa chamada só, em
+isso `qualificar()` faz viral + ritmo + abertura + ajuste de limites numa chamada só, em
 vez de três.
 """
 
@@ -46,7 +46,7 @@ class JEV:
     # Etapa 4 (qualificação dos candidatos que vieram da segmentação por LLM) ----
     def qualificar(self, segmentos: list[dict], n_opcoes: int,
                   gancho: str = "", motivo_editor: str = "") -> dict:
-        """Score viral, ritmo e (se precisar) um ajuste fino dos limites — tudo numa chamada.
+        """Score viral, ritmo, abertura e (se precisar) um ajuste fino dos limites — tudo numa chamada.
 
         Os candidatos já vêm da segmentação semântica (DeepSeek), então já
         devem começar/terminar perto do lugar certo; isto é só um afinamento
@@ -95,6 +95,16 @@ class JEV:
                 "criteria": {"true": "Ritmo firme o tempo todo",
                              "false": "Tem partes arrastadas, repetitivas ou enrolação"},
             },
+            "abertura": {
+                "type": "noul",
+                "instructions": ("Imagine alguém rolando o feed de shorts, sem contexto nenhum. "
+                                 "As primeiras frases deste trecho (os primeiros 5 a 10 segundos) "
+                                 "fazem essa pessoa parar para assistir?"),
+                "criteria": {"true": ("Começa com pergunta direta, confronto, acusação, frase de "
+                                      "efeito ou afirmação forte"),
+                             "false": ("Começa com preâmbulo, cumprimento, explicação técnica ou "
+                                       "abstrata, ou respondendo a algo que não aparece")},
+            },
             "precisa_melhora": {
                 "type": "noul",
                 "instructions": ("Este trecho precisa de ajuste fino nos limites (cortar um "
@@ -119,6 +129,7 @@ class JEV:
         return {
             "score_viral": float(a["viral"]["score"]) + 1.0,
             "ritmo": float(a["ritmo"]["noul"]),
+            "abertura": float(a["abertura"]["noul"]),
             "precisa_melhora": float(a["precisa_melhora"]["noul"]),
             "inicio_idx": _idx(a["inicio"]["choice"], 0),
             "fim_idx": _idx(a["fim"]["choice"], n - 1),

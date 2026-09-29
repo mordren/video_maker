@@ -44,16 +44,20 @@ O que puxar (uma ou mais categorias por corte):
 - número ou afirmação forte que sozinha rende manchete.
 
 Como montar cada corte:
-- DURAÇÃO ENTRE 1MIN E 2MIN30. Isto é obrigatório: um corte com menos de 1min ou mais de \
-2min30 não serve e não deve ser incluído. Um short longo demais não funciona.
-- Para chegar a essa duração, pegue o RACIOCÍNIO INTEIRO em volta do momento forte, não só \
-a frase de efeito. Comece bem antes, quando a pessoa monta o assunto (o gancho, o setup, a \
-pergunta), passe pelo desenvolvimento e só termine depois de a ideia fechar. A frase de \
-efeito é o clímax do corte, não o corte inteiro.
-- Se um momento forte não tiver contexto suficiente em volta para sustentar 1 minuto, NÃO \
-o inclua — melhor deixar de fora do que entregar um corte curto.
-- Um assunto por corte; comece numa abertura que já prende e termine numa frase que fecha, \
-nunca no meio de um raciocínio.
+- DURAÇÃO ENTRE 30 E 50 SEGUNDOS. Isto é obrigatório: menos de 25s ou mais de 55s não serve \
+e não deve ser incluído. O público assiste uns 30-35 segundos e desliza: corte mais longo \
+que isso é mostrado a pouca gente, por melhor que seja o conteúdo.
+- Os primeiros 5 a 10 segundos decidem se a pessoa fica. O corte começa JÁ no momento que \
+prende: a pergunta direta do entrevistador ou do adversário, o confronto, a acusação, a \
+frase de efeito ou a afirmação forte. Se há uma pergunta curta que provoca a resposta, \
+comece nela. NUNCA comece em preâmbulo, cumprimento, explicação técnica ou abstrata, nem \
+numa resposta a algo que não aparece no corte.
+- Depois do começo, vá direto ao ponto: só o necessário para a ideia se entender, sem \
+repetição nem enrolação. Termine logo depois de a ideia fechar — numa frase que conclui \
+ou numa tirada, nunca no meio de um raciocínio.
+- Se um momento forte precisa de mais de 55s de contexto para fazer sentido, procure dentro \
+dele o pedaço de 30-50s que se sustenta sozinho; se não houver, deixe de fora.
+- Um assunto por corte.
 - inicio_id e fim_id: os IDs de segmento exatos da numeração recebida (nunca invente um ID \
 que não apareceu). O corte cobre do início do segmento inicial ao fim do segmento final.
 

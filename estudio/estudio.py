@@ -879,6 +879,7 @@ def notas_dos_cortes():
     def _nota(bloco: dict) -> dict:
         return {"nota_final": bloco.get("nota_final"), "viral": bloco.get("score_viral"),
                 "ritmo": bloco.get("qualidade_interna"), "llm": bloco.get("nota_llm"),
+                "abertura": bloco.get("abertura"), "nota_duracao": bloco.get("nota_duracao"),
                 "precisa_melhora": bloco.get("precisa_melhora")}
 
     cortes: dict[tuple[str, str], dict] = {}
