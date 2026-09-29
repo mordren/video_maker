@@ -129,6 +129,8 @@ def iniciar():
             con.execute("ALTER TABLE projetos ADD COLUMN youtube_id TEXT")
         if "publicador_json" not in colunas:
             con.execute("ALTER TABLE projetos ADD COLUMN publicador_json TEXT")
+        if "modo" not in colunas:
+            con.execute("ALTER TABLE projetos ADD COLUMN modo TEXT")
         colunas = {r["name"] for r in con.execute("PRAGMA table_info(biblioteca)")}
         if "estilo" not in colunas:
             con.execute("ALTER TABLE biblioteca ADD COLUMN estilo TEXT")

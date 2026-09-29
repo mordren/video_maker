@@ -153,8 +153,9 @@ TERROR_GARRAS = {
 
 MODOS_TERROR = [
     {"nome": "Confissão", "regra": "alguém relata algo que aconteceu consigo; 1ª pessoa, tom íntimo, como quem fala baixo"},
-    {"nome": "Relato encontrado", "regra": "a narração lê um áudio, gravação, laudo, bilhete ou mensagem achado por alguém; "
-     "o formato do documento aparece no próprio texto lido"},
+    {"nome": "Relato encontrado", "regra": "a narração inteira é um único documento (áudio, bilhete, diário, carta, laudo) "
+     "lido do começo ao fim, na voz de quem o fez, no tempo em que o fez; ele termina interrompido ou sem conclusão, "
+     "e o que aconteceu depois fica só no que falta. Ninguém narra de fora nem conta como o documento foi achado"},
     {"nome": "Terror cotidiano", "regra": "começa banal, numa situação comum; o absurdo entra sem alarde"},
     {"nome": "Horror psicológico", "regra": "o medo nasce da percepção e da dúvida; nada é confirmado, "
      "o ouvinte duvida do narrador"},
@@ -176,17 +177,17 @@ GARRAS_NOVO = {
                  "Gancho imediato, tensão crescente e final perturbador, em um dos oito modos narrativos do canal.",
     "config": {
         "regras_escrita": [
-            "Escolha UM modo narrativo e o respeite do começo ao fim, sem misturar. O vídeo recebe um modo sugerido, "
-            "para o canal variar; troque só se o assunto já indicar outro claramente.",
+            "Cada vídeo segue UM modo narrativo do começo ao fim, sem misturar.",
             "O assunto pode trazer preferências (medo a ativar, quem conta e como, tipo de final, tom, época, objeto "
             "obrigatório ou proibido). Use o que vier. O que faltar, decida sem perguntar: medo de ser observado, "
             "vítima em 1ª pessoa, final em corte seco.",
-            "Gancho na primeira frase, de até 15 palavras: situação estranha ou detalhe impossível, sem explicar.",
+            "Gancho na primeira frase: a própria situação estranha ou o detalhe impossível, sem explicar e sem "
+            "anunciar de onde o texto veio (documento, registro, bilhete).",
             "Crie tensão antes de revelar qualquer coisa; imagens sensoriais (som, cheiro, luz, temperatura).",
             "Uma reviravolta ou um detalhe impossível no terço final, plantado antes sem destaque.",
             "Final ambíguo, incômodo ou macabro. Não explique tudo: o medo mora no que falta.",
-            "Vocabulário, objetos e cenário da época e do lugar do assunto (celular e semáforo na cidade, tocha e "
-            "taverna na Idade Média), sem trazer o clima de outro cenário.",
+            "Vocabulário, objetos, profissões, lugares e costumes coerentes com a época, o lugar e o meio do assunto; "
+            "nenhuma palavra que pertença a outro tempo ou a outro ambiente.",
             "Nada de clichê (\"era só um sonho\", espelho que mostra outra pessoa, criança que canta). Nada de gore "
             "gratuito: prefira o terror psicológico e atmosférico.",
             "Não repita a estrutura \"ouvi passos, vi uma figura, era algo no final\" sem que o tema peça.",
@@ -306,7 +307,37 @@ def semear():
         salvar(TERROR_GARRAS)
     if not db.um("SELECT id FROM canais WHERE slug = ?", (slugify(GARRAS_NOVO["nome"]),)):
         salvar(GARRAS_NOVO)
+    migrar_regras_garras_novo()
     migrar_voz_qwen()
+
+
+_MODO_RELATO_ANTIGO = ("a narração lê um áudio, gravação, laudo, bilhete ou mensagem achado por alguém; "
+                       "o formato do documento aparece no próprio texto lido")
+
+
+# Regras da primeira versão do Garras Novo trocadas pelas atuais (as que você editou na tela ficam como estão).
+_REGRAS_ANTIGAS = {
+    "Escolha UM modo narrativo e o respeite do começo ao fim, sem misturar. O vídeo recebe um modo sugerido, para o "
+    "canal variar; troque só se o assunto já indicar outro claramente.": 0,
+    "Gancho na primeira frase, de até 15 palavras: situação estranha ou detalhe impossível, sem explicar.": 2,
+    "Vocabulário, objetos e cenário da época e do lugar do assunto (celular e semáforo na cidade, tocha e taverna na "
+    "Idade Média), sem trazer o clima de outro cenário.": 6,
+}
+
+
+def migrar_regras_garras_novo():
+    c = db.um("SELECT id, config_json FROM canais WHERE slug = ?", (slugify(GARRAS_NOVO["nome"]),))
+    if not c:
+        return
+    cfg = db.carregar_json(c["config_json"], {})
+    regras = cfg.get("regras_escrita") or []
+    novas = [GARRAS_NOVO["config"]["regras_escrita"][_REGRAS_ANTIGAS[r]] if r in _REGRAS_ANTIGAS else r for r in regras]
+    modos = cfg.get("modos_narrativos") or []
+    atual = {m["nome"]: m["regra"] for m in MODOS_TERROR}
+    modos_novos = [{**m, "regra": atual[m["nome"]]} if m.get("regra") == _MODO_RELATO_ANTIGO else m for m in modos]
+    if novas != regras or modos_novos != modos:
+        cfg["regras_escrita"], cfg["modos_narrativos"] = novas, modos_novos
+        db.executar("UPDATE canais SET config_json = ? WHERE id = ?", (json.dumps(cfg, ensure_ascii=False), c["id"]))
 
 
 def migrar_voz_qwen():

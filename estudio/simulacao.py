@@ -21,7 +21,8 @@ FRASES = [
 def chat(tarefa, mensagens, ctx):
     rnd = random.Random(tarefa + str(len(str(mensagens))))
     if tarefa == "gancho":
-        return "Na gravação da guarita, o vigia bate três vezes no elevador desligado, e alguém lá de dentro responde com quatro."
+        return ("O vigia bate três vezes na porta do elevador desligado, e alguém lá de dentro responde com quatro, "
+                "no mesmo ritmo.\nModo: Terror cotidiano")
     if tarefa == "ganchos":
         return {"ganchos": [
             "Três da manhã, e alguém bateu na porta da casa que não tem vizinho nenhum.",
