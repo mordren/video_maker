@@ -53,8 +53,8 @@ PRECO_TEXTO_SAIDA = 0.0000012
 
 # Laço da história (Etapa 2)
 LACO_TETO_USD = float(os.getenv("LACO_TETO_USD", "0.01"))
-LACO_MAX_RODADAS = 5
-LACO_SEM_MELHORA = 2
+# Histórias inteiras escritas do zero (com o mesmo gancho) até uma passar no Jev; fica a de melhor nota.
+LACO_MAX_HISTORIAS = int(os.getenv("LACO_MAX_HISTORIAS", "4"))
 GANCHO_MAX_RODADAS = 3
 
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"

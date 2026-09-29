@@ -349,15 +349,23 @@ def sistema_escrita(canal: dict) -> str:
     estilo_texto = ""
     if cfg.get("humanizer", True):
         vocab = ", ".join(_vocabulario_proibido()[:40])
+        # Os padrões do humanizer-br que aparecem em ficção narrada, já na escrita: a história sai limpa na primeira
+        # vez, em vez de passar por uma reescrita inteira depois (que muda fatos e perde as pistas da virada).
         estilo_texto = f"""
-Escrita que não soa como texto gerado por IA:
-- nada de "não X, mas Y" nem "não é só X, é Y"; afirme direto
-- nada de frase de efeito solta nem fileira de fragmentos ("Silêncio. Escuro. Frio."); frase curta, só com fato novo
-- nenhum travessão (— ou –) e nenhum hífen duplo; use vírgula, ponto ou dois-pontos
-- nada de tríade forçada (três adjetivos ou três exemplos só para soar completo)
-- nada de gerúndio pendurado no fim da frase ("..., fazendo com que", "..., deixando")
-- evite estas palavras: {vocab}
-- varie o comprimento das frases, como alguém contando em voz alta"""
+Escrita que não soa como texto gerado por IA (padrões do humanizer-br; cada um denuncia a máquina):
+- "não X, mas Y", "não é só X, é Y", "mais do que X, é Y", ou o contraste partido em duas frases: afirme direto.
+- frase de efeito solta que só repete o que veio antes; fileira de fragmentos curtos ("Silêncio. Escuro. Frio.");
+  frase curta só quando traz um fato novo.
+- aforismo de profundidade falsa ("no fundo", "a verdadeira questão", "o que realmente importa"): diga o fato.
+- tríade forçada: três adjetivos, três exemplos ou três fatos curtos seguidos só para soar completo.
+- várias frases seguidas começando pelo mesmo sujeito ("Ele... Ele... Ele..."): junte ou comece pela ação.
+- travessão (— ou –) e hífen duplo: proibidos; use vírgula, ponto ou dois-pontos.
+- gerúndio pendurado no fim da frase ("..., fazendo com que", "..., deixando", "..., revelando").
+- comparação decorativa ("como quem...", "como se...") pendurada no fim da frase só para enfeitar; no máximo uma
+  no texto inteiro, e só quando mostra algo que o ouvinte não veria de outro jeito.
+- adjetivo vago de medo ("aterrorizante", "sinistro", "inexplicável", "arrepiante") no lugar do fato que assusta.
+- palavras que a IA usa muito mais que gente: {vocab}.
+- varie o comprimento das frases, como alguém contando em voz alta."""
     return f"""Você é o roteirista do canal "{canal['nome']}". {canal['descricao']}
 
 Você escreve a narração de um vídeo curto: um texto corrido, contado de uma vez, que precisa funcionar só no
@@ -536,18 +544,24 @@ def _sem_gancho(h: dict, gancho: str) -> dict:
     return {**h, "narracao": narr[len(gancho):].strip() if narr.startswith(gancho) else narr}
 
 
-def escrever(projeto: dict, canal: dict, gancho: str) -> dict:
+def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | None = None) -> dict:
+    """Escreve a história inteira do zero. fraquezas: onde as versões descartadas falharam no Jev (só o critério,
+    não o texto), para esta sair diferente em vez de remendar a anterior."""
     _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, EST_TEXTO))
     fixo = projeto.get("gancho_fixo")
     pedido = (_pedido_continuacao(canal, gancho) if fixo else
               f"A narração começa exatamente com este gancho, não mude: \"{gancho}\"")
+    antes = ""
+    if fraquezas:
+        antes = ("\n\nOutras versões desta história já foram escritas e descartadas. Escreva uma nova, com outro "
+                 "desenvolvimento, e cuide em especial do que elas não cumpriram:\n" + "\n".join(f"- {f}" for f in fraquezas))
     msgs = [
         {"role": "system", "content": sistema_escrita(canal)},
-        {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\n{pedido}{dica_modo(projeto, canal)}\n\n"
+        {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\n{pedido}{dica_modo(projeto, canal)}{antes}\n\n"
                                     "Escreva a história em JSON."},
     ]
     h, _ = clientes.chat("narrativa", msgs, SCHEMA_NARRATIVA, projeto_id=projeto["id"], etapa="historia",
-                         contexto={"assunto": projeto["assunto"], "gancho": gancho})
+                         temperatura=0.9, contexto={"assunto": projeto["assunto"], "gancho": gancho})
     return _com_gancho(h, gancho) if fixo else normalizar_narrativa(h, gancho)
 
 
@@ -800,67 +814,46 @@ def laco(projeto: dict, canal: dict) -> dict:
         db.evento(pid, f"Recomeçando o laço: US$ {projeto['_base_laco']:.4f} de tentativas anteriores não contam "
                        f"no teto de US$ {projeto['_teto_laco']:.3f} desta execução.")
     ressalva = None
-    melhor = None  # (nota, historia, avaliacao, versao)
-    ultima = None
+    melhor = None  # (chave de comparação, historia, avaliacao, versao, problemas)
+    fraquezas: dict[str, str] = {}
+    n = config.LACO_MAX_HISTORIAS
     try:
-        # O gancho escolhido pelo Jev fica fixo: as reescritas mexem só no resto da história.
+        # O gancho escolhido pelo Jev fica fixo; cada tentativa escreve o resto do zero.
         gancho, _nota_g, _ = escolher_gancho(projeto, canal)
         projeto["gancho_fixo"] = gancho
-        h = escrever(projeto, canal, gancho)
-        sem_melhora = 0
-        for rodada in range(1, config.LACO_MAX_RODADAS + 1):
+        for tentativa in range(1, n + 1):
+            h = escrever(projeto, canal, gancho, list(fraquezas.values()))
             problemas, metricas = checar_narrativa(h, canal)
             if problemas:
-                v = salvar_versao(projeto, h, "escrita" if rodada == 1 else "reescrita",
-                                  {"problemas": problemas, "metricas": metricas}, None)
-                ultima = (h, None, v)
-                db.evento(pid, f"Versão {v}: fora dos limites ({'; '.join(problemas)}). Volta para reescrita sem chamar o Jev.")
-                sem_melhora += 1
-                if rodada == config.LACO_MAX_RODADAS or (sem_melhora >= config.LACO_SEM_MELHORA and melhor):
-                    ressalva = "o laço acabou com a última versão fora dos limites"
-                    break
+                # Tamanho é mecânico: um ajuste só no comprimento, sem reescrever a história.
                 h = reescrever(projeto, canal, h, problemas, None)
-                continue
+                problemas, metricas = checar_narrativa(h, canal)
             aval = avaliar(projeto, canal, h)
-            v = salvar_versao(projeto, h, "escrita" if rodada == 1 else "reescrita",
-                              {"problemas": [], "metricas": metricas}, aval)
-            ultima = (h, aval, v)
+            v = salvar_versao(projeto, h, "escrita", {"problemas": problemas, "metricas": metricas}, aval)
             falhas = ", ".join(aval["falhas"]) or "nenhuma"
-            db.evento(pid, f"Versão {v}: nota geral {aval['nota_geral']:.2f} · falhas: {falhas}")
-            if aval["passou"]:
+            db.evento(pid, f"História {tentativa}/{n} (versão {v}): nota geral {aval['nota_geral']:.2f} · falhas: {falhas}"
+                           f"{' · fora do tamanho: ' + '; '.join(problemas) if problemas else ''}")
+            # Ordem: passa na segurança, cabe no tamanho, nota geral.
+            chave = (not aval["trava_falhou"], not problemas, aval["nota_geral"])
+            if melhor is None or chave > melhor[0]:
+                melhor = (chave, h, aval, v, problemas)
+            if aval["passou"] and not problemas:
                 return {"historia": h, "avaliacao": aval, "ressalva": None, "versao": v}
-            # Uma versão que falha na trava de segurança nunca substitui outra que passa nela.
-            if melhor is None:
-                melhorou = True
-            elif melhor[2]["trava_falhou"] != aval["trava_falhou"]:
-                melhorou = melhor[2]["trava_falhou"]
-            else:
-                melhorou = aval["nota_geral"] > melhor[0]
-            if melhorou:
-                sem_melhora = 0
-                melhor = (aval["nota_geral"], h, aval, v)
-            else:
-                sem_melhora += 1
-            if sem_melhora >= config.LACO_SEM_MELHORA:
-                ressalva = "duas rodadas seguidas sem melhorar a nota"
-                break
-            if rodada == config.LACO_MAX_RODADAS:
-                ressalva = f"{config.LACO_MAX_RODADAS} rodadas sem passar em tudo"
-                break
-            h = reescrever(projeto, canal, h, [], aval)
+            for k in aval["falhas"]:
+                q = aval["perguntas"][k]
+                fraquezas[k] = q["pergunta"]
+        ressalva = f"nenhuma das {n} histórias passou em tudo; ficou a de maior nota"
     except OrcamentoEstourado as e:
         ressalva = str(e)
         db.evento(pid, ressalva, "aviso")
 
     if melhor:
-        nota, h, aval, v = melhor
+        _, h, aval, v, problemas = melhor
         if aval["trava_falhou"]:
             ressalva = f"REPROVADA na pergunta de segurança. {ressalva or ''}".strip()
+        elif problemas:
+            ressalva = f"{ressalva}; fora do tamanho: {'; '.join(problemas)}"
         return {"historia": h, "avaliacao": aval, "ressalva": ressalva or "não passou em todas as notas", "versao": v}
-    if ultima:
-        h, aval, v = ultima
-        return {"historia": h, "avaliacao": aval, "versao": v,
-                "ressalva": f"nenhuma versão ficou dentro dos limites do formato. {ressalva or ''}".strip()}
     raise clientes.ErroAPI(ressalva or "o laço terminou sem nenhuma versão")
 
 
