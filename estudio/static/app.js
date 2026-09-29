@@ -87,7 +87,7 @@ async function telaProjetos() {
     <div class="row">
       <div class="fix" style="min-width:240px"><label>Canal</label>
         <select id="nCanal">${canais.map(c => `<option value="${c.id}">${esc(c.nome)} · ${esc(c.idioma)} · ${esc(c.formato)}</option>`).join('')}</select></div>
-      <div><label>Assunto da história</label><input type="text" id="nAssunto" placeholder="ex.: caseiro ouve arranhões no telhado às três da manhã"></div>
+      <div><label>Assunto da história</label><input type="text" id="nAssunto" placeholder="ex.: vigia noturno ouve batidas dentro do bueiro · ou: guarda de um castelo vê a rainha morta subir a torre"></div>
     </div>
     <div class="row" style="align-items:center;margin-top:6px">
       <label class="inline fix"><input type="checkbox" id="nAuto"> automático (não para nas revisões)</label>

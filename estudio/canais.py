@@ -115,13 +115,16 @@ TERROR_GARRAS = {
     "nome": "Garras no Telhado",
     "idioma": "pt-BR",
     "formato": "short",
-    "descricao": "Causos de terror do interior do Brasil contados como conversa de varanda: sítios isolados, "
-                 "madrugadas, bichos que não deviam existir. Shorts de 1 minuto com final que vira a história.",
+    "descricao": "Histórias de terror curtas em qualquer época e lugar: cidade grande, estrada, prédio, floresta, "
+                 "castelo, aldeia medieval. Fantasmas, aparições, gente que não devia estar ali, assassinos, "
+                 "maldições. Shorts de 1 minuto com final que vira a história.",
     "config": {
         "regras_escrita": [
-            "um personagem principal, no máximo dois ambientes",
-            "narração de causo, frases corridas; só a fala final pode ser curta",
-            "nada de sequência de frases curtas de efeito (\"Arranhões. Lentos.\")",
+            "um personagem principal, no máximo dois ambientes; o ambiente e a época seguem o assunto pedido",
+            "vocabulário, objetos e cenário da época e do lugar do assunto (celular e semáforo na cidade, tocha e "
+            "taverna na Idade Média), sem trazer o clima de outro cenário",
+            "narração de quem conta a história em voz alta, frases corridas; só a fala final pode ser curta",
+            "nada de sequência de frases curtas de efeito (\"Passos. Lentos.\")",
             "final com reviravolta que muda o sentido de algo mostrado antes",
             "texto dentro da imagem só quando for essencial",
         ],
@@ -138,7 +141,7 @@ TERROR_GARRAS = {
         }},
         "estilo": copy.deepcopy(ESTILOS["nanquim"]),
         "voz": {"provedor": "qwen", "modelo": "qwen/qwen-audio-3.0-tts-flash", "nome": "loongjohn", "taxa": "-4%", "tom": "+0Hz",
-                "instrucoes": "voz grave e calma de quem conta um causo na varanda, ritmo lento, clima de suspense",
+                "instrucoes": "voz grave e calma de quem conta uma história de terror em voz baixa, ritmo lento, clima de suspense",
                 "instrucoes_tensao_alta": "mais tenso e baixo, quase sussurrando", "pausa_entre_cenas_s": 0.3},
         "musica": {"volume_solo_db": -6.0, "volume_sob_voz_db": -21.0, "intro_s": 1.5, "cauda_s": 3.0,
                    "rampa_s": 0.35, "humor": "suspense sombrio, drone grave, sem batida marcada"},
@@ -225,7 +228,7 @@ def migrar_voz_qwen():
         antigo_pollinations = str(voz.get("modelo", "")).startswith("qwen/qwen3-tts")
         if voz.get("provedor") and not antigo_pollinations:
             continue
-        # O canal de terror semeado ganha a instrução de causo se ainda não tiver uma.
+        # O canal de terror semeado ganha a instrução de narração se ainda não tiver uma.
         modelo_voz = TERROR_GARRAS["config"]["voz"] if c["slug"] == slugify(TERROR_GARRAS["nome"]) else CONFIG_PADRAO["voz"]
         cfg["voz"] = {**CONFIG_PADRAO["voz"], "taxa": voz.get("taxa", "+0%"),
                       "instrucoes": voz.get("instrucoes") or modelo_voz["instrucoes"],

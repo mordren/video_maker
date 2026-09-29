@@ -189,7 +189,7 @@ def listar_vozes(idioma: str | None = None, provedor: str = "edge", modelo: str 
 
 class PreviaIn(BaseModel):
     voz: dict
-    texto: str = "Seu Anselmo cuidava de um sítio isolado no interior. Trinta anos ali, e nunca teve medo de nada."
+    texto: str = "O vigia trabalhava naquele prédio havia trinta anos, e nunca tinha sentido medo de nada."
 
 
 @app.post("/api/vozes/previa", dependencies=[api])
