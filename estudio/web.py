@@ -142,6 +142,21 @@ def editar_canal(cid: int, dados: CanalIn):
     return {"id": cid}
 
 
+@app.post("/api/canais/previa-prompt", dependencies=[api])
+def previa_prompt(dados: CanalIn):
+    """Os prompts exatos que o Opus (gancho) e o DeepSeek (roteirista) recebem com a configuração da tela."""
+    d = dados.model_dump()
+    canal = {"nome": d["nome"] or "(sem nome)", "idioma": d.get("idioma") or "pt-BR", "descricao": d.get("descricao") or "",
+             "formato": d.get("formato") or "short", "config": canais.mesclar(canais.CONFIG_PADRAO, d.get("config") or {})}
+    assunto = "<assunto do vídeo>"
+    gancho = historia.mensagens_gancho(assunto, canal) if config.MODELO_GANCHO else None
+    return {"modelo_gancho": config.MODELO_GANCHO, "gancho": gancho, "modelo_texto": config.MODELO_TEXTO,
+            "roteirista": [{"role": "system", "content": historia.sistema_escrita(canal)},
+                           {"role": "user", "content": f"Assunto: {assunto}\n\n" + (historia._pedido_continuacao(canal, "<gancho do Opus>")
+                            if config.MODELO_GANCHO else "A narração começa exatamente com este gancho, não mude: \"<gancho>\"") +
+                            "\n\nModo narrativo deste vídeo: <modo escolhido> (...). Siga-o do começo ao fim.\n\nEscreva a história em JSON."}]}
+
+
 @app.post("/api/canais/sugerir", dependencies=[api])
 def sugerir_canal(dados: SugestaoIn):
     return canais.sugerir(dados.nome, dados.descricao, dados.idioma, dados.formato)
@@ -280,6 +295,35 @@ def editar_historia(pid: int, dados: HistoriaIn):
     db.atualizar("projetos", pid, historia_json=h)
     db.evento(pid, "História editada à mão.")
     return {"ok": True}
+
+
+class TextoIn(BaseModel):
+    titulo: str
+    descricao_youtube: str = ""
+    narracao: str
+
+
+@app.put("/api/projetos/{pid}/texto", dependencies=[api])
+def editar_texto(pid: int, dados: TextoIn):
+    """Parada 1: o texto corrido do narrador. Mudou a narração, as cenas são divididas de novo."""
+    p = _projeto(pid)
+    if p["status"] in pipeline.EM_ANDAMENTO:
+        raise HTTPException(409, "o projeto está em processamento")
+    h = p["historia"] or {}
+    narracao = " ".join(dados.narracao.split())
+    if not narracao:
+        raise HTTPException(400, "a narração está vazia")
+    if narracao == historia.narracao_completa(h):
+        h.update(titulo=dados.titulo.strip(), descricao_youtube=dados.descricao_youtube.strip())
+        db.atualizar("projetos", pid, historia_json=h)
+        db.evento(pid, "Título e descrição editados à mão.")
+        return {"redividindo": False}
+    if p["status"] not in ("aguardando_historia", "erro", "interrompido"):
+        raise HTTPException(409, "a narração só pode mudar antes das imagens")
+    db.evento(pid, "Narração editada à mão. Dividindo em cenas de novo.")
+    pipeline.enfileirar(pid, "decupar", narrativa={"titulo": dados.titulo, "descricao_youtube": dados.descricao_youtube,
+                                                    "narracao": narracao})
+    return {"redividindo": True}
 
 
 def _acao(pid: int, estados: tuple, acao: str, msg: str, **args):

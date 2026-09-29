@@ -204,32 +204,37 @@ function renderAcoes(p) {
   });
 }
 
+const contarPalavras = t => (t.match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu) || []).length;
+
 function abaHistoria(p) {
   const el = $('#aba'), h = p.historia;
   if (!h) { el.innerHTML = '<p class="small">A história ainda está sendo escrita. Acompanhe no registro ao lado.</p>'; return; }
   const editavel = !EM_ANDAMENTO.includes(p.status);
+  const podeTexto = editavel && ['aguardando_historia', 'erro', 'interrompido'].includes(p.status);
+  const narracao = (h.cenas || []).map(c => c.narracao).join(' ') || h.narracao || '';
   const efs = presets.efeitos;
   const opts = (tipo, atual, vazio) => (vazio ? `<option value="">(nenhum)</option>` : '') +
     efs.filter(e => e.tipo === tipo).map(e => `<option ${e.nome === atual ? 'selected' : ''}>${e.nome}</option>`).join('');
   const nomes = Object.fromEntries((h.personagens || []).map(x => [x.id, x.nome || x.id]));
   el.innerHTML = `
-  <div class="panel">
-    <label>Título</label><input type="text" id="hTitulo" value="${esc(h.titulo)}" ${editavel ? '' : 'disabled'}>
+  <div class="panel leitura">
+    <input type="text" id="hTitulo" class="titulo-hist" value="${esc(h.titulo)}" ${editavel ? '' : 'disabled'} placeholder="Título">
+    <textarea id="hNarr" class="texto-narrador" ${podeTexto ? '' : 'disabled'}>${esc(narracao)}</textarea>
+    <div class="row" style="align-items:center;margin-top:8px">
+      <span class="small" id="hConta"></span>
+      ${editavel ? '<button class="fix gold" id="hSalvarTexto">Salvar texto</button>' : ''}</div>
+    <div class="small" style="margin-top:6px">${podeTexto ? 'Este é o texto que o narrador lê, do começo ao fim. Se você mudar a narração, as cenas são divididas de novo a partir dele.'
+      : 'A narração fica fixa depois que as imagens começam; o título ainda pode mudar.'}</div>
     <label>Descrição do YouTube</label><textarea id="hDesc" ${editavel ? '' : 'disabled'}>${esc(h.descricao_youtube || '')}</textarea>
-    <div class="grid2">
+  </div>
+  <details class="panel"><summary><b>Cenas, personagens e prompts de imagem</b> <span class="small">(${(h.cenas || []).length} cenas · ajuste fino antes das imagens)</span></summary>
+    <div class="grid2" style="margin-top:10px">
       <div><h3>Personagens</h3>${(h.personagens || []).map(x => `<div><b>${esc(x.nome || x.id)}</b> <span class="small">(${esc(x.id)})</span><br><span class="small">${esc(x.descricao_fixa)}</span></div>`).join('') || '<span class="small">nenhum</span>'}</div>
       <div><h3>Ambientes</h3>${(h.ambientes || []).map(x => `<div><b>${esc(x.id)}</b><br><span class="small">${esc(x.descricao_fixa)}</span></div>`).join('') || '<span class="small">nenhum</span>'}</div>
     </div>
-  </div>
-  <div class="panel"><h3 style="margin-top:0">Narração</h3><p style="line-height:1.7">${esc((h.cenas || []).map(c => c.narracao).join(' ') || h.narracao || '')}</p>
-    <div class="small">A história foi escrita inteira e só depois dividida em ${(h.cenas || []).length} cenas. Editar a narração de uma cena abaixo muda o texto final.</div></div>
-  <div class="panel">
-    <div class="row" style="align-items:center"><h3 style="margin:0">Cenas</h3>
-      <span class="fix small" id="hConta"></span>
-      ${editavel ? '<button class="fix gold" id="hSalvar">Salvar edições</button>' : ''}</div>
-    <table class="scene-edit"><tr><th>#</th><th style="width:36%">Narração</th><th>Prompt de imagem</th><th style="width:130px">Tensão / efeitos</th></tr>
-    ${h.cenas.map((c, i) => `<tr data-i="${i}"><td><b>${c.n}</b></td>
-      <td><textarea data-k="narracao" ${editavel ? '' : 'disabled'}>${esc(c.narracao)}</textarea></td>
+    <table class="scene-edit" style="margin-top:10px"><tr><th>#</th><th style="width:34%">Trecho narrado</th><th>Prompt de imagem</th><th style="width:130px">Tensão / efeitos</th></tr>
+    ${(h.cenas || []).map((c, i) => `<tr data-i="${i}"><td><b>${c.n}</b></td>
+      <td class="small" style="color:var(--txt)">${esc(c.narracao)}</td>
       <td><textarea data-k="prompt_imagem" ${editavel ? '' : 'disabled'}>${esc(c.prompt_imagem)}</textarea>
         <input type="text" data-k="destaque" placeholder="destaque (objeto em vermelho)" value="${esc(c.destaque || '')}" ${editavel ? '' : 'disabled'} style="margin-top:4px">
         <div class="small">${c.personagem ? 'personagem: ' + esc(nomes[c.personagem] || c.personagem) + ' · ' : ''}${c.ambiente ? 'ambiente: ' + esc(c.ambiente) : ''}</div></td>
@@ -237,21 +242,31 @@ function abaHistoria(p) {
         <select data-k="efeito" ${editavel ? '' : 'disabled'} style="margin-top:4px">${opts('movimento', c.efeito)}</select>
         <select data-k="extra" ${editavel ? '' : 'disabled'} style="margin-top:4px">${opts('sobreposicao', c.extra, true)}</select></td></tr>`).join('')}
     </table>
-  </div>`;
+    ${editavel ? '<div class="row" style="margin-top:8px"><span></span><button class="fix" id="hSalvarCenas">Salvar cenas</button></div>' : ''}
+  </details>`;
+  const ta = $('#hNarr');
+  const ajustar = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 4 + 'px'; };
   const conta = () => {
-    const palavras = $$('textarea[data-k=narracao]', el).map(t => (t.value.match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu) || []).length);
-    const total = palavras.reduce((a, b) => a + b, 0);
-    $('#hConta').textContent = `${total} palavras · ~${(total / 2.75).toFixed(0)} s · ${palavras.length} cenas`;
+    const n = contarPalavras(ta.value);
+    $('#hConta').textContent = `${n} palavras · ~${(n / 2.75).toFixed(0)} s de narração${ta.value.trim() !== narracao ? ' · alterado' : ''}`;
   };
-  conta(); $$('textarea[data-k=narracao]', el).forEach(t => t.oninput = conta);
-  if (editavel) $('#hSalvar').onclick = async () => {
+  conta(); ajustar(); ta.oninput = () => { conta(); ajustar(); };
+  if (!editavel) return;
+  $('#hSalvarTexto').onclick = async () => {
+    const mudou = ta.value.trim() !== narracao;
+    if (mudou && !confirm('Salvar o texto novo?\n\nAs cenas serão divididas de novo a partir dele (uma chamada rápida ao DeepSeek). Os prompts de imagem ajustados à mão se perdem.')) return;
+    const r = await acao(() => api(`/api/projetos/${p.id}/texto`, {method: 'PUT', body: {titulo: $('#hTitulo').value, descricao_youtube: $('#hDesc').value, narracao: ta.value}}),
+      mudou ? 'Texto salvo. Dividindo em cenas de novo...' : 'Título e descrição salvos.');
+    telaProjeto(p.id);
+  };
+  $('#hSalvarCenas').onclick = async () => {
     const nova = structuredClone(h);
     nova.titulo = $('#hTitulo').value; nova.descricao_youtube = $('#hDesc').value;
     $$('tr[data-i]', el).forEach(tr => {
       const c = nova.cenas[+tr.dataset.i];
       $$('[data-k]', tr).forEach(f => c[f.dataset.k] = f.dataset.k === 'tensao' ? +f.value : f.value);
     });
-    await acao(() => api(`/api/projetos/${p.id}/historia`, {method: 'PUT', body: {historia: nova}}), 'Edições salvas.');
+    await acao(() => api(`/api/projetos/${p.id}/historia`, {method: 'PUT', body: {historia: nova}}), 'Cenas salvas.');
     telaProjeto(p.id);
   };
 }
@@ -497,31 +512,50 @@ async function telaCanal(id) {
       <span class="small">O DeepSeek lê o nome e a descrição e preenche regras, perguntas do Jev, estilo, voz, efeitos e trilha. Nada é salvo até você clicar em Salvar.</span></div>
   </div>
   <div id="cCorpo"></div>`;
+  const secoes = [['roteiro', 'Roteiro'], ['juiz', 'Juiz (Jev)'], ['visual', 'Imagens'], ['voz', 'Voz e legenda'], ['trilha', 'Trilha'], ['geral', 'Custos e publicação']];
+  let secao = 'roteiro';
+  const linhaRegra = (r, i) => `<div class="regra"><span class="num">${i + 1}</span><textarea data-regra rows="1">${esc(r)}</textarea><button class="small" data-delr title="Remover">×</button></div>`;
+  const linhaModo = m => `<div class="modo"><input type="text" data-modo-nome value="${esc(m.nome)}" placeholder="nome do modo"><textarea data-modo-regra rows="1" placeholder="como esse modo conduz a história">${esc(m.regra)}</textarea><button class="small" data-delm title="Remover">×</button></div>`;
   const corpo = () => {
     $('#cCorpo').innerHTML = `
-    <div class="grid2">
-    <div class="panel"><h3 style="margin-top:0">Escrita</h3>
-      <label>Regras do roteirista (uma por linha)</label><textarea id="cRegras" style="min-height:120px">${esc((cfg.regras_escrita || []).join('\n'))}</textarea>
-      <label>Estrutura (batidas em ordem, separadas por vírgula)</label><input type="text" id="cEstrutura" value="${esc((cfg.estrutura || []).join(', '))}">
-      <div class="row"><div><label>Máx. personagens</label><input type="number" id="cMaxP" min="1" max="3" value="${cfg.max_personagens}"></div>
-        <div><label>Máx. lugares</label><input type="number" id="cMaxA" min="1" max="8" value="${cfg.max_ambientes}" title="Lugares diferentes nas imagens; placa de referência só para os que se repetem"></div>
-        <div><label>Palavras mín.</label><input type="number" id="cPMin" placeholder="do formato" value="${cfg.palavras_min ?? ''}"></div>
-        <div><label>Palavras máx.</label><input type="number" id="cPMax" placeholder="do formato" value="${cfg.palavras_max ?? ''}"></div></div>
-      <label class="inline"><input type="checkbox" id="cHuman" ${cfg.humanizer ? 'checked' : ''}> passar o texto pelo humanizer-br (só português)</label>
-      <div class="row"><div><label>Orçamento por vídeo (US$)</label><input type="number" step="0.01" id="cOrc" value="${cfg.orcamento_usd}"></div>
-        <div><label>Teto do laço da história (US$)</label><input type="number" step="0.005" id="cTetoLaco" value="${cfg.teto_laco_usd ?? ''}" placeholder="${statusSis ? statusSis.teto_laco : '0.01'} (padrão)"></div></div>
-      <div class="row"><div><label>Canal no Publicador</label><input type="text" id="cPubCanal" value="${esc(cfg.publicador_canal || '')}" placeholder="ex.: garras"></div></div>
-      <div class="small">O laço (ganchos, escrita, Jev e reescritas) para quando gasta o teto e fica com a melhor versão. O orçamento por vídeo inclui o laço, as imagens e a narração.</div>
-    </div>
-    <div class="panel"><h3 style="margin-top:0">Juiz (Jev)</h3>
+    <div class="tabs" id="cTabs">${secoes.map(([k, t]) => `<button data-sec="${k}" class="${k === secao ? 'on' : ''}">${t}</button>`).join('')}</div>
+
+    <section data-secao="roteiro">
+      <div class="panel">
+        <div class="row" style="align-items:center"><h3 style="margin:0">Regras do roteirista</h3>
+          <button class="fix" id="cVerPrompt">Ver o prompt completo</button></div>
+        <p class="small">O Opus (gancho) e o DeepSeek (história e reescritas) leem estas regras em todo vídeo. Escreva cada uma como instrução direta. Evite exemplos concretos: o modelo tende a copiá-los.</p>
+        <div id="cRegras">${(cfg.regras_escrita || []).map(linhaRegra).join('')}</div>
+        <button class="small" id="cAddR" style="margin-top:6px">+ regra</button>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">Modos narrativos</h3>
+        <p class="small">O Opus escolhe um por vídeo, o que melhor serve ao assunto, evitando repetir o do vídeo anterior. O DeepSeek segue o modo escolhido do começo ao fim. Sem modos, o canal não usa essa escolha.</p>
+        <div id="cModos">${(cfg.modos_narrativos || []).map(linhaModo).join('')}</div>
+        <button class="small" id="cAddM" style="margin-top:6px">+ modo</button>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">Forma da história</h3>
+        <label>Estrutura (batidas em ordem, separadas por vírgula)</label><input type="text" id="cEstrutura" value="${esc((cfg.estrutura || []).join(', '))}">
+        <div class="row"><div><label>Palavras mín.</label><input type="number" id="cPMin" placeholder="do formato" value="${cfg.palavras_min ?? ''}"></div>
+          <div><label>Palavras máx.</label><input type="number" id="cPMax" placeholder="do formato" value="${cfg.palavras_max ?? ''}"></div>
+          <div><label>Máx. personagens</label><input type="number" id="cMaxP" min="1" max="3" value="${cfg.max_personagens}"></div>
+          <div><label>Máx. lugares</label><input type="number" id="cMaxA" min="1" max="8" value="${cfg.max_ambientes}" title="Lugares diferentes nas imagens"></div></div>
+        <label class="inline"><input type="checkbox" id="cHuman" ${cfg.humanizer ? 'checked' : ''}> passar o texto pelo humanizer-br no fim (só português)</label>
+      </div>
+    </section>
+
+    <section data-secao="juiz"><div class="panel">
       <div class="small">Sempre avaliadas: ${Object.values(presets.universais).map(q => esc(q.pergunta.split('?')[0]) + '?').join(' · ')}</div>
       <label>Perguntas próprias do canal</label>
       <table id="cPerg"><tr><th>chave</th><th>tipo</th><th>pergunta</th><th>corte</th><th></th></tr>
       ${Object.entries(cfg.juiz.perguntas || {}).map(([k, q]) => linhaPergunta(k, q)).join('')}</table>
       <button class="small" id="cAddP" style="margin-top:6px">+ pergunta</button>
+      <div class="small" style="margin-top:6px">Com o gancho escrito pelo Opus, a pergunta "gancho" não é usada: o gancho fica fixo e o Jev julga só o resto da história.</div>
       <div class="small" style="margin-top:6px">score: nota 0 a 10 (corte típico 6 a 8). noul: probabilidade de sim, 0 a 1 (corte típico 0,80 a 0,90). Uma chave igual à de uma universal (ex.: gancho) muda o corte dela.</div>
-    </div>
-    <div class="panel"><h3 style="margin-top:0">Visual</h3>
+    </div></section>
+
+    <section data-secao="visual"><div class="panel">
       <label>Estilo</label><select id="cEstiloPreset"><option value="">(personalizado)</option>${Object.entries(presets.estilos).map(([k, v]) => `<option value="${k}">${esc(v.nome)}</option>`).join('')}</select>
       <label>Nome do estilo</label><input type="text" id="cEstiloNome" value="${esc(cfg.estilo.nome)}">
       <label>Prefixo: vai antes da cena (inglês; o gerador dá mais peso ao começo)</label><textarea id="cEstiloPrefixo" style="min-height:90px">${esc(cfg.estilo.prefixo || '')}</textarea>
@@ -536,7 +570,11 @@ async function telaCanal(id) {
         <td><select data-ext="${t}"><option value="">(nenhum)</option>${presets.efeitos.filter(e => e.tipo === 'sobreposicao').map(e => `<option ${(cfg.efeitos.extras_por_tensao || {})[t] === e.nome ? 'selected' : ''}>${e.nome}</option>`).join('')}</select></td></tr>`).join('')}</table>
       <label>Transição</label><select id="cTrans"><option value="escurecer" ${cfg.efeitos.transicao === 'escurecer' ? 'selected' : ''}>escurecer (0,25 s)</option><option value="corte_seco" ${cfg.efeitos.transicao === 'corte_seco' ? 'selected' : ''}>corte seco</option></select>
     </div>
-    <div class="panel"><h3 style="margin-top:0">Voz</h3>
+    ${id && c.biblioteca.length ? `<div class="panel"><h3 style="margin-top:0">Biblioteca (reaproveitada entre vídeos)</h3><div class="row" style="align-items:flex-start">
+      ${c.biblioteca.map(b => `<div class="fix" style="max-width:200px"><img data-zoom src="/arquivos/${esc(b.arquivo)}" style="max-width:100%;max-height:130px;border-radius:6px"><div class="small"><b>${esc(b.tipo)}: ${esc(b.chave)}</b><br>${esc(b.descricao_fixa).slice(0, 120)}</div></div>`).join('')}</div></div>` : ''}
+    </section>
+
+    <section data-secao="voz"><div class="panel">
       <div class="row"><div class="fix" style="min-width:150px"><label>Serviço</label><select id="cProv">
           <option value="qwen" ${cfg.voz.provedor === 'qwen' ? 'selected' : ''}>Qwen TTS (OpenRouter)</option>
           <option value="edge" ${cfg.voz.provedor !== 'qwen' ? 'selected' : ''}>Edge TTS (grátis)</option></select></div>
@@ -561,9 +599,9 @@ async function telaCanal(id) {
         <div><label>Palavras máx.</label><input type="number" id="cLegMax" value="${cfg.legenda.palavras_max ?? 4}"></div>
         <label class="inline"><input type="checkbox" id="cLegMai" ${cfg.legenda.maiusculas ? 'checked' : ''}> maiúsculas</label>
         <label class="inline"><input type="checkbox" id="cLegKar" ${cfg.legenda.karaoke ? 'checked' : ''}> karaokê</label></div>
-    </div>
-    </div>
-    <div class="panel"><h3 style="margin-top:0">Trilha sonora</h3>
+    </div></section>
+
+    <section data-secao="trilha"><div class="panel">
       <div class="grid2"><div>
         <label>Tipo de trilha</label><input type="text" id="cHumor" value="${esc(cfg.musica.humor || '')}" placeholder="ex.: suspense sombrio, drone grave, sem batida">
         <label>Buscas sugeridas para a Biblioteca de Áudio do YouTube</label><textarea id="cSugTri">${esc((cfg.sugestoes_trilha || []).join('\n'))}</textarea>
@@ -580,14 +618,27 @@ async function telaCanal(id) {
           <input type="file" id="cTriArq" accept="audio/*" multiple style="margin-top:8px">`
         : '<p class="small">Salve o canal primeiro para enviar trilhas.</p>'}
       </div></div>
-    </div>
-    ${id && c.biblioteca.length ? `<div class="panel"><h3 style="margin-top:0">Biblioteca (reaproveitada entre vídeos)</h3><div class="row" style="align-items:flex-start">
-      ${c.biblioteca.map(b => `<div class="fix" style="max-width:200px"><img data-zoom src="/arquivos/${esc(b.arquivo)}" style="max-width:100%;max-height:130px;border-radius:6px"><div class="small"><b>${esc(b.tipo)}: ${esc(b.chave)}</b><br>${esc(b.descricao_fixa).slice(0, 120)}</div></div>`).join('')}</div></div>` : ''}`;
+    </div></section>
+
+    <section data-secao="geral"><div class="panel">
+      <div class="row"><div><label>Orçamento por vídeo (US$)</label><input type="number" step="0.01" id="cOrc" value="${cfg.orcamento_usd}"></div>
+        <div><label>Teto do laço da história (US$)</label><input type="number" step="0.005" id="cTetoLaco" value="${cfg.teto_laco_usd ?? ''}" placeholder="${statusSis ? statusSis.teto_laco : '0.01'} (padrão)"></div>
+        <div><label>Canal no Publicador</label><input type="text" id="cPubCanal" value="${esc(cfg.publicador_canal || '')}" placeholder="nome do canal lá"></div></div>
+      <div class="small" style="margin-top:8px">O laço (escrita, Jev e reescritas do DeepSeek) para quando gasta o teto e fica com a melhor versão. O orçamento por vídeo inclui o gancho do Opus, o laço, as imagens e a narração.</div>
+    </div></section>`;
+    mostrarSecao();
     ligar();
   };
-  const linhaPergunta = (k, q) => `<tr><td><input type="text" data-p="chave" value="${esc(k)}"></td>
-    <td><select data-p="tipo"><option ${q.tipo === 'score' ? 'selected' : ''}>score</option><option ${q.tipo === 'noul' ? 'selected' : ''}>noul</option></select></td>
-    <td><textarea data-p="pergunta" style="min-height:44px">${esc(q.pergunta)}</textarea><label class="inline"><input type="checkbox" data-p="trava" ${q.trava ? 'checked' : ''}> trava (falhou = reprova)</label></td>
+  const mostrarSecao = () => {
+    $$('#cTabs button').forEach(b => b.classList.toggle('on', b.dataset.sec === secao));
+    $$('[data-secao]').forEach(s => s.hidden = s.dataset.secao !== secao);
+    $$('[data-secao]:not([hidden]) textarea[rows]').forEach(autoAltura);
+  };
+  const autoAltura = t => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 2 + 'px'; };
+  const renumerar = () => $$('#cRegras .num').forEach((n, i) => n.textContent = i + 1);
+  const linhaPergunta = (k, q) => `<tr><td style="width:170px"><input type="text" data-p="chave" value="${esc(k)}"></td>
+    <td style="width:90px"><select data-p="tipo"><option ${q.tipo === 'score' ? 'selected' : ''}>score</option><option ${q.tipo === 'noul' ? 'selected' : ''}>noul</option></select></td>
+    <td><textarea data-p="pergunta" rows="1" style="min-height:36px;resize:none;overflow:hidden">${esc(q.pergunta)}</textarea><label class="inline"><input type="checkbox" data-p="trava" ${q.trava ? 'checked' : ''}> trava (falhou = reprova)</label></td>
     <td style="width:80px"><input type="number" step="0.01" data-p="corte" value="${q.corte}"></td><td><button class="small" data-delp>×</button></td></tr>`;
   const carregarVozes = async () => {
     const prov = $('#cProv').value;
@@ -615,7 +666,8 @@ async function telaCanal(id) {
       nome: $('#cNome').value.trim(), idioma: $('#cIdioma').value, formato: $('#cFormato').value, descricao: $('#cDesc').value.trim(),
       config: {
         ...cfg,  // mantém o que a tela não edita (ex.: modos_narrativos)
-        regras_escrita: $('#cRegras').value.split('\n').map(s => s.trim()).filter(Boolean),
+        regras_escrita: $$('[data-regra]').map(t => t.value.trim()).filter(Boolean),
+        modos_narrativos: $$('#cModos .modo').map(d => ({nome: $('[data-modo-nome]', d).value.trim(), regra: $('[data-modo-regra]', d).value.trim()})).filter(m => m.nome && m.regra),
         estrutura: $('#cEstrutura').value.split(',').map(s => s.trim()).filter(Boolean),
         max_personagens: +$('#cMaxP').value, max_ambientes: +$('#cMaxA').value,
         palavras_min: num($('#cPMin').value), palavras_max: num($('#cPMax').value),
@@ -637,9 +689,28 @@ async function telaCanal(id) {
     };
   };
   const ligar = () => {
+    $$('#cTabs button').forEach(b => b.onclick = () => { secao = b.dataset.sec; mostrarSecao(); });
+    const ligarListas = () => {
+      $$('textarea[rows]').forEach(t => t.oninput = () => autoAltura(t));
+      $$('[data-delr]').forEach(b => b.onclick = () => { b.closest('.regra').remove(); renumerar(); });
+      $$('[data-delm]').forEach(b => b.onclick = () => b.closest('.modo').remove());
+    };
+    ligarListas();
+    $('#cAddR').onclick = () => { $('#cRegras').insertAdjacentHTML('beforeend', linhaRegra('', $$('[data-regra]').length)); ligarListas(); $$('[data-regra]').at(-1).focus(); };
+    $('#cAddM').onclick = () => { $('#cModos').insertAdjacentHTML('beforeend', linhaModo({nome: '', regra: ''})); ligarListas(); $$('[data-modo-nome]').at(-1).focus(); };
+    $('#cVerPrompt').onclick = async () => {
+      const r = await acao(() => api('/api/canais/previa-prompt', {method: 'POST', body: coletar()}));
+      const bloco = (titulo, msgs) => `<h3>${esc(titulo)}</h3>` + msgs.map(m => `<div class="small">${m.role === 'system' ? 'instruções fixas (system)' : 'pedido do vídeo (user)'}</div><pre class="prompt">${esc(m.content)}</pre>`).join('');
+      const d = document.createElement('div'); d.className = 'lightbox';
+      d.innerHTML = `<div class="modal"><div class="row" style="align-items:center"><h2 style="margin:0">O que cada modelo recebe</h2><button class="fix" data-fechar>Fechar</button></div>
+        ${r.gancho ? bloco('1. Gancho · ' + r.modelo_gancho + ' (uma chamada por vídeo)', r.gancho) : ''}
+        ${bloco((r.gancho ? '2. ' : '') + 'História · ' + r.modelo_texto + ' (escrita e reescritas)', r.roteirista)}</div>`;
+      d.onclick = e => { if (e.target === d || e.target.dataset.fechar !== undefined) d.remove(); };
+      document.body.append(d);
+    };
     carregarVozes().catch(e => toast('Não consegui listar as vozes: ' + e.message, true));
     $('#cProv').onchange = $('#cModeloVoz').onchange = () => carregarVozes();
-    $('#cAddP').onclick = () => { $('#cPerg').insertAdjacentHTML('beforeend', linhaPergunta('', {tipo: 'score', pergunta: '', corte: 7})); ligarDel(); };
+    $('#cAddP').onclick = () => { $('#cPerg').insertAdjacentHTML('beforeend', linhaPergunta('', {tipo: 'score', pergunta: '', corte: 7})); ligarDel(); ligarListas(); };
     const ligarDel = () => $$('[data-delp]').forEach(b => b.onclick = () => b.closest('tr').remove());
     ligarDel();
     $('#cEstiloPreset').onchange = e => { const s = presets.estilos[e.target.value]; if (s) { $('#cEstiloNome').value = s.nome; $('#cEstiloPrefixo').value = s.prefixo || ''; $('#cEstiloSufixo').value = s.sufixo; } };

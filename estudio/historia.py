@@ -459,17 +459,12 @@ def dica_modo(projeto: dict, canal: dict) -> str:
             "troque só se o assunto já indicar outro modo claramente.")
 
 
-def criar_gancho(projeto: dict, canal: dict) -> str:
-    """Uma chamada só ao modelo forte (Opus): a primeira frase da narração, com a premissa da história dentro,
-    e o modo narrativo que serve ao assunto. O gancho fica fixo; o DeepSeek escreve e reescreve o resto.
-    Conta no orçamento do vídeo, fora do teto do laço."""
-    custos.verificar(projeto["id"], None, EST_GANCHO, float(canal["config"].get("orcamento_usd") or 0.10),
-                     "Orçamento do vídeo (gancho)")
+def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None) -> list[dict]:
+    """O que vai para o Opus. Separado para a tela do canal mostrar o prompt exato."""
     regras = "\n".join(f"- {r}" for r in canal["config"].get("regras_escrita", []))
     modos = canal["config"].get("modos_narrativos") or []
     bloco_modo, formato = "", "Responda só com a frase."
     if modos:
-        ultimo = _ultimo_modo(projeto)
         bloco_modo = ("\n\nModos narrativos do canal (escolha o que melhor serve ao assunto"
                       f"{'; evite repetir ' + ultimo + ', usado no vídeo anterior, se outro servir' if ultimo else ''}):\n" +
                       "\n".join(f"- {m['nome']}: {m['regra']}" for m in modos))
@@ -478,12 +473,22 @@ def criar_gancho(projeto: dict, canal: dict) -> str:
     msgs = [
         {"role": "system", "content": f"Você escreve ganchos para o canal \"{canal['nome']}\". {canal['descricao']}\n\n"
                                       f"Regras do canal:\n{regras}"},
-        {"role": "user", "content": f"Assunto: {projeto['assunto']}{bloco_modo}\n\n"
+        {"role": "user", "content": f"Assunto: {assunto}{bloco_modo}\n\n"
          "Escreva o gancho: a primeira frase que o narrador lê, uma frase só, entre 120 e 150 caracteres, em "
          f"{canal['idioma']}. Ela já carrega a premissa da história (quem, onde e o que há de impossível) e faz quem "
          "rola o feed parar nos 3 primeiros segundos. Não revele o final. Sem aspas, sem título, sem explicação. "
          f"{formato}"},
     ]
+    return msgs
+
+
+def criar_gancho(projeto: dict, canal: dict) -> str:
+    """Uma chamada só ao modelo forte (Opus): a primeira frase da narração, com a premissa da história dentro,
+    e o modo narrativo que serve ao assunto. O gancho fica fixo; o DeepSeek escreve e reescreve o resto.
+    Conta no orçamento do vídeo, fora do teto do laço."""
+    custos.verificar(projeto["id"], None, EST_GANCHO, float(canal["config"].get("orcamento_usd") or 0.10),
+                     "Orçamento do vídeo (gancho)")
+    msgs = mensagens_gancho(projeto["assunto"], canal, _ultimo_modo(projeto))
     txt, custo = clientes.chat("gancho", msgs, projeto_id=projeto["id"], etapa="gancho", temperatura=1.0,
                                max_tokens=2500, modelo=config.MODELO_GANCHO,
                                preco=(config.PRECO_GANCHO_ENTRADA, config.PRECO_GANCHO_SAIDA),

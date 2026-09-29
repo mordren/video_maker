@@ -84,4 +84,18 @@ video{max-width:100%;max-height:78vh;border-radius:6px;background:#000}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{padding:3px 10px;border-radius:14px;background:var(--panel2);border:1px solid var(--line);font-size:12px}
 .muted{opacity:.55}
+.leitura{max-width:760px}
+.titulo-hist{font-size:20px;font-weight:600;background:transparent !important;border-color:transparent !important;padding:4px 0 !important}
+.titulo-hist:focus,.titulo-hist:hover{border-bottom:1px solid var(--line) !important}
+.texto-narrador{font:18px/1.75 Georgia,'Times New Roman',serif;background:var(--bg) !important;padding:18px 20px !important;min-height:320px;resize:none;overflow:hidden}
+.texto-narrador:disabled{color:var(--txt);opacity:1}
+details.panel summary{cursor:pointer}
+.regra,.modo{display:flex;gap:8px;align-items:flex-start;margin-bottom:6px}
+.regra .num{flex:0 0 26px;text-align:right;color:var(--acc);font-weight:700;padding-top:8px}
+.regra textarea,.modo textarea{min-height:36px;resize:none;overflow:hidden;line-height:1.45}
+.modo input{flex:0 0 190px;font-weight:600}
+.regra button,.modo button{margin-top:6px}
+section[hidden]{display:none}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 22px;width:min(920px,94vw);max-height:90vh;overflow:auto;cursor:default}
+pre.prompt{white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:12px;font:12.5px/1.5 Consolas,monospace;margin:4px 0 12px}
 @media(max-width:980px){.layout,.grid2,.grid3{grid-template-columns:1fr}}

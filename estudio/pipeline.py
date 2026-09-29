@@ -46,7 +46,7 @@ def _laco():
             _fila.task_done()
             continue
         try:
-            {"historia": etapa_historia, "imagens": etapa_imagens, "refazer": etapa_refazer,
+            {"historia": etapa_historia, "imagens": etapa_imagens, "refazer": etapa_refazer, "decupar": etapa_decupar,
              "video": etapa_video}[acao](pid, **args)
         except custos.OrcamentoEstourado as e:
             db.evento(pid, str(e), "erro")
@@ -231,8 +231,25 @@ def etapa_historia(pid: int):
             checagem = {"problemas": [], "metricas": historia.checar_narrativa(h, canal)[1], "humanizer": rel}
             historia.salvar_versao(p, h, "humanizada", checagem, rel.get("rechecagem"))
 
-    # Só agora, com o texto final, a história é dividida em cenas.
+    _decupar_e_salvar(p, canal, h, avaliacao_json=aval, ressalva=ressalva)
+    if p["automatico"] and not reprovada:
+        enfileirar(pid, "imagens")
+
+
+def etapa_decupar(pid: int, narrativa: dict):
+    """Texto corrido editado à mão na parada 1: divide em cenas de novo e volta para a sua revisão."""
+    p, canal = _contexto(pid)
+    h = historia.normalizar_narrativa(narrativa)
+    historia.salvar_versao(p, h, "editada", {"problemas": [], "metricas": historia.checar_narrativa(h, canal)[1]}, None)
+    _decupar_e_salvar(p, canal, h)
+    db.evento(pid, "Texto editado dividido em cenas de novo.")
+
+
+def _decupar_e_salvar(p: dict, canal: dict, h: dict, **campos):
+    """Só com o texto final a história é dividida em cenas."""
+    pid = p["id"]
     db.atualizar("projetos", pid, status="decupando")
+    db.executar("DELETE FROM cenas WHERE projeto_id = ?", (pid,))
     h = historia.decupar(p, canal, h, historia.biblioteca_para_decupagem(canal))
     problemas, metricas = historia.checar(h, canal)
     if problemas:
@@ -240,10 +257,7 @@ def etapa_historia(pid: int):
     historia.salvar_versao(p, h, "decupagem", {"problemas": [], "metricas": metricas, "avisos": problemas}, None)
     fmt = config.FORMATOS.get(canal["formato"], config.FORMATOS["short"])
     efeitos.atribuir(h, canal, fmt)
-    db.atualizar("projetos", pid, historia_json=h, avaliacao_json=aval, ressalva=ressalva,
-                 status="aguardando_historia")
-    if p["automatico"] and not reprovada:
-        enfileirar(pid, "imagens")
+    db.atualizar("projetos", pid, historia_json=h, status="aguardando_historia", **campos)
 
 
 def etapa_imagens(pid: int):
