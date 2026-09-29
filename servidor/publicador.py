@@ -630,6 +630,11 @@ def _enviar_item(item_id: str) -> None:
 
         def progresso(mensagem: str) -> None:
             registrar(f"   {titulo}: {mensagem}")
+            # Daqui em diante o vídeo já pode estar no ar: se o serviço cair
+            # antes de registrar o fim, ao subir ele NÃO volta para a fila
+            # (voltar = publicar duplicado — aconteceu em 29/09/2026).
+            if mensagem.startswith("Cliquei no botão de publicar"):
+                _atualizar_item(item_id, publicar_clicado=True)
 
         try:
             # headless=False: o serviço roda sob Xvfb (display virtual — veja
@@ -718,6 +723,7 @@ def _iniciar_envio(item_id: str) -> bool:
             return False
         item["status"] = "enviando"
         item["mensagem"] = ""
+        item["publicar_clicado"] = False                 # vale só para esta tentativa
         salvar_fila(fila)
         _ENVIANDO = item_id
     threading.Thread(target=_enviar_item, args=(item_id,), daemon=True).start()
@@ -1352,13 +1358,27 @@ with _TRAVA:
     _fila_ao_subir = carregar_fila()
     _orfaos = [i for i in _fila_ao_subir["itens"] if i.get("status") == "enviando"]
     for _item in _orfaos:
-        _item["status"] = "aguardando"
-        _item["mensagem"] = "O envio foi interrompido (o serviço reiniciou); vai ser enviado de novo."
+        if _item.get("publicar_clicado"):
+            # Caiu depois do clique em publicar: o vídeo quase certamente já
+            # está no ar. Reenviar publicaria duplicado; o TikTok é que ficou.
+            _item["status"] = "enviado"
+            _item["enviado_em"] = datetime.now().isoformat(timespec="seconds")
+            _item["mensagem"] = ("O serviço caiu logo depois de clicar em publicar — confira no "
+                                 "Studio. Não foi reenviado para não duplicar"
+                                 + (" (o TikTok não saiu)." if not _item.get("tiktok_status") else "."))
+        else:
+            _item["status"] = "aguardando"
+            _item["mensagem"] = "O envio foi interrompido (o serviço reiniciou); vai ser enviado de novo."
     if _orfaos:
         salvar_fila(_fila_ao_subir)
 for _item in _orfaos:
-    registrar(f"↩️ “{_item.get('titulo') or _item['arquivo']}” estava sendo enviado quando o "
-              "serviço caiu — voltou para a fila.")
+    if _item["status"] == "enviado":
+        _anotar_publicado(_item["arquivo"], _item.get("titulo") or "", _item.get("canal") or "")
+        registrar(f"⚠️ “{_item.get('titulo') or _item['arquivo']}” caiu logo depois de clicar em "
+                  "publicar — marcado como publicado (confira no Studio), sem reenviar.")
+    else:
+        registrar(f"↩️ “{_item.get('titulo') or _item['arquivo']}” estava sendo enviado quando o "
+                  "serviço caiu — voltou para a fila.")
 threading.Thread(target=_laco_de_envio, daemon=True, name="fila").start()
 threading.Thread(target=_laco_de_desempenho, daemon=True, name="desempenho").start()
 
