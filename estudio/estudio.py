@@ -365,46 +365,80 @@ def _rodar(tid: str, cmd: list[str]) -> None:
 
 def _baixar(tid: str, url: str, destino: Path) -> Path:
     destino.mkdir(parents=True, exist_ok=True)
-    # Legenda do próprio YouTube em pt ao lado do vídeo — a Fase 1 usa ela e
-    # pula o Whisper do vídeo inteiro. Sem um PO Token, o YouTube só liberava
-    # 360p (formato 18) para qualquer cliente — o plugin bgutil-ytdlp-pot-
-    # -provider (instalado no venv) gera um na hora, via um script Deno
-    # descartável (servidor/bgutil-ytdlp-pot-provider), sem precisar de
-    # navegador nem de um serviço fixo rodando. Com ele o cliente "web"
-    # (default do yt-dlp) já libera até 1080p normalmente.
-    # Vídeo e legenda saem da MESMA chamada ao yt-dlp: duas chamadas em
-    # sequência (vídeo, depois legenda à parte) levavam a um 429 do YouTube
-    # na segunda, porque o rate-limit é por essa rajada de pedidos seguidos —
-    # numa chamada só isso não acontece. O endpoint de legenda do YouTube
-    # também bloqueia sem um fingerprint de navegador de verdade (daí o aviso
-    # de "impersonation" no log) — --impersonate resolve isso via curl_cffi
-    # (instalado no venv). --ignore-errors garante que, mesmo se a legenda
-    # ainda assim tomar 429, o yt-dlp trata como aviso e continua pro vídeo,
-    # em vez de abortar o job inteiro.
+    # Sem um PO Token, o YouTube só liberava 360p (formato 18) para qualquer
+    # cliente — o plugin bgutil-ytdlp-pot-provider (instalado no venv) gera um
+    # na hora, via um script Deno descartável (servidor/bgutil-ytdlp-pot-
+    # provider), sem precisar de navegador nem de um serviço fixo rodando.
+    # --impersonate: fingerprint de navegador de verdade via curl_cffi.
     # --progress-delta: uma linha de progresso a cada 20 s, não a cada pedaço.
+    # A legenda sai numa chamada à parte, depois (ver _baixar_legenda).
     cmd = [str(YTDLP), "--no-playlist", "--match-filter", "!is_live", "--progress-delta", "20",
            "--retries", "10", "--fragment-retries", "10", "--extractor-retries", "3",
-           "--ignore-errors", "--impersonate", "chrome",
+           "--impersonate", "chrome",
            # AV1 por último: o OpenCV do crop dinâmico não decodifica AV1
            # (0 quadros lidos, o crop quebra e o corte é perdido).
            "-N", "8", "-f", "bv*[height<=1080][vcodec!^=av01]+ba/bv*[height<=1080]+ba/b",
            "--merge-output-format", "mp4",
-           "--write-subs", "--write-auto-subs", "--sub-langs", "pt-BR,pt,pt-orig",
-           "--sub-format", "ttml/best", "--convert-subs", "srt",
-           "-P", str(destino), "-o", "%(title).150B.%(ext)s", url]
-    try:
-        _rodar(tid, cmd)
-    except RuntimeError:
-        # Com --ignore-errors isso só deve disparar se o vídeo em si falhar
-        # (a legenda sozinha vira aviso, não erro fatal) — mas confere mesmo
-        # assim antes de desistir.
-        if not [p for p in destino.iterdir() if p.suffix.lower() in EXTENSOES]:
-            raise
-        _registrar(tid, "   (legenda do YouTube indisponível — segue sem ela, o Whisper cobre)")
+           "-P", str(destino), "-o", _NOME_DOWNLOAD, url]
+    _rodar(tid, cmd)
     videos = [p for p in destino.iterdir() if p.suffix.lower() in EXTENSOES]
     if not videos:
         raise RuntimeError("o download terminou mas nenhum vídeo apareceu na pasta")
-    return max(videos, key=lambda p: p.stat().st_size)
+    video = max(videos, key=lambda p: p.stat().st_size)
+    _baixar_legenda(tid, url, destino, video)
+    return video
+
+
+# Mesmo nome do vídeo e da legenda: a Fase 1 acha o SRT pelo nome-base do
+# vídeo (fase1/transcricao.py:candidatos_srt).
+_NOME_DOWNLOAD = "%(title).150B.%(ext)s"
+_ESPERAS_LEGENDA = (0, 30)   # tentativas pelo yt-dlp (espera antes de cada uma, em s)
+
+
+def _baixar_legenda(tid: str, url: str, destino: Path, video: Path) -> None:
+    """Legenda do próprio YouTube ao lado do vídeo — a Fase 1 usa ela e pula o
+    Whisper do vídeo inteiro (o usuário prefere a do YouTube). Nunca derruba o
+    trabalho: sem legenda, a Fase 1 transcreve.
+
+    Em 29/09/2026 o endereço de legendas (timedtext) passou a dar 429 para o
+    IP de casa. O que se sabe (issues do yt-dlp #13831/#11059 e o guia de PO
+    Token): a faixa "pt" de uma live em português é uma TRADUÇÃO automática
+    (a original é "pt-orig"), e tradução é o que o YouTube mais limita; e o
+    cliente padrão pede a legenda sem o PO token de legenda. Por isso aqui
+    vai só a original, pelo cliente "web" (o bgutil gera o token "subs"),
+    com uma segunda tentativa espaçada. Se ainda assim não vier, lê o painel
+    "Transcrição" da página (estudio/legenda_youtube.py), que usa outro
+    caminho do YouTube e funcionou do mesmo IP bloqueado.
+    """
+    def legendas() -> list[Path]:
+        return [p for p in destino.iterdir()
+                if p.suffix.lower() == ".srt" and p.name.startswith(video.stem + ".")]
+
+    cmd = [str(YTDLP), "--no-playlist", "--skip-download", "--ignore-no-formats-error",
+           "--impersonate", "chrome", "--extractor-args", "youtube:player_client=web",
+           "--write-subs", "--write-auto-subs", "--sub-langs", "pt-orig,pt-BR",
+           "--sub-format", "ttml/best", "--convert-subs", "srt",
+           "-P", str(destino), "-o", _NOME_DOWNLOAD, url]
+    for espera in _ESPERAS_LEGENDA:
+        if espera:
+            _registrar(tid, f"   legenda do YouTube não veio; nova tentativa em {espera} s")
+            time.sleep(espera)
+        _checar_cancelamento(tid)
+        try:
+            _rodar(tid, cmd)
+        except RuntimeError:
+            pass                                          # o 429 já saiu no log
+        if legendas():
+            return
+    _registrar(tid, "   legenda pelo yt-dlp indisponível — lendo a transcrição da página do vídeo")
+    _checar_cancelamento(tid)
+    try:
+        _rodar(tid, [sys.executable, str(Path(__file__).with_name("legenda_youtube.py")), url,
+                     str(destino / f"{video.stem}.pt.srt")])
+    except RuntimeError:
+        pass
+    if not legendas():
+        _registrar(tid, "   (legenda do YouTube indisponível — segue sem ela, o Whisper cobre)")
 
 
 def _blocos_do_csv(video: Path, csv_path: Path, destino: Path) -> Path:
