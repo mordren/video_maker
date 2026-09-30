@@ -5,6 +5,7 @@ Ficha e placa ficam na biblioteca do canal e são reaproveitadas de um vídeo pa
 """
 import difflib
 import hashlib
+import io
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +46,16 @@ def _verificar_orcamento(projeto, canal, preco=None):
 def _salvar(dados: bytes, destino: Path):
     destino.parent.mkdir(parents=True, exist_ok=True)
     destino.write_bytes(dados)
+
+
+def _recortar_bordas(dados: bytes, fracao: float) -> bytes:
+    """Tira a moldura de papel que certos estilos (página impressa) desenham e volta ao tamanho original."""
+    im = Image.open(io.BytesIO(dados)).convert("RGB")
+    w, h = im.size
+    dx, dy = round(w * fracao), round(h * fracao)
+    saida = io.BytesIO()
+    im.crop((dx, dy, w - dx, h - dy)).resize((w, h), Image.LANCZOS).save(saida, "JPEG", quality=95)
+    return saida.getvalue()
 
 
 def _url_valida(item: dict) -> str | None:
@@ -96,7 +107,7 @@ def aplicar_estilo(canal: dict, miolo: list[str], destaque: str | None = None) -
     troca = (destaque or "").strip() or SEM_DESTAQUE
     prefixo = _MARCADOR.sub(troca, _limpar(est.get("prefixo", "")))
     sufixo = _MARCADOR.sub(troca, _limpar(est.get("sufixo", "")))
-    partes = [prefixo] + [_limpar(m).rstrip(".") for m in miolo] + [_orientacao(canal), sufixo]
+    partes = [prefixo, _orientacao(canal)] + [_limpar(m).rstrip(".") for m in miolo] + [sufixo]
     return ". ".join(p for p in partes if p)
 
 
@@ -126,9 +137,20 @@ def _entrada_biblioteca(canal, projeto, tipo: str, chave: str, descricao: str) -
         for item in db.todos("SELECT * FROM biblioteca WHERE canal_id = ? AND tipo = ? AND (chave = ? OR chave LIKE ?) "
                              "AND estilo = ? ORDER BY id DESC", (canal["id"], tipo, chave, f"{chave}-p%", assinatura)):
             if _parecido(item["descricao_fixa"], descricao) and item.get("arquivo") and \
-                    (config.BASE / item["arquivo"]).exists():
+                    (config.BASE / item["arquivo"]).exists() and not _folha_antiga(item):
                 return item, item["chave"]
     return None, _chave_livre(canal, tipo, chave, projeto["id"])
+
+
+def _folha_antiga(item: dict) -> bool:
+    """Fichas feitas antes do retrato único (várias vistas numa imagem) não servem mais de referência."""
+    if item["tipo"] != "personagem":
+        return False
+    try:
+        meta = json.loads((config.BASE / item["arquivo"]).with_suffix(".json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return "reference sheet" in (meta.get("prompt") or "").lower()
 
 
 def _pasta_bib(canal, tipo, chave) -> Path:
@@ -148,9 +170,11 @@ def _gerar_referencia(projeto: dict, canal: dict, tipo: str, obj: dict, idx: int
     _verificar_orcamento(projeto, canal)
     fmt = config.FORMATOS.get(canal["formato"], config.FORMATOS["short"])
     if tipo == "personagem":
-        miolo = [f"Character reference sheet of {obj.get('nome') or obj['id']}, {obj['descricao_fixa']}",
-                 "Full body front view, side view, back view, plus three face close-ups (neutral, surprised, afraid)",
-                 "Plain light background, consistent proportions"]
+        # Um retrato só. A antiga folha (frente, lado, costas e três closes) mostrava seis cópias da pessoa, e o
+        # gerador repetia gente na cena ou misturava os rostos quando havia duas referências.
+        miolo = [f"Portrait of one single person: {obj['descricao_fixa']}",
+                 "Three-quarter body, facing the camera, neutral expression, arms relaxed, full outfit visible",
+                 "Plain light grey background, even soft light, nothing else in the image, only this one person"]
         w, hh, seed, arquivo = fmt["ficha_largura"], fmt["ficha_altura"], projeto["seed_base"] + idx, "ficha"
     else:
         miolo = [f"Establishing shot of {obj['descricao_fixa']}", "Empty location, no people, no characters"]
@@ -177,7 +201,7 @@ def _gerar_referencia(projeto: dict, canal: dict, tipo: str, obj: dict, idx: int
 def preparar_referencias(projeto: dict, canal: dict, h: dict) -> dict:
     """Garante ficha de cada personagem e placa de cada ambiente recorrente. Devolve {('personagem', id): item}."""
     refs = {}
-    usados = {c["personagem"] for c in h["cenas"] if c.get("personagem")}
+    usados = {i for c in h["cenas"] for i in historia.personagens_cena(c)}
     for idx, p in enumerate(h.get("personagens", [])):
         if p["id"] in usados:
             refs[("personagem", p["id"])] = _gerar_referencia(projeto, canal, "personagem", p, idx)
@@ -189,26 +213,31 @@ def preparar_referencias(projeto: dict, canal: dict, h: dict) -> dict:
 
 
 def montar_prompt(h: dict, c: dict, canal: dict, refs: dict) -> tuple[str, list[str]]:
+    """Ordem do prompt: estilo, orientação, lugar e luz, uma linha por pessoa no lugar dela, clima e destaque."""
     miolo = [c["prompt_imagem"]]
     urls = []
-    if c.get("personagem"):
-        p = next((x for x in h.get("personagens", []) if x["id"] == c["personagem"]), None)
-        if p:
-            item = refs.get(("personagem", p["id"]))
-            if item:
-                urls.append(url_referencia(item))
-                miolo.append(f"{p.get('nome') or p['id']} is the character from the reference sheet: {p['descricao_fixa']}")
-            else:
-                miolo.append(f"{p.get('nome') or p['id']}: {p['descricao_fixa']}")
     if c.get("ambiente"):
         a = next((x for x in h.get("ambientes", []) if x["id"] == c["ambiente"]), None)
         if a:
             item = refs.get(("ambiente", a["id"]))
             if item:
                 urls.append(url_referencia(item))
-                miolo.append(f"Setting, same place as the location reference image: {a['descricao_fixa']}")
+                miolo.append(f"Setting: the same place as reference image {len(urls)} (same layout, objects and "
+                             f"materials, seen from this scene's angle): {a['descricao_fixa']}")
             else:
                 miolo.append(f"Setting: {a['descricao_fixa']}")
+    fichas = {x["id"]: x for x in h.get("personagens", [])}
+    pessoas = [p for p in historia.pessoas_cena(c) if p["id"] in fichas]
+    if len(pessoas) > 1:
+        miolo.append(f"Exactly {len(pessoas)} people in the image, each clearly distinct")
+    if any(refs.get(("personagem", p["id"])) for p in pessoas):
+        miolo.append("Portrait references are for identity only (face, hair, body, clothes); ignore their pose, "
+                     "framing and plain background")
+    for p in pessoas:
+        item = refs.get(("personagem", p["id"]))
+        if item:
+            urls.append(url_referencia(item))
+        miolo.append(historia.descrever_pessoa(fichas[p["id"]], p, len(urls) if item else None))
     return aplicar_estilo(canal, miolo, c.get("destaque")), urls
 
 
@@ -227,7 +256,8 @@ def gerar_cena(projeto: dict, canal: dict, h: dict, c: dict, refs: dict, versao:
         destino = pasta(projeto) / "cenas" / f"{n:02d}.jpg"
         if destino.exists() and versao > 0:
             destino.replace(destino.with_name(f"{n:02d}_v{versao - 1}.jpg"))
-        _salvar(dados, destino)
+        recorte = float((canal["config"].get("estilo") or {}).get("recorte") or 0)
+        _salvar(_recortar_bordas(dados, recorte) if recorte > 0 else dados, destino)
         db.executar("UPDATE cenas SET status = 'ok', arquivo = ? WHERE projeto_id = ? AND n = ?",
                     (destino.relative_to(config.BASE).as_posix(), pid, n))
         return destino

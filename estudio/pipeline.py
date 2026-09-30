@@ -291,14 +291,23 @@ def etapa_video(pid: int):
     qwen = (voz.get("provedor") or "edge") == "qwen"
     db.evento(pid, f"Narrando com {voz.get('nome')} ({voz.get('modelo') if qwen else 'Edge TTS'})"
                    f"{', uma cena por vez' if qwen else ''}...")
-    narr = narracao.narrar(pasta, h["cenas"], voz, pid)
-    if not qwen:
-        custos.registrar(pid, "narracao", "edge-tts", voz.get("nome"), 0.0, True, f"{narr['duracao']:.1f}s")
-    for t in narr["cenas"]:
-        db.executar("UPDATE cenas SET inicio = ?, fim = ? WHERE projeto_id = ? AND n = ?", (t["inicio"], t["fim"], pid, t["n"]))
-    db.evento(pid, f"Narração com {narr['duracao']:.1f}s.")
-    db.atualizar("projetos", pid, status="montando")
-    saida = montagem.montar(obter(pid), canal, h, narr)
+    # O CTA do canal entra só na fala e na legenda da última cena; o texto aprovado da história não muda.
+    ultima = h["cenas"][-1]
+    fala = ultima["narracao"]
+    cta = (canal["config"].get("cta") or "").strip()
+    if cta:
+        ultima["narracao"] = f"{fala} {cta if cta[-1] in '.!?' else cta + '.'}"
+    try:
+        narr = narracao.narrar(pasta, h["cenas"], voz, pid)
+        if not qwen:
+            custos.registrar(pid, "narracao", "edge-tts", voz.get("nome"), 0.0, True, f"{narr['duracao']:.1f}s")
+        for t in narr["cenas"]:
+            db.executar("UPDATE cenas SET inicio = ?, fim = ? WHERE projeto_id = ? AND n = ?", (t["inicio"], t["fim"], pid, t["n"]))
+        db.evento(pid, f"Narração com {narr['duracao']:.1f}s{f' (CTA no fim: {cta})' if cta else ''}.")
+        db.atualizar("projetos", pid, status="montando")
+        saida = montagem.montar(obter(pid), canal, h, narr)
+    finally:
+        ultima["narracao"] = fala
     db.atualizar("projetos", pid, historia_json=h, status="pronto")
     tam = saida.stat().st_size / 1024 / 1024
     db.evento(pid, f"Vídeo pronto: {saida.name} ({tam:.1f} MB). Custo total US$ {custos.total(pid):.4f}.")

@@ -65,10 +65,10 @@ FORMATOS = {
         "nome": "Short 9:16",
         "largura": 1080, "altura": 1920, "fps": 30,
         "img_largura": 1088, "img_altura": 1920,
-        "ficha_largura": 1536, "ficha_altura": 1024,
-        "max_imagens": 12, "min_cenas": 5,
+        "ficha_largura": 1024, "ficha_altura": 1536,
+        "max_imagens": 9, "min_cenas": 5,
         "palavras_min": 150, "palavras_max": 170,
-        # 9 s deixa a história decidir entre ~7 e 12 imagens (com 7 s, 55 s de narração exigiriam 8 ou mais).
+        # 9 s por cena deixa a história decidir entre ~7 e 9 imagens (mais que isso repetia a mesma coisa).
         "max_cena_s": 9.0,
         "crf": 21, "maxrate": "3M",
         "movimento_padrao": "zoom_in",
@@ -77,7 +77,7 @@ FORMATOS = {
         "nome": "Longo 16:9",
         "largura": 1920, "altura": 1080, "fps": 30,
         "img_largura": 2048, "img_altura": 1152,
-        "ficha_largura": 1536, "ficha_altura": 1024,
+        "ficha_largura": 1024, "ficha_altura": 1536,
         "max_imagens": 40, "min_cenas": 20,
         "palavras_min": 1300, "palavras_max": 2400,
         "max_cena_s": 30.0,

@@ -3,6 +3,8 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const rotaAtiva = hash => (location.hash || '#/') === hash;
+// pessoas da cena: [{id, onde, faz}] (projetos antigos guardavam só o id)
+const quem = c => c.pessoas || (c.personagens || (c.personagem ? [c.personagem] : [])).map(id => ({id, onde: '', faz: ''}));
 const usd = v => 'US$ ' + Number(v || 0).toFixed(4);
 const app = $('#app');
 let timer = null, presets = null, statusSis = null;
@@ -237,7 +239,7 @@ function abaHistoria(p) {
       <td class="small" style="color:var(--txt)">${esc(c.narracao)}</td>
       <td><textarea data-k="prompt_imagem" ${editavel ? '' : 'disabled'}>${esc(c.prompt_imagem)}</textarea>
         <input type="text" data-k="destaque" placeholder="destaque (objeto em vermelho)" value="${esc(c.destaque || '')}" ${editavel ? '' : 'disabled'} style="margin-top:4px">
-        <div class="small">${c.personagem ? 'personagem: ' + esc(nomes[c.personagem] || c.personagem) + ' · ' : ''}${c.ambiente ? 'ambiente: ' + esc(c.ambiente) : ''}</div></td>
+        <div class="small">${quem(c).map(p => `<b>${esc(nomes[p.id] || p.id)}</b>${p.onde ? ' ' + esc(p.onde) : ''}${p.faz ? ': ' + esc(p.faz) : ''}<br>`).join('')}${c.ambiente ? 'ambiente: ' + esc(c.ambiente) : ''}</div></td>
       <td><select data-k="tensao" ${editavel ? '' : 'disabled'}>${[1, 2, 3, 4, 5].map(t => `<option ${t == c.tensao ? 'selected' : ''}>${t}</option>`).join('')}</select>
         <select data-k="efeito" ${editavel ? '' : 'disabled'} style="margin-top:4px">${opts('movimento', c.efeito)}</select>
         <select data-k="extra" ${editavel ? '' : 'disabled'} style="margin-top:4px">${opts('sobreposicao', c.extra, true)}</select></td></tr>`).join('')}
@@ -497,8 +499,10 @@ async function telaCanais() {
 const IDIOMAS = ['pt-BR', 'pt-PT', 'en-US', 'en-GB', 'es-ES', 'es-MX', 'fr-FR', 'de-DE', 'it-IT', 'ja-JP'];
 
 async function telaCanal(id) {
+  let recorteEstilo = 0;  // bordas a tirar de cada cena (estilos que desenham moldura); vem do estilo escolhido
   const c = id ? await api('/api/canais/' + id) : {nome: '', idioma: 'pt-BR', descricao: '', formato: 'short', config: structuredClone(presets.padrao), trilhas: [], biblioteca: []};
   const cfg = c.config;
+  recorteEstilo = cfg.estilo.recorte || 0;
   app.innerHTML = `
   <div class="row" style="align-items:center"><h2 style="margin:0">${id ? 'Canal: ' + esc(c.nome) : 'Novo canal'}</h2>
     <button class="fix" onclick="location.hash='#/canais'">Voltar</button><button class="fix main" id="cSalvar">Salvar canal</button></div>
@@ -585,6 +589,8 @@ async function telaCanal(id) {
         <button class="fix" id="cOuvir">Ouvir</button></div>
       <div data-instr><label>Como falar (instrução para o Qwen)</label><input type="text" id="cInstr" value="${esc(cfg.voz.instrucoes || '')}" placeholder="ex.: voz grave e calma, ritmo lento, clima de suspense">
         <label>A mais nas cenas de tensão 4 e 5</label><input type="text" id="cInstrAlta" value="${esc(cfg.voz.instrucoes_tensao_alta || '')}" placeholder="ex.: mais tenso, quase sussurrando"></div>
+      <label>CTA no fim do vídeo (4 ou 5 palavras, dito pelo narrador depois da última frase; vazio = sem CTA)</label>
+      <input type="text" id="cCta" value="${esc(cfg.cta || '')}" placeholder="ex.: Siga para mais histórias.">
       <div class="small" data-qwen style="margin-top:6px">O Qwen gera a narração cena por cena, então cada imagem entra exatamente quando a fala dela começa. Velocidade no formato -6% ou +5%. A prévia custa cerca de US$ 0,0015 no OpenRouter.</div>
       <audio id="cAudio" controls style="width:100%;margin-top:8px;display:none"></audio>
       <h3>Legenda</h3>
@@ -671,9 +677,9 @@ async function telaCanal(id) {
         estrutura: $('#cEstrutura').value.split(',').map(s => s.trim()).filter(Boolean),
         max_personagens: +$('#cMaxP').value, max_ambientes: +$('#cMaxA').value,
         palavras_min: num($('#cPMin').value), palavras_max: num($('#cPMax').value),
-        humanizer: $('#cHuman').checked, orcamento_usd: +$('#cOrc').value, publicador_canal: $('#cPubCanal').value.trim(), teto_laco_usd: num($('#cTetoLaco').value),
+        humanizer: $('#cHuman').checked, orcamento_usd: +$('#cOrc').value, publicador_canal: $('#cPubCanal').value.trim(), cta: $('#cCta').value.trim(), teto_laco_usd: num($('#cTetoLaco').value),
         juiz: {perguntas},
-        estilo: {nome: $('#cEstiloNome').value, prefixo: $('#cEstiloPrefixo').value.trim(), sufixo: $('#cEstiloSufixo').value.trim()},
+        estilo: {nome: $('#cEstiloNome').value, prefixo: $('#cEstiloPrefixo').value.trim(), sufixo: $('#cEstiloSufixo').value.trim(), recorte: recorteEstilo},
         reaproveitar_biblioteca: $('#cReaproveitar').checked,
         resolucao_base: +$('#cRes').value,
         efeitos: {...cfg.efeitos, por_tensao: pt, extras_por_tensao: ex, transicao: $('#cTrans').value},
@@ -713,7 +719,7 @@ async function telaCanal(id) {
     $('#cAddP').onclick = () => { $('#cPerg').insertAdjacentHTML('beforeend', linhaPergunta('', {tipo: 'score', pergunta: '', corte: 7})); ligarDel(); ligarListas(); };
     const ligarDel = () => $$('[data-delp]').forEach(b => b.onclick = () => b.closest('tr').remove());
     ligarDel();
-    $('#cEstiloPreset').onchange = e => { const s = presets.estilos[e.target.value]; if (s) { $('#cEstiloNome').value = s.nome; $('#cEstiloPrefixo').value = s.prefixo || ''; $('#cEstiloSufixo').value = s.sufixo; } };
+    $('#cEstiloPreset').onchange = e => { const s = presets.estilos[e.target.value]; if (s) { $('#cEstiloNome').value = s.nome; $('#cEstiloPrefixo').value = s.prefixo || ''; $('#cEstiloSufixo').value = s.sufixo; recorteEstilo = s.recorte || 0; } };
     $('#cLegPreset').onchange = e => {
       const l = presets.legendas[e.target.value]; if (!l || l.desligada) return;
       $('#cLegFonte').value = l.fonte; $('#cLegTam').value = l.tamanho; $('#cLegCor').value = l.cor; $('#cLegDest').value = l.destaque;

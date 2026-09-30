@@ -29,6 +29,13 @@ ESTILOS = {
         "sufixo": "cinematic film still, dramatic lighting, deep shadows, 35mm photography, muted desaturated "
                   "colors, no text",
     },
+    "pulp_50": {
+        "nome": "Quadrinho de terror anos 50 (pulp)",
+        "prefixo": "1950s pulp horror comic book panel, bold black inks, halftone dots, vintage four-color print, "
+                   "lurid saturated colors, coarse printed texture, edge-to-edge artwork, the scene fills the entire canvas",
+        "sufixo": "sensational horror, unsettling, dread, no text, no speech balloons, no caption boxes",
+        "recorte": 0.04,  # o estilo desenha moldura de papel; o programa tira 4% de cada borda de cada cena
+    },
     # O prefixo vem antes da cena (o Flux dá mais peso ao começo do prompt); o sufixo, depois.
     # [ELEMENTO EM VERMELHO] é trocado pelo "destaque" que o roteirista escolhe para cada cena.
     "ito_manga": {
@@ -109,6 +116,7 @@ CONFIG_PADRAO = {
     "reaproveitar_biblioteca": False,
     "modos_narrativos": [],  # [{"nome", "regra"}]: um por vídeo, em rodízio (ver historia.dica_modo)
     "publicador_canal": "",  # nome do canal no Publicador (ex.: garras)
+    "cta": "Siga para mais histórias.",  # dito pelo narrador depois da última frase; vazio = sem CTA
     "sugestoes_trilha": [],
 }
 

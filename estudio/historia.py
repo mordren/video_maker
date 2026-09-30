@@ -48,9 +48,13 @@ SCHEMA_DECUPAGEM = {
             "properties": {"id": {"type": "string"}, "descricao_fixa": {"type": "string"}}}},
         "cenas": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["de", "ate", "prompt_imagem", "personagem", "ambiente", "tensao", "destaque"],
+            "required": ["de", "ate", "prompt_imagem", "pessoas", "ambiente", "tensao", "destaque"],
             "properties": {"de": {"type": "integer"}, "ate": {"type": "integer"},
-                           "prompt_imagem": {"type": "string"}, "personagem": {"type": "string"},
+                           "prompt_imagem": {"type": "string"},
+                           "pessoas": {"type": "array", "items": {
+                               "type": "object", "additionalProperties": False, "required": ["id", "onde", "faz"],
+                               "properties": {"id": {"type": "string"}, "onde": {"type": "string"},
+                                              "faz": {"type": "string"}}}},
                            "ambiente": {"type": "string"}, "tensao": {"type": "integer"},
                            "destaque": {"type": "string"}}}},
     },
@@ -59,8 +63,12 @@ SCHEMA_DECUPAGEM = {
 SCHEMA_PROMPTS = {
     "type": "object", "additionalProperties": False, "required": ["cenas"],
     "properties": {"cenas": {"type": "array", "items": {
-        "type": "object", "additionalProperties": False, "required": ["n", "prompt_imagem", "destaque"],
+        "type": "object", "additionalProperties": False, "required": ["n", "prompt_imagem", "pessoas", "destaque"],
         "properties": {"n": {"type": "integer"}, "prompt_imagem": {"type": "string"},
+                       "pessoas": {"type": "array", "items": {
+                               "type": "object", "additionalProperties": False, "required": ["id", "onde", "faz"],
+                               "properties": {"id": {"type": "string"}, "onde": {"type": "string"},
+                                              "faz": {"type": "string"}}}},
                        "destaque": {"type": "string"}}}}},
 }
 
@@ -133,6 +141,40 @@ def narracao_completa(h: dict) -> str:
     return re.sub(r"\s+", " ", h.get("narracao", "")).strip()
 
 
+MAX_PESSOAS_CENA = 2  # com mais gente na mesma imagem o gerador mistura os rostos
+
+
+def pessoas_cena(c: dict) -> list[dict]:
+    """Quem aparece na imagem: [{id, onde, faz}]. Projetos antigos guardavam só o id, em "personagem"."""
+    if isinstance(c.get("pessoas"), list):
+        return [p for p in c["pessoas"] if isinstance(p, dict) and p.get("id")]
+    ids = c.get("personagens") if isinstance(c.get("personagens"), list) else [c.get("personagem")]
+    return [{"id": i, "onde": "", "faz": ""} for i in ids if i]
+
+
+def personagens_cena(c: dict) -> list[str]:
+    return [p["id"] for p in pessoas_cena(c)]
+
+
+def descrever_pessoa(ficha: dict, p: dict, ref: int | None = None) -> str:
+    """Uma linha por pessoa, no lugar dela: "In the driver's seat: <aparência da ficha>, <o que faz>".
+    A aparência vem sempre da ficha, então a imagem e a referência enviada falam da mesma pessoa."""
+    aparencia = ficha["descricao_fixa"].strip().rstrip(".")
+    if ref:
+        aparencia += f" (same face, hair and clothes as reference image {ref})"
+    onde, faz = (p.get("onde") or "").strip().rstrip(":,."), (p.get("faz") or "").strip().rstrip(".")
+    if not onde and not faz:  # cena antiga, sem posição: o prompt_imagem já cita a pessoa pelo nome
+        return f"{ficha.get('nome') or ficha['id']} is {aparencia}"
+    texto = f"{onde}: {aparencia}" if onde else aparencia
+    texto = texto + (f", {faz}" if faz else "")
+    return texto[0].upper() + texto[1:]
+
+
+def texto_imagem(c: dict) -> str:
+    """O que a imagem mostra, para comparar cenas: lugar + posição e ação de cada pessoa."""
+    return " ".join([c.get("prompt_imagem") or ""] + [f"{p['onde']} {p['faz']}" for p in pessoas_cena(c)]).lower()
+
+
 def ambientes_recorrentes(h: dict) -> set[str]:
     usos: dict[str, int] = {}
     for c in h.get("cenas", []):
@@ -176,8 +218,14 @@ def normalizar_cenas(h: dict) -> dict:
         c["narracao"] = re.sub(r"\s+", " ", c.get("narracao", "")).strip()
         c["tensao"] = max(1, min(5, int(c.get("tensao") or 2)))
         c["destaque"] = str(c.get("destaque") or "").strip()
-        if c.get("personagem") not in ids_p:
-            c["personagem"] = ""
+        pessoas = []
+        for p in pessoas_cena(c):
+            if p["id"] in ids_p and p["id"] not in [x["id"] for x in pessoas]:
+                pessoas.append({"id": p["id"], "onde": str(p.get("onde") or "").strip(),
+                                "faz": str(p.get("faz") or "").strip()})
+        c["pessoas"] = pessoas[:MAX_PESSOAS_CENA]
+        c.pop("personagem", None)
+        c.pop("personagens", None)
         if c.get("ambiente") not in ids_a:
             c["ambiente"] = ""
     if h.get("cenas"):
@@ -244,8 +292,10 @@ def texto_para_juiz(h: dict, canal: dict, assunto: str) -> str:
         linhas += [f"- {a['id']}: {a['descricao_fixa']}" for a in h.get("ambientes", [])] or ["- nenhum"]
         linhas += ["", "Cenas: o trecho narrado e a imagem que aparece na tela enquanto ele é lido:"]
         for c in h["cenas"]:
+            fichas = {p["id"]: p for p in h.get("personagens", [])}
+            quem = [descrever_pessoa(fichas[p["id"]], p) for p in pessoas_cena(c) if p["id"] in fichas]
             linhas.append(f"[{c['n']}] Narração: {c['narracao']}\n    Imagem: {c['prompt_imagem']}"
-                          f"{' (personagem ' + c['personagem'] + ')' if c.get('personagem') else ''}")
+                          f"{' ' + '. '.join(quem) + '.' if quem else ''}")
     linhas += ["", "Narração completa, como será ouvida:", narracao_completa(h)]
     return "\n".join(linhas)
 
@@ -410,19 +460,27 @@ Como dividir:
 Campos visuais: escreva prompt_imagem, descricao_fixa e destaque SEMPRE EM INGLÊS, mesmo com a narração em
 português (vão para um gerador de imagens que entende mal português). Só os ids podem ficar em português.
 - personagens[]: no máximo {lim['max_personagens']}, só quem aparece em alguma imagem. descricao_fixa: aparência
-  completa e fixa (idade, corpo, rosto, cabelo, roupa com cores), vale para todas as cenas.
+  completa e fixa, vale para todas as cenas. Escreva como uma expressão que começa pelo tipo de pessoa (a man,
+  a woman, an old man, a girl...) e segue com idade, corpo, rosto, cabelo e roupa com cores, sem ponto final.
 - ambientes[]: um para cada lugar diferente por onde a história passa (quarto, escada, corredor, cozinha, quintal,
   poço...), até {lim['max_ambientes']}. descricao_fixa: o lugar com os elementos que se repetem.
   Use os lugares que a narração cita ou sugere: se a pessoa desce a escada, a escada vira imagem; se joga uma chave
   no quintal, o quintal aparece. Variar os lugares prende mais do que repetir sempre os mesmos dois.
-  Se duas cenas seguidas mostrariam a mesma coisa, repita o prompt_imagem igual: o programa reaproveita a imagem
-  com outro movimento de câmera, que sai mais barato e mantém o momento. Só escreva uma imagem nova quando a
-  narração pedir algo novo para ver.
-- cenas[].prompt_imagem: só o que aparece nesta imagem (ação, enquadramento, luz), composição {orient}.
-  Mostre o que está sendo narrado naquele momento. Em terror, prefira o detalhe concreto (o som, o objeto
-  fora do lugar, a sombra) ao monstro inteiro. Cite o personagem pelo nome, sem repetir a descrição fixa.
-  Texto escrito dentro da imagem só quando for essencial.
-- cenas[].personagem: o id de quem aparece na imagem, ou "".
+  Se duas cenas seguidas mostrariam a mesma coisa, junte as duas numa cena só. Só abra uma cena nova quando a
+  narração pedir algo novo para ver; cada imagem deve ser diferente das outras.
+- cenas[].prompt_imagem: o lugar, o enquadramento, a hora, o tempo, a luz e os objetos desta imagem, em frases
+  curtas e concretas, composição {orient}. Mostre o que está sendo narrado naquele momento. Em terror, prefira
+  o detalhe concreto (o som, o objeto fora do lugar, a sombra) ao monstro inteiro. Texto escrito dentro da
+  imagem só quando for essencial. As pessoas NÃO entram no prompt_imagem, nem por papel ("the driver",
+  "the woman"): elas vão em pessoas[], e o programa monta uma linha para cada uma.
+- cenas[].pessoas: quem aparece na imagem, ou []. Prefira UMA pessoa por imagem; duas só quando a narração
+  pede as duas juntas; nunca mais de {MAX_PESSOAS_CENA}. Toda pessoa que aparece tem ficha em personagens[].
+  Para cada uma, em inglês:
+  - id: o id da ficha;
+  - onde: a posição exata dela nesta imagem (em que assento, de que lado, em primeiro plano ou ao fundo);
+  - faz: pose, ação e expressão naquele momento, concretas (o que as mãos fazem, para onde olha, o que o rosto
+    mostra, o que a roupa ou o corpo têm de estranho). Não repita a aparência da ficha: o programa junta.
+  Vulto, sombra ou silhueta sem rosto não é pessoa: vai no prompt_imagem.
 - cenas[].ambiente: o id do lugar ONDE ESTA IMAGEM acontece, conferido com o prompt_imagem (se a imagem mostra a
   cama, é o quarto, mesmo que a narração cite a cozinha). A imagem de referência desse lugar vai junto para o
   gerador, então um lugar errado estraga a cena. "" se não for nenhum dos ambientes.
@@ -667,6 +725,49 @@ def _dividir_longas(cenas: list[dict], trs: list[str], lim: dict) -> list[dict]:
     return saida
 
 
+def _parecidos(a: dict, b: dict) -> bool:
+    return difflib.SequenceMatcher(None, texto_imagem(a), texto_imagem(b)).ratio() >= 0.8
+
+
+def _juntar(a: dict, b: dict) -> dict:
+    """Cena a absorve os trechos da b (fica a imagem da a; a tensão é a maior das duas)."""
+    return {**a, "ate": b["ate"], "tensao": max(a.get("tensao", 2), b.get("tensao", 2))}
+
+
+def _juntar_cenas(grupos: list[dict], trs: list[str], lim: dict) -> list[dict]:
+    """Junta cenas seguidas que mostram a mesma coisa (se couberem no tempo de uma cena) e, se ainda passar
+    do máximo de imagens, junta os pares vizinhos mais curtos até caber. A cena 1 (gancho) fica sozinha."""
+    def palavras(g):
+        return contar_palavras(" ".join(trs[g["de"] - 1:g["ate"]]))
+    cabe = lim["palavras_por_cena"] + FOLGA_PALAVRAS_CENA
+    saida = []
+    for g in grupos:
+        if len(saida) > 1 and _parecidos(saida[-1], g) and palavras(saida[-1]) + palavras(g) <= cabe:
+            saida[-1] = _juntar(saida[-1], g)
+        else:
+            saida.append(g)
+    while len(saida) > lim["cenas_max"] and len(saida) > 2:
+        i = min(range(1, len(saida) - 1), key=lambda k: palavras(saida[k]) + palavras(saida[k + 1]))
+        saida[i:i + 2] = [_juntar(saida[i], saida[i + 1])]
+    return saida
+
+
+def _erros_pessoas(resp: dict) -> list[str]:
+    ids = {p["id"] for p in resp.get("personagens") or []}
+    erros = []
+    for i, c in enumerate(resp.get("cenas") or [], 1):
+        pessoas = pessoas_cena(c)
+        if len(pessoas) > MAX_PESSOAS_CENA:
+            erros.append(f"a cena {i} tem {len(pessoas)} pessoas; o máximo é {MAX_PESSOAS_CENA}")
+        sem_ficha = [p["id"] for p in pessoas if p["id"] not in ids]
+        if sem_ficha:
+            erros.append(f"a cena {i} tem pessoa sem ficha em personagens[]: {', '.join(sem_ficha)}")
+        incompletas = [p["id"] for p in pessoas if not (p.get("onde") or "").strip() or not (p.get("faz") or "").strip()]
+        if incompletas:
+            erros.append(f"na cena {i}, falta onde ou faz de: {', '.join(incompletas)}")
+    return erros
+
+
 def decupar(projeto: dict, canal: dict, h: dict, biblioteca: list[dict] | None = None) -> dict:
     """Divide a narração aprovada em cenas e escreve os campos visuais. O texto não muda."""
     pid = projeto["id"]
@@ -680,7 +781,7 @@ def decupar(projeto: dict, canal: dict, h: dict, biblioteca: list[dict] | None =
     ]
     resp, _ = clientes.chat("decupagem", msgs, SCHEMA_DECUPAGEM, projeto_id=pid, etapa="decupagem", temperatura=0.6,
                             contexto={"trechos": trs})
-    erros = _validar_grupos(resp.get("cenas") or [], len(trs))
+    erros = _validar_grupos(resp.get("cenas") or [], len(trs)) + _erros_pessoas(resp)
     if erros:
         db.evento(pid, f"Decupagem com erro ({'; '.join(erros[:3])}); pedindo de novo.")
         msgs += [{"role": "assistant", "content": json.dumps(resp, ensure_ascii=False)},
@@ -691,11 +792,12 @@ def decupar(projeto: dict, canal: dict, h: dict, biblioteca: list[dict] | None =
         if _validar_grupos(resp.get("cenas") or [], len(trs)):
             db.evento(pid, "A decupagem ainda veio com buracos; o programa ajustou os limites das cenas.", "aviso")
     grupos = _dividir_longas(_consertar_grupos(resp.get("cenas") or [], len(trs)), trs, lim)
+    grupos = _juntar_cenas(grupos, trs, lim)
     if not grupos:
         raise clientes.ErroAPI("A decupagem não devolveu cenas")
     novo = {**h, "personagens": resp.get("personagens") or [], "ambientes": resp.get("ambientes") or [],
             "cenas": [{"narracao": " ".join(trs[g["de"] - 1:g["ate"]]), "prompt_imagem": g.get("prompt_imagem", ""),
-                       "personagem": g.get("personagem", ""), "ambiente": g.get("ambiente", ""),
+                       "pessoas": pessoas_cena(g), "ambiente": g.get("ambiente", ""),
                        "tensao": g.get("tensao", 2), "destaque": g.get("destaque", ""),
                        "trechos": [g["de"], g["ate"]]} for g in grupos]}
     novo = normalizar_cenas(novo)
@@ -742,10 +844,10 @@ def conferir_imagens(projeto: dict, canal: dict, h: dict) -> dict:
     reaproveitadas = []
     for ant, c in zip(h["cenas"], h["cenas"][1:]):
         c.pop("mesma_imagem_de", None)
-        parecido = difflib.SequenceMatcher(None, ant["prompt_imagem"].lower(), c["prompt_imagem"].lower()).ratio()
-        if parecido >= 0.8 and c["n"] not in ruins and ant["n"] not in ruins:
-            c["mesma_imagem_de"] = ant.get("mesma_imagem_de") or ant["n"]
-            c["personagem"], c["ambiente"] = ant.get("personagem", ""), ant.get("ambiente", "")
+        # No máximo duas cenas por imagem: se a anterior já é cópia, esta ganha imagem própria.
+        if _parecidos(ant, c) and c["n"] not in ruins and ant["n"] not in ruins and not ant.get("mesma_imagem_de"):
+            c["mesma_imagem_de"] = ant["n"]
+            c["pessoas"], c["ambiente"] = [dict(p) for p in pessoas_cena(ant)], ant.get("ambiente", "")
             c["prompt_imagem"], c["destaque"] = ant["prompt_imagem"], ant.get("destaque", "")
             reaproveitadas.append(f"{c['n']} (da {c['mesma_imagem_de']})")
         elif c.get("destaque") and c["destaque"].lower() == (ant.get("destaque") or "").lower():
@@ -758,13 +860,16 @@ def conferir_imagens(projeto: dict, canal: dict, h: dict) -> dict:
         return h
     db.evento(pid, "Imagens para refazer: " + "; ".join(f"cena {n} ({m})" for n, m in sorted(ruins.items())) + ".")
     alvo = [{"n": c["n"], "narracao": c["narracao"], "prompt_imagem_atual": c["prompt_imagem"],
-             "destaque_atual": c.get("destaque", ""), "ambiente": c.get("ambiente", ""), "problema": ruins[c["n"]]}
+             "destaque_atual": c.get("destaque", ""), "ambiente": c.get("ambiente", ""),
+             "pessoas_atuais": pessoas_cena(c),
+             "problema": ruins[c["n"]]}
             for c in h["cenas"] if c["n"] in ruins]
     msgs = [{"role": "system", "content": sistema_decupagem(canal)},
             {"role": "user", "content": "Refaça o prompt_imagem (e o destaque) destas cenas, corrigindo o problema de cada "
-                                        "uma, em inglês, mantendo personagens e o lugar indicado:\n" +
+                                        "uma, em inglês, mantendo o lugar indicado e as mesmas pessoas (ajuste onde e faz se "
+                                        "for preciso):\n" +
                                         json.dumps(alvo, ensure_ascii=False) +
-                                        "\nResponda com {\"cenas\": [{\"n\", \"prompt_imagem\", \"destaque\"}]}."}]
+                                        "\nResponda com {\"cenas\": [{\"n\", \"prompt_imagem\", \"pessoas\", \"destaque\"}]}."}]
     resp, _ = clientes.chat("prompts_cena", msgs, SCHEMA_PROMPTS, projeto_id=pid, etapa="decupagem", temperatura=0.5,
                             contexto={"alvo": alvo})
     novos = {c["n"]: c for c in resp.get("cenas") or []}
@@ -772,6 +877,11 @@ def conferir_imagens(projeto: dict, canal: dict, h: dict) -> dict:
         if c["n"] in novos and novos[c["n"]].get("prompt_imagem"):
             c["prompt_imagem"] = novos[c["n"]]["prompt_imagem"]
             c["destaque"] = novos[c["n"]].get("destaque", c.get("destaque", ""))
+            # Só aceita as pessoas novas se forem as mesmas da cena (muda posição e ação, não quem está).
+            novas = [p for p in pessoas_cena(novos[c["n"]]) if p.get("onde") and p.get("faz")]
+            if sorted(p["id"] for p in novas) == sorted(personagens_cena(c)):
+                c["pessoas"] = novas
+    normalizar_cenas(h)
     return h
 
 

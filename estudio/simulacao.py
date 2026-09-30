@@ -41,7 +41,8 @@ def chat(tarefa, mensagens, ctx):
             grupos.append((i, ate))
             i = ate + 1
         cenas = [{"de": de, "ate": ate, "prompt_imagem": f"Seu Joaquim, scene {k}, dramatic night lighting",
-                  "personagem": "joaquim" if k % 2 == 0 else "", "ambiente": "casa" if k < len(grupos) - 2 else "quintal",
+                  "pessoas": [{"id": "joaquim", "onde": "in the center, in the foreground",
+                               "faz": f"looking over his shoulder, moment {k}"}] if k % 2 == 0 else [], "ambiente": "casa" if k < len(grupos) - 2 else "quintal",
                   "tensao": min(5, 1 + k // 2), "destaque": f"object {k}"} for k, (de, ate) in enumerate(grupos, 1)]
         return {"personagens": [{"id": "joaquim", "nome": "Seu Joaquim",
                                  "descricao_fixa": "70-year-old thin Brazilian farmer, white stubble, straw hat, blue plaid shirt"}],
@@ -49,7 +50,8 @@ def chat(tarefa, mensagens, ctx):
                               {"id": "quintal", "descricao_fixa": "dirt yard with a well and a dog house"}],
                 "cenas": cenas}
     if tarefa == "prompts_cena":
-        return {"cenas": [{"n": a["n"], "prompt_imagem": a["prompt_imagem_atual"] + ", clearer", "destaque": "the lamp"}
+        return {"cenas": [{"n": a["n"], "prompt_imagem": a["prompt_imagem_atual"] + ", clearer",
+                           "pessoas": a.get("pessoas_atuais", []), "destaque": "the lamp"}
                           for a in ctx.get("alvo", [])]}
     if tarefa == "reescrita":
         return ctx.get("historia")

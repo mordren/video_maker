@@ -86,6 +86,7 @@ def status():
         "humanizer": {"arquivo": str(config.HUMANIZER_SKILL), "existe": config.HUMANIZER_SKILL.exists(),
                       "vocabulario": len(revisao.vocabulario_ia())},
         "teto_laco": config.LACO_TETO_USD,
+        "publicador_url": config.PUBLICADOR_URL,
         "desatualizado": codigo_desatualizado(),
     }
 
@@ -267,10 +268,10 @@ def ver_projeto(pid: int):
                       ("legendas", "legendas.ass")) if (pasta / n).exists()}
     met = db.um("SELECT dados_json FROM metricas WHERE projeto_id = ?", (pid,))
     p["metricas"] = db.carregar_json(met["dados_json"]) if met else None
+    p["publicador"] = db.carregar_json(p.pop("publicador_json", None))
     canal = canais.obter(p["canal_id"])
     p["canal"] = {"id": canal["id"], "nome": canal["nome"], "slug": canal["slug"], "formato": canal["formato"],
                   "trilhas": canal["trilhas"], "publicador_canal": (canal["config"].get("publicador_canal") or "")}
-    p["publicador"] = db.carregar_json(p.pop("publicador_json", None))
     return p
 
 
@@ -483,6 +484,8 @@ def log_atual():
 @app.post("/api/projetos/{pid}/publicador", dependencies=[api])
 def enviar_publicador(pid: int):
     p = _projeto(pid)
+    if p["status"] in pipeline.EM_ANDAMENTO:
+        raise HTTPException(409, "o projeto está em processamento")
     canal = canais.obter(p["canal_id"])
     try:
         return publicador.enviar(p, canal)
