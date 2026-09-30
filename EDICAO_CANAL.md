@@ -23,6 +23,8 @@ Fase 1. A tabela completa ficou num CSV temporário, fora do repositório.
   ou sem a abertura em preto e branco, então a abertura não é a causa.
 - **Seguram mais** os cortes que abrem com pergunta de jornalista, confronto ou "Urgente".
   **Perdem mais** os que abrem em monólogo técnico ou abstrato. Isso vem de só 10 exemplos, é uma pista.
+  Desde 30/09 o JEV classifica o **tipo de abertura** de cada proposta (etiqueta 🎣, e no `/api/notas`
+  para a aba Desempenho); não entra na nota final até os dados confirmarem.
 - **Nota do JEV:** não prevê views nem retenção. A nota "viral" prevê um pouco os inscritos
   ganhos (+0,37) e os compartilhamentos (+0,21). O LLM dá 0,67 em quase tudo.
 - Vídeo longo tem mais like por view (quem fica gosta), mas o YouTube não o distribui.
@@ -80,6 +82,12 @@ Tabela inicial de emoção → efeito (proposta de 26/09, ainda não validada po
 - **Zoom** (a cada 7 s, degrau seco e depois suave): "estranho", tremia.
 - **Imagem em tela cheia no meio da fala:** "desconexa". O B-roll genérico (Pexels/Pixabay) cai no mesmo.
 
+**Relatório de ritmo** (card de revisão, `estudio/ritmo.py`, desde 30/09): mede as mudanças de tela
+de verdade (troca de plano pelo `scdet` no vertical antes da legenda, troca de foto, emenda da
+abertura) e marca ⚠️ trecho com **mais de 7 s parado**. Mudança a menos de 2,5 s da anterior é só
+informação — no teste era a edição do próprio telejornal. Também lista **fala arrastada** (janela de
+3 s abaixo de 1,5 palavra/s, pelas palavras do Whisper). Só aponta; não muda o vídeo.
+
 **Aprovado:** o **banco de imagens**, um cartão com foto/logo aparecendo na palavra dita
 (Wikidata filtrado pelo tipo do verbete). Existe no piloto (`fase1/microedicao.py`), mas **não está no
 Estúdio**.
@@ -101,6 +109,10 @@ Estúdio**.
 - **Abertura:** 2 a 7 s do pico do corte, em preto e branco e câmera lenta, antes do corte principal.
   O JEV escolhe o trecho.
 - **Música:** baixa quando alguém fala; `loudnorm` e crossfade nas emendas.
+- **Volume do corte pronto** (`audio_qa.py`, desde 30/09): mede o `final.mp4`; fora de −15,5 a −13 LUFS
+  ou com pico acima de −1 dBTP, refaz **só o áudio** (vídeo copiado) para −14 LUFS e pico −2 (o AAC
+  passa ~0,7 dB do alvo). A mixagem com trilha chegava com pico em −0,5 (alimiter 0,95 + AAC). O card
+  mostra 🔊 ok / corrigido / ⚠️. LRA baixo não é alerta (fala curta comprimida tem 3 a 7).
 - Não vale para esse conteúdo: sincronizar com a batida da música, acelerar ou pôr câmera lenta
   no corte principal.
 
@@ -130,7 +142,12 @@ Sua regra: **não gastar processamento com o que vai ser jogado fora.**
 8. **Sensação "capenga" depois de cortar os respiros:** afrouxar a pausa ou variar levemente o
   enquadramento na emenda (parente do zoom rejeitado — testar antes).
 9. **Whisper pela API dá erro 400 em live longa** e cai no local (~1 h). Achar o trecho que o
-  provedor recusa.
+  provedor recusa. Em 29/09 deu 400 também em trechos curtos da Fase 2 (bloco_005, bloco_008).
+10. **Templates de beat** ("gancho 5 s, contexto 15 s...", da lista de melhorias de 29/09): ficou de
+  fora — duração fixa proporcional não acompanha onde a fala muda, e quem escolhe o trecho já são
+  o DeepSeek e o JEV. Rever se a edição passar a ser montada à mão com frequência.
+11. **Live recém-encerrada:** o YouTube às vezes entrega o vídeo DASH vazio ("Total fragments: 0") e
+  o download falha com o áudio já baixado. O Estúdio espera 5, 10 e 15 min e tenta de novo.
 
 ## 8. Não voltar nisso
 
