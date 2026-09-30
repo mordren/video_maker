@@ -380,7 +380,18 @@ def _baixar(tid: str, url: str, destino: Path) -> Path:
            "-N", "8", "-f", "bv*[height<=1080][vcodec!^=av01]+ba/bv*[height<=1080]+ba/b",
            "--merge-output-format", "mp4",
            "-P", str(destino), "-o", _NOME_DOWNLOAD, url]
-    _rodar(tid, cmd)
+    # Live recém-encerrada: o YouTube ainda não processou o vídeo (0 fragmentos,
+    # "downloaded file is empty") e só o áudio vem. Espera e tenta de novo.
+    for tentativa, espera in enumerate(_ESPERAS_DOWNLOAD):
+        _checar_cancelamento(tid)
+        try:
+            _rodar(tid, cmd)
+            break
+        except RuntimeError:
+            if tentativa == len(_ESPERAS_DOWNLOAD) - 1:
+                raise
+            _registrar(tid, f"   download falhou (live ainda processando ou rede); nova tentativa em {espera // 60} min")
+            time.sleep(espera)
     videos = [p for p in destino.iterdir() if p.suffix.lower() in EXTENSOES]
     if not videos:
         raise RuntimeError("o download terminou mas nenhum vídeo apareceu na pasta")
@@ -392,7 +403,8 @@ def _baixar(tid: str, url: str, destino: Path) -> Path:
 # Mesmo nome do vídeo e da legenda: a Fase 1 acha o SRT pelo nome-base do
 # vídeo (fase1/transcricao.py:candidatos_srt).
 _NOME_DOWNLOAD = "%(title).150B.%(ext)s"
-_ESPERAS_LEGENDA = (0, 30)   # tentativas pelo yt-dlp (espera antes de cada uma, em s)
+_ESPERAS_DOWNLOAD = (300, 600, 900, 0)   # espera após cada falha; a última tentativa levanta o erro
+_ESPERAS_LEGENDA = (0, 30)  # tentativas pelo yt-dlp (espera antes de cada uma, em s)
 
 
 def _baixar_legenda(tid: str, url: str, destino: Path, video: Path) -> None:
