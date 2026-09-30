@@ -181,7 +181,7 @@ def _gerar_referencia(projeto: dict, canal: dict, tipo: str, obj: dict, idx: int
         w, hh = dims_cena(canal)
         seed, arquivo = projeto["seed_base"] + 500 + idx, "placa"
     prompt = aplicar_estilo(canal, miolo)
-    db.evento(pid, f"Gerando {rotulo.lower()} de {obj['id']}...")
+    db.evento(pid, f"Gerando {rotulo.lower()} de {obj.get('nome') or obj['id']}...")
     dados, link, _ = clientes.gerar_imagem(prompt, w, hh, seed, projeto_id=pid, etapa=arquivo)
     destino = _pasta_bib(canal, tipo, chave) / f"{arquivo}.jpg"
     _salvar(dados, destino)

@@ -15,6 +15,7 @@ import difflib
 import json
 import math
 import re
+import unicodedata
 
 from . import canais, clientes, config, custos, db
 from .custos import OrcamentoEstourado
@@ -433,6 +434,7 @@ cerca de {lim['palavras_min'] / lim['wps']:.0f} a {lim['palavras_max'] / lim['wp
 
 Campos:
 - narracao: a história inteira, texto corrido, pronto para ser lido em voz alta. Sem títulos, marcações ou rubricas.
+  Termine na última frase da história: convite para seguir, curtir ou se inscrever o programa acrescenta depois.
 - titulo: título do vídeo.
 - descricao_youtube: 2 ou 3 frases para a descrição do vídeo, sem hashtags.
 
@@ -459,7 +461,11 @@ Como dividir:
 
 Campos visuais: escreva prompt_imagem, descricao_fixa e destaque SEMPRE EM INGLÊS, mesmo com a narração em
 português (vão para um gerador de imagens que entende mal português). Só os ids podem ficar em português.
-- personagens[]: no máximo {lim['max_personagens']}, só quem aparece em alguma imagem. descricao_fixa: aparência
+- personagens[]: no máximo {lim['max_personagens']}, só quem aparece em alguma imagem. id e nome: um nome de
+  verdade, nunca um papel. Quem conta a história em 1ª pessoa também é um personagem visual: se a história não dá
+  nome a essa pessoa, invente um curto (ex.: Marcos, Helena); "narrador", "motorista", "homem", "mulher" e
+  "protagonista" não valem. Só o fantasma ou a criatura pode ter título em vez de nome (ex.: Mulher de Branco).
+  descricao_fixa: aparência
   completa e fixa, vale para todas as cenas. Escreva como uma expressão que começa pelo tipo de pessoa (a man,
   a woman, an old man, a girl...) e segue com idade, corpo, rosto, cabelo e roupa com cores, sem ponto final.
 - ambientes[]: um para cada lugar diferente por onde a história passa (quarto, escada, corredor, cozinha, quintal,
@@ -752,9 +758,24 @@ def _juntar_cenas(grupos: list[dict], trs: list[str], lim: dict) -> list[dict]:
     return saida
 
 
+PAPEIS = {"narrador", "narradora", "narrator", "protagonista", "protagonist", "motorista", "driver", "homem", "mulher",
+          "man", "woman", "personagem", "character", "eu", "ele", "ela", "pessoa", "person", "vitima", "victim"}
+
+
+def papel_como_nome(p: dict) -> bool:
+    """O nome (ou o id) é só um papel na história; o gerador de imagens não saberia quem é."""
+    for campo in (p.get("nome"), p.get("id")):
+        chave = re.sub(r"[^a-z]+", " ", unicodedata.normalize("NFKD", str(campo or "").lower())
+                       .encode("ascii", "ignore").decode()).strip()
+        if chave in PAPEIS or chave.split(" ")[0] in ("narrador", "narradora", "narrator"):
+            return True
+    return False
+
+
 def _erros_pessoas(resp: dict) -> list[str]:
     ids = {p["id"] for p in resp.get("personagens") or []}
-    erros = []
+    erros = [f"o personagem '{p.get('nome') or p['id']}' tem um papel no lugar do nome; dê um nome próprio "
+             f"(id e nome), como Marcos ou Helena" for p in resp.get("personagens") or [] if papel_como_nome(p)]
     for i, c in enumerate(resp.get("cenas") or [], 1):
         pessoas = pessoas_cena(c)
         if len(pessoas) > MAX_PESSOAS_CENA:
@@ -786,7 +807,7 @@ def decupar(projeto: dict, canal: dict, h: dict, biblioteca: list[dict] | None =
         db.evento(pid, f"Decupagem com erro ({'; '.join(erros[:3])}); pedindo de novo.")
         msgs += [{"role": "assistant", "content": json.dumps(resp, ensure_ascii=False)},
                  {"role": "user", "content": "Corrija: " + "; ".join(erros) + f". Use todos os {len(trs)} trechos, na "
-                                             "ordem, sem pular nem repetir. JSON completo."}]
+                                             "ordem, sem pular nem repetir. Personagens com nome próprio, nunca papel. JSON completo."}]
         resp, _ = clientes.chat("decupagem", msgs, SCHEMA_DECUPAGEM, projeto_id=pid, etapa="decupagem",
                                 temperatura=0.3, contexto={"trechos": trs})
         if _validar_grupos(resp.get("cenas") or [], len(trs)):

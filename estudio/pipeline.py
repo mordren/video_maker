@@ -8,6 +8,7 @@ No modo automático as paradas são puladas (a história REPROVADA na segurança
 """
 import json
 import queue
+import re
 import random
 import shutil
 import threading
@@ -295,6 +296,10 @@ def etapa_video(pid: int):
     ultima = h["cenas"][-1]
     fala = ultima["narracao"]
     cta = (canal["config"].get("cta") or "").strip()
+    if cta and re.search(r"(siga|segue|inscreva|curta|compartilhe).*(canal|perfil|hist[óo]rias|v[ií]deos|mais)",
+                          " ".join(historia.frases(fala)[-2:]), re.I):
+        db.evento(pid, "A história já termina com um convite para seguir; o CTA do canal não foi acrescentado.", "aviso")
+        cta = ""
     if cta:
         ultima["narracao"] = f"{fala} {cta if cta[-1] in '.!?' else cta + '.'}"
     try:
