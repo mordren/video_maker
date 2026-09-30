@@ -267,6 +267,7 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
             b["score_viral"] = round(r["score_viral"], 2)
             b["qualidade_interna"] = round(r["ritmo"], 4)
             b["abertura"] = round(r.get("abertura", 0.5), 4)  # cache antigo não tem
+            b["tipo_abertura"] = r.get("tipo_abertura", "")          # idem
             b["precisa_melhora"], b["motivo_melhora"] = False, None
             dentro = sg.trecho(segs, b["inicio"], b["fim"])
             ini, fim = r["inicio_idx"], r["fim_idx"]
@@ -342,7 +343,7 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
     # 8 ─ JSON final
     with etapa(8, "salvar blocos_finais.json"):
         campos = ["id", "rank", "inicio", "fim", "duracao", "texto", "palavras", "fonte_transcricao",
-                  "gancho", "comentario", "score_viral", "qualidade_interna", "abertura", "nota_duracao",
+                  "gancho", "comentario", "score_viral", "qualidade_interna", "abertura", "tipo_abertura", "nota_duracao",
                   "precisa_melhora",
                   "motivo_melhora", "analise_llm", "nota_llm", "nota_final", "origem",
                   "pedaco_origem", "ajustes", "erros"]

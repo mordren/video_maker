@@ -556,6 +556,7 @@ def processar_trabalho(t: dict) -> None:
                       "gancho": bloco.get("gancho", ""), "comentario": bloco.get("comentario", ""),
                       "subtitulo_sugerido": bloco.get("subtitulo", ""), "musica_sugerida": bloco.get("musica", ""),
                       "csv": t["tipo"] == "csv", "nota": bloco.get("nota_final"),
+                      "tipo_abertura": bloco.get("tipo_abertura", ""),
                       "duracao": round(finalizar.duracao_de(clipe), 1),
                       "formato_sugerido": _sugerir_formato(jev, bloco)})
     with _TRAVA:
@@ -913,7 +914,8 @@ def notas_dos_cortes():
     def _nota(bloco: dict) -> dict:
         return {"nota_final": bloco.get("nota_final"), "viral": bloco.get("score_viral"),
                 "ritmo": bloco.get("qualidade_interna"), "llm": bloco.get("nota_llm"),
-                "abertura": bloco.get("abertura"), "nota_duracao": bloco.get("nota_duracao"),
+                "abertura": bloco.get("abertura"), "tipo_abertura": bloco.get("tipo_abertura"),
+                "nota_duracao": bloco.get("nota_duracao"),
                 "precisa_melhora": bloco.get("precisa_melhora")}
 
     cortes: dict[tuple[str, str], dict] = {}

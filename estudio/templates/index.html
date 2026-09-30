@@ -336,6 +336,18 @@ function detalheRitmo(r) {
     : `<br><span class="fraco">${cabeca}</span>`;
 }
 
+// Como o corte abre, pelo JEV (Fase 1). Verde: os tipos que seguraram mais no
+// info; amarelo: os que perderam mais (EDICAO_CANAL.md §1, pista de 10 vídeos).
+const ABERTURAS = {pergunta_jornalista: ["pergunta", true], confronto: ["confronto", true], urgente: ["urgente", true],
+                   frase_de_efeito: ["frase de efeito", null], monologo_tecnico: ["monólogo técnico", false],
+                   abstrato: ["abstrato", false], nenhum: ["sem gancho", false]};
+function etiquetaAbertura(tipo) {
+  const a = ABERTURAS[tipo];
+  if (!a) return "";
+  const cor = a[1] === true ? "var(--ok)" : a[1] === false ? "var(--aviso)" : "inherit";
+  return `<span style="color:${cor}" title="como o corte abre (JEV)">🎣 ${a[0]}</span>`;
+}
+
 const semCrop = f => f === "dinamico" && !!(estado && estado.pouca_ram);
 const FORMATOS = {dinamico: "crop que segue quem fala", transparente: "transparente", imagens: "fotos do assunto + corte"};
 const LEGENDAS = {new: "legenda new (glow + karaokê)", old: "legenda old (amarela)"};
@@ -355,7 +367,8 @@ function desenharPropostas() {
   $("propostas").innerHTML = lista.map(([t, c]) => {
     const produzindo = c.status === "produzindo";
     const rodando = agora[0] === t.id && agora[1] === c.id;
-    const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : ""].filter(Boolean).join(" · ");
+    const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : "",
+                    etiquetaAbertura(c.tipo_abertura)].filter(Boolean).join(" · ");
     const sugerido = FORMATOS[c.formato_sugerido] ? c.formato_sugerido : "dinamico";
     // pouca RAM: o crop fica desligado — a pré-seleção vai para o transparente
     const escolhido = semCrop(sugerido) ? "transparente" : sugerido;

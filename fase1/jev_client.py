@@ -105,6 +105,12 @@ class JEV:
                              "false": ("Começa com preâmbulo, cumprimento, explicação técnica ou "
                                        "abstrata, ou respondendo a algo que não aparece")},
             },
+            "tipo_abertura": {
+                "type": "choice",
+                "instructions": ("Como começa este trecho (as primeiras frases, os primeiros 5 a 10 "
+                                 "segundos)? Escolha o tipo que melhor descreve a abertura."),
+                "criteria": TIPOS_ABERTURA,
+            },
             "precisa_melhora": {
                 "type": "noul",
                 "instructions": ("Este trecho precisa de ajuste fino nos limites (cortar um "
@@ -130,6 +136,7 @@ class JEV:
             "score_viral": float(a["viral"]["score"]) + 1.0,
             "ritmo": float(a["ritmo"]["noul"]),
             "abertura": float(a["abertura"]["noul"]),
+            "tipo_abertura": _tipo_abertura(a.get("tipo_abertura", {}).get("choice")),
             "precisa_melhora": float(a["precisa_melhora"]["noul"]),
             "inicio_idx": _idx(a["inicio"]["choice"], 0),
             "fim_idx": _idx(a["fim"]["choice"], n - 1),
@@ -251,6 +258,27 @@ class JEV:
 def _resumo(texto: str, limite: int = 140) -> str:
     texto = " ".join(texto.split())
     return texto if len(texto) <= limite else texto[:limite - 1] + "…"
+
+
+# Tipo da abertura (pergunta "tipo_abertura" do qualificar). Os três primeiros
+# são os que os dados do info mostraram segurando mais, e monólogo técnico e
+# abstrato os que perdem mais (EDICAO_CANAL.md §1 — pista de só 10 vídeos; o
+# tipo fica gravado para a aba Desempenho conferir). Não entra na nota final.
+TIPOS_ABERTURA = {
+    "pergunta_jornalista": "Abre com uma pergunta direta (de jornalista, entrevistador ou a quem assiste)",
+    "confronto": "Abre com tensão, acusação, embate ou alguém sendo rebatido",
+    "urgente": "Abre com notícia quente: 'urgente', 'acabou de acontecer', 'agora'",
+    "frase_de_efeito": "Abre com uma afirmação forte ou frase de efeito que se sustenta sozinha",
+    "monologo_tecnico": "Abre explicando algo técnico, dado ou processo, sem tensão",
+    "abstrato": "Abre com contexto genérico, preâmbulo ou cumprimento",
+    "nenhum": "Não dá para dizer como abre, ou começa respondendo algo que não aparece",
+}
+
+
+def _tipo_abertura(choice) -> str:
+    """A chave de TIPOS_ABERTURA que o JEV devolveu ("" se veio outra coisa)."""
+    c = str(choice or "").strip()
+    return c if c in TIPOS_ABERTURA else ""
 
 
 def _idx(choice, padrao: int) -> int:
