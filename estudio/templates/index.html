@@ -291,7 +291,7 @@ function desenharCortes() {
     const legendaAtual = c.estilo_legenda || "old";
     return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
       <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
-      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato} · legenda ${legendaAtual}${etiquetaAudio(c.audio)}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${creditos}</div>
+      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato} · legenda ${legendaAtual}${etiquetaAudio(c.audio)}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${detalheRitmo(c.ritmo)}${creditos}</div>
       <div><label>Título no YouTube</label><input class="titulo" maxlength="100" value="${escapar(c.titulo_publicacao || "")}"></div>
       <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
       <div class="acoes">
@@ -311,14 +311,29 @@ function etiquetaAudio(a) {
   if (!a || !a.antes) return a && a.erro ? ` · <span title="${escapar(a.erro)}">🔊 ?</span>` : "";
   const m = a.depois || a.antes;
   const medida = `${m.i.toFixed(1)} LUFS · pico ${m.tp.toFixed(1)} dBTP · LRA ${m.lra.toFixed(0)}`;
-  const antes = a.corrigido ? `antes: ${a.antes.i.toFixed(1)} LUFS · pico ${a.antes.tp.toFixed(1)} dBTP
-` : "";
-  const dica = escapar(antes + medida + (a.alertas.length ? "
-" + a.alertas.join("
-") : ""));
+  const antes = a.corrigido ? `antes: ${a.antes.i.toFixed(1)} LUFS · pico ${a.antes.tp.toFixed(1)} dBTP\n` : "";
+  const dica = escapar(antes + medida + (a.alertas.length ? "\n" + a.alertas.join("\n") : ""));
   const rotulo = a.alertas.length ? "⚠️ áudio" : a.corrigido ? "🔊 corrigido" : "🔊 ok";
   const cor = a.alertas.length ? "var(--aviso)" : "var(--ok)";
   return ` · <span title="${dica}" style="color:${cor};cursor:help">${rotulo}</span>`;
+}
+
+// Ritmo (ritmo.py): tela parada > 7 s é alerta; mudança colada e fala
+// arrastada são informação (colada quase sempre é a edição do vídeo de origem).
+function detalheRitmo(r) {
+  if (!r || r.erro || r.mudancas == null) return "";
+  const s = x => `${x.de.toFixed(1)}s → ${x.ate.toFixed(1)}s (${x.dur.toFixed(1)} s)`;
+  const itens = [
+    ...r.parados.map(x => `⚠️ tela parada ${s(x)}`),
+    ...r.arrastados.map(x => `🐢 fala arrastada ${s(x)}, ${x.pps} palavra/s — “${escapar(x.texto)}”`),
+    ...(r.colados.length ? [`${r.colados.length} mudança(s) a menos de 2,5 s da anterior: ${r.colados.map(x => x.de.toFixed(1) + "s").join(", ")}`] : []),
+  ];
+  const cabeca = `🎬 ${r.mudancas} mudança(s) visual(is) em ${Math.round(r.duracao)} s`
+    + (r.parados.length ? ` · <span style="color:var(--aviso)">⚠️ ${r.parados.length} trecho(s) parado(s)</span>` : " ✅")
+    + (r.arrastados.length ? ` · 🐢 ${r.arrastados.length}` : "");
+  return itens.length
+    ? `<details style="margin-top:4px"><summary class="fraco" style="cursor:pointer">${cabeca}</summary><div class="fraco" style="font-size:12px">${itens.join("<br>")}</div></details>`
+    : `<br><span class="fraco">${cabeca}</span>`;
 }
 
 const semCrop = f => f === "dinamico" && !!(estado && estado.pouca_ram);

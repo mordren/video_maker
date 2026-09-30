@@ -670,6 +670,8 @@ def montar(clipe: Path, destino: Path, pasta: Path, gancho: str, comentario: str
     plano = planejar(dur, palavras, galerias)
     log.info("   formato imagens: fotos em %.1fs; %d trocas — %s", time.time() - t0, len(plano),
              ", ".join(f"{t:.1f}s {f['verbete']}" for t, f in plano))
+    # Para o relatório de ritmo (ritmo.py): a troca tem fade e o scdet pode não vê-la.
+    (pasta / "trocas_fotos.json").write_text(json.dumps([round(t, 2) for t, _ in plano]), encoding="utf-8")
     t0 = time.time()
     renderizar(clipe, plano, dur, fps, destino)
     log.info("   formato imagens: render em %.1fs", time.time() - t0)

@@ -482,6 +482,12 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
     info = renderizar_final(vertical, final, srt, titulo, subtitulo, perfil,
                             palavras_censuradas(ia["sensiveis"]), trilha, pasta, colagem=colagem,
                             legenda=legenda, palavras=palavras, fim_gancho=fim_gancho)
+    # Ritmo no vertical, antes de apagá-lo: sem a legenda queimada, o karaokê
+    # não conta como mudança de tela (ritmo.py).
+    import ritmo
+    rit = ritmo.relatorio(vertical, duracao_de(vertical), palavras or [], fim_gancho,
+                          ritmo.ler_trocas_fotos(pasta) if colagem else None, ai_srt.load_config())
+    log.info("   %s", ritmo.linha_log(rit))
     if not ja_vertical:
         vertical.unlink(missing_ok=True)
     return {
@@ -500,4 +506,5 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
         "creditos_imagens": creditos,
         "formato_reserva": reserva if formato == "imagens" else None,
         "audio": info["audio"],
+        "ritmo": rit,
     }
