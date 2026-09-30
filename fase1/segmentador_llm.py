@@ -28,7 +28,7 @@ _TETO_TOKENS_PEDACO = 40_000
 
 _SISTEMA = """Você é um cortador de vídeos políticos. Recebe a transcrição de uma live, \
 discurso, entrevista, debate ou podcast, numerada por segmento — uma linha por segmento, \
-no formato "[ID] texto" — e escolhe os melhores trechos para virarem shorts/reels: os mais \
+no formato "[ID m:ss] texto", onde m:ss é o momento em que o segmento começa — e escolhe os melhores trechos para virarem shorts/reels: os mais \
 fortes, polêmicos e "meme-áveis", que se sustentam sozinhos.
 
 Alguns segmentos no início e no fim vêm marcados "(contexto, fora do intervalo)": servem só \
@@ -45,7 +45,8 @@ O que puxar (uma ou mais categorias por corte):
 
 Como montar cada corte:
 - DURAÇÃO ENTRE 30 E 50 SEGUNDOS. Isto é obrigatório: menos de 25s ou mais de 55s não serve \
-e não deve ser incluído. O público assiste uns 30-35 segundos e desliza: corte mais longo \
+e não deve ser incluído. Meça pelos tempos das linhas: a duração vai do tempo da linha \
+inicial até o tempo da linha seguinte à final. O público assiste uns 30-35 segundos e desliza: corte mais longo \
 que isso é mostrado a pouca gente, por melhor que seja o conteúdo.
 - Os primeiros 5 a 10 segundos decidem se a pessoa fica. O corte começa JÁ no momento que \
 prende: a pergunta direta do entrevistador ou do adversário, o confronto, a acusação, a \
@@ -157,13 +158,19 @@ def _pedacos(segs: list[dict], contexto_seg: float):
 
 
 def _linhas(antes: list[dict], nucleo: list[dict], depois: list[dict], ids: dict) -> list[str]:
+    # O tempo vai junto para o modelo conseguir medir a duração do corte: só
+    # com o ID ele chutava pelo tamanho do texto e errava para mais (com a
+    # legenda do YouTube, de segmentos de ~7s, 8 de 10 cortes passavam de 60s).
+    def rotulo(s: dict) -> str:
+        m, seg = divmod(int(s["start"]), 60)
+        return f"[{ids[id(s)]} {m}:{seg:02d}]"
     saida = []
     for s in antes:
-        saida.append(f"(contexto, fora do intervalo) [{ids[id(s)]}] {s['text']}")
+        saida.append(f"(contexto, fora do intervalo) {rotulo(s)} {s['text']}")
     for s in nucleo:
-        saida.append(f"[{ids[id(s)]}] {s['text']}")
+        saida.append(f"{rotulo(s)} {s['text']}")
     for s in depois:
-        saida.append(f"(contexto, fora do intervalo) [{ids[id(s)]}] {s['text']}")
+        saida.append(f"(contexto, fora do intervalo) {rotulo(s)} {s['text']}")
     return saida
 
 

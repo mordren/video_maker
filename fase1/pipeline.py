@@ -214,10 +214,17 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
             candidatos = segmentar(segs, segmentador, cseg["contexto_seg"])
             gravar_json(cpath, candidatos)
         blocos: list[dict] = []
-        descartados = 0
+        descartados = encurtados = 0
         for i, c in enumerate(candidatos, 1):
             bloco = sg.monta_bloco(segs, c["inicio"], c["fim"])
-            if not bloco or not (cb["duracao_minima"] <= bloco["duracao"] <= cb["duracao_maxima"]):
+            if bloco and bloco["duracao"] > maximo:
+                # Longo demais: fica o começo (o prompt pede que o corte já
+                # abra no gancho) até o último segmento que ainda cabe.
+                dentro = [s for s in sg.trecho(segs, bloco["inicio"], bloco["fim"])
+                          if s["end"] - bloco["inicio"] <= maximo]
+                bloco = sg.monta_bloco(segs, bloco["inicio"], dentro[-1]["end"]) if dentro else None
+                encurtados += bool(bloco)
+            if not bloco or not (minimo <= bloco["duracao"] <= maximo):
                 descartados += 1
                 continue
             bloco["id"] = f"cand_{i:03d}"
@@ -226,8 +233,9 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
             bloco["pedaco_origem"] = c.get("pedaco")
             blocos.append(bloco)
         gravar_json(ws / "blocos_candidatos.json", blocos)
-        log.info("   %d candidatos brutos · %d fora da faixa de duração (%.0f-%.0fs) · %d seguem",
-                 len(candidatos), descartados, cb["duracao_minima"], cb["duracao_maxima"], len(blocos))
+        log.info("   %d candidatos brutos · %d encurtados pelo fim · %d fora da faixa de duração "
+                 "(%.0f-%.0fs) · %d seguem", len(candidatos), encurtados, descartados,
+                 minimo, maximo, len(blocos))
     if ate_etapa <= 3:
         return 0
     if not blocos:
