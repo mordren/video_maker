@@ -25,7 +25,7 @@ HUMANIZER_SKILL = Path(os.getenv("HUMANIZER_SKILL", CODIGO / "Humanizer br-v1" /
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", "").strip()
 # Publicador (fila de postagem na rede local). O nome do canal lá fica na tela de cada canal.
-PUBLICADOR_URL = os.getenv("PUBLICADOR_URL", "http://192.168.31.133:8080").strip()
+PUBLICADOR_URL = os.getenv("PUBLICADOR_URL", "http://192.168.31.157:8080").strip()
 # Token opcional para proteger a API (/api/*) quando ela for exposta fora do computador.
 API_TOKEN = os.getenv("ESTUDIO_API_TOKEN", "").strip()
 
