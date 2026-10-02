@@ -1328,9 +1328,6 @@ async function telaGerador() {
   if (e.trabalho && e.trabalho.estado === 'rodando') acompanhar();
 }
 
-carregarSistema().catch(() => {});
-rota();
-
 /* ------------------------------------------------------------------ configurações globais */
 let abaConfig = UNIFICADO ? 'c_acesso' : 'acesso';
 const BASE_HIST = '/api/configuracoes', BASE_CORT = '/api/estudio/configuracoes';
@@ -1364,6 +1361,10 @@ async function telaConfiguracoes() {
       (c.ao_vivo ? '' : ` <span class="badge warn" title="Só vale depois de reiniciar">reiniciar</span>`) +
       (c.pendente_reinicio ? ' <span class="badge err" title="O valor salvo ainda não está em uso: reinicie">aguardando reinício</span>' : '');
   };
+  // O campo mostra o valor em uso: o salvo ou, sem nada salvo, o padrão (a API manda valor null no padrão).
+  const emUso = c => c.valor ?? c.padrao ?? '';
+  const igualPadrao = (c, v) => c.padrao != null && v !== '' &&
+    ((c.tipo === 'inteiro' || c.tipo === 'numero') ? Number(v) === Number(c.padrao) : String(v) === String(c.padrao));
   const entrada = (c, curto = false) => {
     const k = esc(c.chave), pad = esc(textoPadrao(c));
     if (c.tipo === 'leitura') {
@@ -1382,14 +1383,15 @@ async function telaConfiguracoes() {
     }
     let campo;
     if (c.tipo === 'escolha') {
-      campo = `<select data-cfg="${k}"><option value="">padrão (${pad})</option>${c.opcoes.map(o =>
-        `<option value="${esc(o.valor)}" ${c.valor === o.valor ? 'selected' : ''}>${esc(o.rotulo)}</option>`).join('')}</select>`;
+      const atual = emUso(c), temPadrao = c.opcoes.some(o => o.valor === c.padrao);
+      campo = `<select data-cfg="${k}">${temPadrao ? '' : `<option value="">padrão (${pad})</option>`}${c.opcoes.map(o =>
+        `<option value="${esc(o.valor)}" ${atual === o.valor ? 'selected' : ''}>${esc(o.rotulo)}${o.valor === c.padrao ? ' (padrão)' : ''}</option>`).join('')}</select>`;
     } else if (c.tipo === 'inteiro' || c.tipo === 'numero') {
-      campo = `<input type="number" data-cfg="${k}" placeholder="${pad}" value="${c.valor == null ? '' : esc(c.valor)}"
+      campo = `<input type="number" data-cfg="${k}" placeholder="${pad}" value="${esc(emUso(c))}"
         ${c.minimo != null ? `min="${c.minimo}"` : ''} ${c.maximo != null ? `max="${c.maximo}"` : ''} step="${c.tipo === 'inteiro' ? 1 : (c.passo || 'any')}">`;
     } else {
       const lista = c.sugestoes && c.sugestoes.length ? `list="dl_${k}"` : '';
-      campo = `<input type="text" data-cfg="${k}" placeholder="${pad}" value="${c.valor == null ? '' : esc(c.valor)}" spellcheck="false" ${lista}>` +
+      campo = `<input type="text" data-cfg="${k}" placeholder="${pad}" value="${esc(emUso(c))}" spellcheck="false" ${lista}>` +
         (lista ? `<datalist id="dl_${k}">${c.sugestoes.map(s => `<option value="${esc(s)}">`).join('')}</datalist>` : '');
     }
     return `<div class="cfg-linha">${campo}${c.unidade ? `<span class="small fix">${esc(c.unidade)}</span>` : ''}${restaurar}</div>`;
@@ -1432,7 +1434,8 @@ async function telaConfiguracoes() {
   const blocos = Object.fromEntries($$('[data-bloco]').map(e => [e.dataset.bloco, e]));
   const lido = k => els[k].type === 'checkbox' ? els[k].checked : els[k].value.trim();
   const mudou = k => campos[k].tipo === 'segredo' ? lido(k) !== '' : lido(k) !== (typeof original[k] === 'string' ? original[k].trim() : original[k]);
-  const mudancas = () => Object.fromEntries(Object.keys(els).filter(mudou).map(k => [k, lido(k)]));
+  const enviado = k => { const v = lido(k), c = campos[k]; return c.tipo !== 'booleano' && c.tipo !== 'segredo' && igualPadrao(c, v) ? '' : v; };
+  const mudancas = () => Object.fromEntries(Object.keys(els).filter(mudou).map(k => [k, enviado(k)]));
   const atualizar = () => {
     let n = 0;
     for (const k of Object.keys(els)) {
@@ -1451,7 +1454,7 @@ async function telaConfiguracoes() {
   });
   $$('[data-restaurar]').forEach(b => b.onclick = () => {
     const k = b.dataset.restaurar, e = els[k];
-    if (e.type === 'checkbox') e.checked = !!campos[k].padrao; else e.value = '';
+    if (e.type === 'checkbox') e.checked = !!campos[k].padrao; else e.value = campos[k].padrao ?? '';
     atualizar();
   });
   $$('[data-mostrar]').forEach(b => b.onclick = () => {
@@ -1502,3 +1505,9 @@ async function telaConfiguracoes() {
     } catch { /* o aviso já apareceu */ } finally { b.disabled = false; }
   };
 }
+
+/* ------------------------------------------------------------------ início */
+// Por último: abrir a página já numa aba (ex.: #/configuracoes) chama a tela na hora, e as constantes
+// de cada tela (BASE_HIST, abaConfig...) precisam estar declaradas antes.
+carregarSistema().catch(() => {});
+rota();

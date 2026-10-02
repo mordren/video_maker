@@ -324,20 +324,16 @@ def _montar() -> list[Grupo]:
         _f("email.PUBLICADOR_EMAIL_SMTP_SENHA", "Avisos: senha SMTP", "segredo", "Senha de app do Gmail."),
     ], [("publicador", "Testar o Publicador")])
 
+    # Na tela, por milhão de tokens (como as tabelas do DeepSeek e do OpenRouter); no código, por token.
+    por_milhao = dict(minimo=0, maximo=1000, unidade="US$/milhão de tokens", escala=1e-6)
     precos = Grupo("c_precos", "Preços (estimativa)", "Usados na aba Custos quando a API não devolve o custo "
                    "real (o DeepSeek nunca devolve; o OpenRouter devolve no chat).", [
-        _f("precos.deepseek_entrada", "DeepSeek: entrada (sem cache)", "numero", "", minimo=0, maximo=0.001,
-           passo=1e-8, unidade="US$/token"),
-        _f("precos.deepseek_entrada_cache", "DeepSeek: entrada (cache)", "numero", "", minimo=0, maximo=0.001,
-           passo=1e-9, unidade="US$/token"),
-        _f("precos.deepseek_saida", "DeepSeek: saída", "numero", "", minimo=0, maximo=0.001, passo=1e-8,
-           unidade="US$/token"),
-        _f("precos.jev_entrada", "JEV: entrada", "numero", "", minimo=0, maximo=0.001, passo=1e-9,
-           unidade="US$/token"),
-        _f("precos.openrouter_entrada", "OpenRouter chat: entrada", "numero", "", minimo=0, maximo=0.001,
-           passo=1e-8, unidade="US$/token"),
-        _f("precos.openrouter_saida", "OpenRouter chat: saída", "numero", "", minimo=0, maximo=0.001, passo=1e-8,
-           unidade="US$/token"),
+        _f("precos.deepseek_entrada", "DeepSeek: entrada (sem cache)", "numero", "", **por_milhao),
+        _f("precos.deepseek_entrada_cache", "DeepSeek: entrada (cache)", "numero", "", **por_milhao),
+        _f("precos.deepseek_saida", "DeepSeek: saída", "numero", "", **por_milhao),
+        _f("precos.jev_entrada", "JEV: entrada", "numero", "", **por_milhao),
+        _f("precos.openrouter_entrada", "OpenRouter chat: entrada", "numero", "", **por_milhao),
+        _f("precos.openrouter_saida", "OpenRouter chat: saída", "numero", "", **por_milhao),
         _f("precos.whisper_minuto", "Whisper pela API", "numero", "", minimo=0, maximo=1, passo=0.0001,
            unidade="US$/min"),
     ], [])
@@ -520,6 +516,22 @@ def valor_salvo(data_dir: Path, chave: str, padrao):
 #  Valores
 # ──────────────────────────────────────────────────────────────────
 
+def _na_tela(c: Campo, v):
+    """Valor do código na unidade da tela (dias, US$/milhão...); 12 algarismos tiram o resto de float (0,28 e não
+    0,27999999999999997)."""
+    if c.escala == 1 or not isinstance(v, (int, float)) or isinstance(v, bool):
+        return v
+    r = float(f"{v / c.escala:.12g}")
+    return int(r) if c.tipo == "inteiro" and r == int(r) else r
+
+
+def _no_codigo(c: Campo, v):
+    if c.escala == 1 or not isinstance(v, (int, float)) or isinstance(v, bool):
+        return v
+    r = float(f"{v * c.escala:.12g}")
+    return int(r) if c.tipo == "inteiro" and r == int(r) else r
+
+
 def _padrao(c: Campo):
     k = c.chave
     if k.startswith("fase1."):
@@ -527,11 +539,10 @@ def _padrao(c: Campo):
     if k.startswith("cortes."):
         return _pegar(_yaml("config_cortes.yaml"), k[7:])
     if k.startswith("mod."):
-        v = _PADRAO_MOD.get(k)
-        return v / c.escala if isinstance(v, (int, float)) and not isinstance(v, bool) and c.escala != 1 else v
+        return _na_tela(c, _PADRAO_MOD.get(k))
     if k.startswith("precos."):
         import custos_api
-        return custos_api.PRECOS_PADRAO.get(k[7:])
+        return _na_tela(c, custos_api.PRECOS_PADRAO.get(k[7:]))
     if k == "estudio.publicador_url":
         return "http://127.0.0.1:8080"
     if k == "estudio.pasta_transicoes":
@@ -552,10 +563,9 @@ def _atual(c: Campo):
     if k.startswith("cortes.") and k[7:] in (ov.get("cortes") or {}):
         return ov["cortes"][k[7:]], "config_cortador.json"
     if k.startswith("mod.") and k[4:] in (ov.get("modulos") or {}):
-        v = ov["modulos"][k[4:]]
-        return (v / c.escala if c.escala != 1 else v), "config_cortador.json"
+        return _na_tela(c, ov["modulos"][k[4:]]), "config_cortador.json"
     if k.startswith("precos.") and k[7:] in (ov.get("precos") or {}):
-        return ov["precos"][k[7:]], "config_cortador.json"
+        return _na_tela(c, ov["precos"][k[7:]]), "config_cortador.json"
     if k.startswith("env."):
         v = _ler_env(ARQ_ENV).get(k[4:]) or ""
         return (v or None), ("fase1/.env" if v else "padrão")
@@ -749,7 +759,7 @@ def _gravar(sets: dict, resets: list[str]) -> dict:
             c = CAMPOS[chave]
             for pre, sec in secoes.items():
                 if chave.startswith(pre):
-                    codigo = valor * c.escala if c.escala != 1 else valor
+                    codigo = _no_codigo(c, valor)
                     if valor == _padrao(c):
                         (ov.get(sec) or {}).pop(chave[len(pre):], None)
                     else:
