@@ -143,3 +143,6 @@ table.cfg-fmt .cfg-campo{padding:2px 4px 4px}
 .cfg-res{margin-left:8px}
 .cfg-res.ok{color:var(--ok)}
 .cfg-res.err{color:var(--err)}
+
+/* servidor sem janela (Linux): o Music não tem onde abrir o Explorer nem a janela de escolher pasta */
+.sem-janela [data-escolher],.sem-janela [data-abrir]{display:none}

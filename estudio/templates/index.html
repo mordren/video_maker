@@ -3,83 +3,103 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Estúdio de cortes</title>
+<title>Estúdio</title>
+<!-- Base visual = a do Estúdio de Histórias (historias/estudio/static); o Cortador tem o seu, só dentro de #cortador. -->
+<link rel="stylesheet" href="/static/style.css">
 <style>
-  :root {
-    --fundo: #16181d; --caixa: #1e2128; --linha: #2b2f38;
-    --texto: #e7e9ee; --fraco: #9aa1ad; --destaque: #4f8cff;
+  header h1 span { color: var(--acc); }
+  nav { flex-wrap: wrap; }
+  nav a[data-nav="cortador"].on { color: #fff; background: #25324d; }
+  #aviso-historias { margin: 10px 20px 0; }
+
+  /* ── Cortador (o Estúdio de cortes de antes, igual, só que dentro da aba) ── */
+  #cortador {
+    --fundo: var(--bg); --caixa: var(--panel); --linha: var(--line);
+    --texto: var(--txt); --fraco: var(--dim); --destaque: #4f8cff;
     --ok: #37c871; --erro: #ff6b6b; --aviso: #ffc95c;
+    max-width: 1180px; margin: 0 auto; padding: 18px 16px 60px;
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; color: var(--texto);
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 24px 16px 60px; background: var(--fundo); color: var(--texto);
-    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
-  }
-  main { max-width: 1180px; margin: 0 auto; }
-  h1 { font-size: 22px; margin: 0; }
-  h2 { font-size: 16px; margin: 0 0 12px; }
-  .fraco { color: var(--fraco); }
-  section {
+  #cortador h2 { font-size: 16px; margin: 0 0 12px; }
+  #cortador h2.titulo-aba { font-size: 20px; margin: 0; }
+  #cortador .fraco { color: var(--fraco); }
+  #cortador section {
     background: var(--caixa); border: 1px solid var(--linha); border-radius: 10px;
     padding: 16px; margin-top: 16px;
   }
-  button {
+  #cortador button {
     background: #2a2f3a; color: var(--texto); border: 1px solid var(--linha);
-    border-radius: 7px; padding: 7px 12px; font-size: 14px; cursor: pointer;
+    border-radius: 7px; padding: 7px 12px; font-size: 14px; cursor: pointer; white-space: normal;
   }
-  button:hover { border-color: var(--destaque); }
-  button.principal { background: var(--destaque); border-color: var(--destaque); color: #fff; font-weight: 600; }
-  button.perigo { color: #ffb4b4; }
-  button.mini { padding: 3px 8px; font-size: 13px; }
-  button:disabled { opacity: .45; cursor: default; }
-  input, select {
+  #cortador button:hover { border-color: var(--destaque); }
+  #cortador button.principal { background: var(--destaque); border-color: var(--destaque); color: #fff; font-weight: 600; }
+  #cortador button.perigo { color: #ffb4b4; }
+  #cortador button.mini { padding: 3px 8px; font-size: 13px; }
+  #cortador button:disabled { opacity: .45; cursor: default; }
+  #cortador input, #cortador select {
     background: #14161b; color: var(--texto); border: 1px solid var(--linha);
     border-radius: 7px; padding: 7px 9px; font: inherit; width: 100%;
   }
-  label { display: block; font-size: 13px; color: var(--fraco); margin-bottom: 4px; }
-  a { color: var(--destaque); }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--linha); vertical-align: middle; }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--fraco); }
-  .topo { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; }
-  .acoes { display: flex; flex-wrap: wrap; gap: 6px; }
-  .grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-  .abas { display: flex; gap: 6px; margin-bottom: 12px; }
-  .abas button.ativa { border-color: var(--destaque); color: #fff; background: #25324d; }
-  .ou { align-self: end; padding-bottom: 8px; text-align: center; color: var(--fraco); }
-  .pilula { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--linha); white-space: nowrap; }
-  .aguardando { color: var(--fraco); }
-  .processando { color: var(--aviso); border-color: var(--aviso); }
-  .pronto, .na_fila { color: var(--ok); border-color: var(--ok); }
-  .erro, .cancelado { color: var(--erro); border-color: var(--erro); }
-  .descartado { color: var(--fraco); }
-  progress { width: 100%; height: 8px; margin-top: 10px; }
-  .recado { margin-top: 10px; font-size: 14px; min-height: 20px; }
-  .recado.erro { color: var(--erro); } .recado.ok { color: var(--ok); }
+  #cortador label { display: block; font-size: 13px; color: var(--fraco); margin: 0 0 4px; text-transform: none; letter-spacing: 0; }
+  #cortador a { color: var(--destaque); }
+  #cortador table { width: 100%; border-collapse: collapse; }
+  #cortador th, #cortador td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--linha); vertical-align: middle; }
+  #cortador th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--fraco); font-weight: 600; }
+  #cortador video { max-height: none; border-radius: 6px; }
+  #cortador .topo { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; }
+  #cortador .acoes { display: flex; flex-wrap: wrap; gap: 6px; }
+  #cortador .grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  #cortador .abas { display: flex; gap: 6px; margin-bottom: 12px; }
+  #cortador .abas button.ativa { border-color: var(--destaque); color: #fff; background: #25324d; }
+  #cortador .ou { align-self: end; padding-bottom: 8px; text-align: center; color: var(--fraco); }
+  #cortador .pilula { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--linha); white-space: nowrap; }
+  #cortador .aguardando { color: var(--fraco); }
+  #cortador .processando { color: var(--aviso); border-color: var(--aviso); }
+  #cortador .pronto, #cortador .na_fila { color: var(--ok); border-color: var(--ok); }
+  #cortador .erro, #cortador .cancelado { color: var(--erro); border-color: var(--erro); }
+  #cortador .descartado { color: var(--fraco); }
+  #cortador progress { width: 100%; height: 8px; margin-top: 10px; }
+  #cortador .recado { margin-top: 10px; font-size: 14px; min-height: 20px; }
+  #cortador .recado.erro { color: var(--erro); } #cortador .recado.ok { color: var(--ok); }
   #aviso-ram { background: #3a2a10; border: 1px solid #e0a030; color: #ffe2a8; border-radius: 8px; padding: 10px 14px; margin-top: 10px; font-weight: 600; }
   #aviso-conexao { background: #3a1f1f; border: 1px solid var(--erro); color: #ffd3d3; border-radius: 8px; padding: 10px 14px; margin-top: 10px; }
-  .cortes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
-  .corte { border: 1px solid var(--linha); border-radius: 10px; padding: 10px; background: #191c22; display: flex; flex-direction: column; gap: 8px; }
-  .corte video { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 6px; }
-  .propostas { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
-  .propostas .corte video { aspect-ratio: 16/9; }
-  .corte.escolhido { border-color: var(--aviso); }
-  .corte.longo { border-color: #3d6bb3; }
-  .cortes .corte.longo { grid-column: span 2; }
-  .cortes .corte.longo video { aspect-ratio: 16/9; }
-  .pilula-longo { display: inline-block; background: #1f3558; color: #cfe0ff; border-radius: 999px; padding: 1px 9px; font-weight: 600; }
-  @media (max-width: 600px) { .cortes .corte.longo { grid-column: auto; } }
-  .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
-  .corte .meta b { color: var(--texto); font-weight: 600; }
-  pre#log { margin: 10px 0 0; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--fraco); white-space: pre-wrap; background: #14161b; border-radius: 8px; padding: 10px; }
-  td.etapa { font-size: 13px; color: var(--fraco); }
-  @media (max-width: 600px) { .esconde-celular { display: none; } }
+  #cortador .cortes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  #cortador .corte { border: 1px solid var(--linha); border-radius: 10px; padding: 10px; background: #191c22; display: flex; flex-direction: column; gap: 8px; }
+  #cortador .corte video { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 6px; }
+  #cortador .propostas { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  #cortador .propostas .corte video { aspect-ratio: 16/9; }
+  #cortador .corte.escolhido { border-color: var(--aviso); }
+  #cortador .corte.longo { border-color: #3d6bb3; }
+  #cortador .cortes .corte.longo { grid-column: span 2; }
+  #cortador .cortes .corte.longo video { aspect-ratio: 16/9; }
+  #cortador .pilula-longo { display: inline-block; background: #1f3558; color: #cfe0ff; border-radius: 999px; padding: 1px 9px; font-weight: 600; }
+  @media (max-width: 600px) { #cortador .cortes .corte.longo { grid-column: auto; } }
+  #cortador .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
+  #cortador .corte .meta b { color: var(--texto); font-weight: 600; }
+  #cortador textarea { min-height: 0; }
+  #cortador pre#log { margin: 10px 0 0; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--fraco); white-space: pre-wrap; background: #14161b; border-radius: 8px; padding: 10px; }
+  #cortador td.etapa { font-size: 13px; color: var(--fraco); }
+  #cortador #dica-canal { font-size: 12.5px; margin-top: 5px; line-height: 1.4; }
+  @media (max-width: 600px) { #cortador .esconde-celular { display: none; } }
 </style>
 </head>
 <body>
-<main>
+<header>
+  <h1>Estúdio <span>de vídeos</span></h1>
+  <nav>
+    <a href="#/cortador" data-nav="cortador">Cortador</a>
+    <a href="#/" data-nav="projetos">Histórias</a>
+    <a href="#/gerador" data-nav="gerador">Music</a>
+    <a href="#/canais" data-nav="canais">Canais</a>
+    <a href="#/custos" data-nav="custos">Custos</a>
+    <a href="#/configuracoes" data-nav="configuracoes">Configurações</a>
+  </nav>
+  <div id="sistema" class="small"></div>
+</header>
+
+<div id="cortador" hidden>
   <div class="topo">
-    <h1>🎬 Estúdio de cortes</h1>
+    <h2 class="titulo-aba">✂ Cortador</h2>
     <span class="fraco">Publicação: <a id="link-publicador" href="#" target="_blank" rel="noopener">abrir o Publicador ↗</a></span>
   </div>
   <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16, transparente ou fotos do assunto, legenda, GC, trilha → revisão → fila de publicação. Quando a live tem um assunto que sustenta 15–20 min, também sai uma proposta de <b>📺 vídeo longo</b> (16:9 com a moldura do canal).</p>
@@ -117,6 +137,7 @@
       <div>
         <label for="canal">Canal (para onde vai depois da revisão)</label>
         <select id="canal"></select>
+        <div id="dica-canal" class="fraco"></div>
       </div>
       <div>
         <label for="perfil">Visual (logo, cores, marca d'água)</label>
@@ -167,11 +188,20 @@
     </div>
     <pre id="log"></pre>
   </section>
-</main>
+</div>
+
+<main id="app" hidden><div class="spin"></div></main>
+<div id="toast"></div>
 
 <script>
+// A página única: o app do Estúdio de Histórias (static/app.js) cuida das rotas
+// e chama window.cortador.ativar()/desativar() quando a aba Cortador abre/fecha.
+window.ESTUDIO_UNIFICADO = true;
+</script>
+<script>
+(() => {
 const $ = (id) => document.getElementById(id);
-let estado = null, modo = "auto", assinaturaCortes = "", assinaturaPropostas = "";
+let estado = null, modo = "auto", assinaturaCortes = "", assinaturaPropostas = "", timer = null;
 
 function escapar(t) {
   return String(t ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -211,7 +241,22 @@ function perfilDoCanal(canal, reserva) {
   return p && estado.perfis.includes(p) ? p : reserva;
 }
 
-$("canal").onchange = () => { $("perfil").value = perfilDoCanal($("canal").value, $("perfil").value); };
+// Perfil do canal (aba Canais): legenda padrão dele e o resumo ao escolher o canal.
+const perfilCanal = canal => (estado?.canais_perfil || {})[canal] || null;
+const legendaDoCanal = canal => (perfilCanal(canal) || {}).legenda_padrao || estado?.legenda_padrao || "new";
+
+function dicaCanal() {
+  const nome = $("canal").value, p = perfilCanal(nome);
+  if (!nome) { $("dica-canal").innerHTML = ""; return; }
+  if (!p) {
+    $("dica-canal").innerHTML = `Sem perfil ainda — <a href="#/canal-pub/${encodeURIComponent(nome)}">criar em Canais</a>.`;
+    return;
+  }
+  const partes = [p.nicho, `${p.duracao_min_s}–${p.duracao_max_s} s`, p.tom].filter(Boolean).map(escapar);
+  $("dica-canal").innerHTML = `${escapar(p.nome_exibicao || nome)}: ${partes.join(" · ")} · <a href="#/canal-pub/${encodeURIComponent(nome)}">perfil</a>`;
+}
+
+$("canal").onchange = () => { $("perfil").value = perfilDoCanal($("canal").value, $("perfil").value); dicaCanal(); };
 
 $("video").onchange = () => { $("campo-legenda").hidden = !$("video").files[0]; };
 
@@ -374,6 +419,14 @@ const LEGENDAS = {new: "legenda new (glow + karaokê)", old: "legenda old (amare
 const opcoesLegenda = atual => Object.keys(LEGENDAS).map(l =>
   `<option value="${l}" ${l === (atual || "new") ? "selected" : ""}>${LEGENDAS[l]}</option>`).join("");
 
+// Duração fora do perfil do canal: só um aviso na proposta (quem decide é você).
+function avisoDuracao(c, canal) {
+  const p = perfilCanal(canal);
+  if (!p || !c.duracao || c.tipo === "longo") return "";
+  if (c.duracao > p.duracao_max_s + 10) return ` · <span style="color:var(--aviso)" title="perfil do canal: ${p.duracao_min_s}–${p.duracao_max_s} s">⏱ acima do perfil</span>`;
+  return "";
+}
+
 function desenharPropostas() {
   const lista = [];
   for (const t of estado.trabalhos) for (const c of (t.cortes || [])) if (c.status === "proposta" || c.status === "produzindo") lista.push([t, c]);
@@ -388,19 +441,20 @@ function desenharPropostas() {
     const produzindo = c.status === "produzindo";
     const rodando = agora[0] === t.id && agora[1] === c.id;
     if (c.tipo === "longo") return cardLongo(t, c, produzindo, rodando);
+    const canal = c.canal || t.canal;
     const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : "",
-                    etiquetaAbertura(c.tipo_abertura)].filter(Boolean).join(" · ");
+                    etiquetaAbertura(c.tipo_abertura)].filter(Boolean).join(" · ") + avisoDuracao(c, canal);
     const sugerido = FORMATOS[c.formato_sugerido] ? c.formato_sugerido : "dinamico";
     // pouca RAM: o crop fica desligado — a pré-seleção vai para o transparente
     const escolhido = semCrop(sugerido) ? "transparente" : sugerido;
     const opcoesFormato = Object.keys(FORMATOS).map(f =>
       `<option value="${f}" ${escolhido === f ? "selected" : ""} ${semCrop(f) ? "disabled" : ""}>${sugerido === f ? "🤖 " : ""}${FORMATOS[f]}${semCrop(f) ? " (desligado: pouca RAM)" : ""}</option>`).join("");
-    const perfilAtual = c.perfil || perfilDoCanal(c.canal || t.canal, t.perfil);
+    const perfilAtual = c.perfil || perfilDoCanal(canal, t.perfil);
     const opcoesPerfil = estado.perfis.map(p => `<option ${p === perfilAtual ? "selected" : ""}>${escapar(p)}</option>`).join("");
     const acoes = produzindo
       ? `<span class="fraco">${rodando ? "⚙️ produzindo agora" : "⏳ na fila de produção"} (${FORMATOS[c.formato_pedido] || ""})</span>
          ${rodando ? "" : `<button class="mini cancelar">cancelar</button>`}`
-      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">${opcoesFormato}</select>         <select class="legenda" style="width:auto" title="estilo da legenda">${opcoesLegenda("new")}</select>         <select class="perfil" style="width:auto" title="visual (logo, cores da tarja, marca d'água) deste corte">${opcoesPerfil}</select>
+      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">${opcoesFormato}</select>         <select class="legenda" style="width:auto" title="estilo da legenda (padrão do canal: ${legendaDoCanal(canal)})">${opcoesLegenda(legendaDoCanal(canal))}</select>         <select class="perfil" style="width:auto" title="visual (logo, cores da tarja, marca d'água) deste corte">${opcoesPerfil}</select>
          <button class="principal produzir">✂ Produzir</button>
          <button class="perigo descartar">descartar</button>`;
     return `<div class="corte ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
@@ -509,17 +563,24 @@ async function atualizar() {
     $("aviso-conexao").textContent = "O Publicador não respondeu — dá para produzir e revisar, mas enviar para a fila e a lista de canais dependem dele.";
     $("aviso-ram").hidden = !estado.pouca_ram;
     $("aviso-ram").textContent = estado.pouca_ram ? "⚠️ " + estado.pouca_ram : "";
-    $("link-publicador").href = `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
+    $("link-publicador").href = estado.publicador_link || `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
     preencherSelect($("canal"), estado.canais, "", estado.canais.length ? "" : "(Publicador sem canais)");
     preencherSelect($("perfil"), estado.perfis, estado.perfil_padrao || estado.perfis[0]);
+    dicaCanal();
     desenharTrabalhos(); desenharPropostas(); desenharCortes();
     carregarLog();
   } catch (e) {
     $("aviso-conexao").hidden = false; $("aviso-conexao").textContent = "Sem conexão com o Estúdio — tentando de novo…";
   }
 }
-atualizar();
-setInterval(atualizar, 4000);
+
+// Só atualiza enquanto a aba está aberta (o app de Histórias liga e desliga).
+window.cortador = {
+  ativar() { if (!timer) { assinaturaCortes = assinaturaPropostas = ""; atualizar(); timer = setInterval(atualizar, 4000); } },
+  desativar() { clearInterval(timer); timer = null; },
+};
+})();
 </script>
+<script src="/static/app.js"></script>
 </body>
 </html>

@@ -5,6 +5,7 @@ A API externa para gerar vídeo a partir de um assunto é o mesmo POST /api/proj
 Se ESTUDIO_API_TOKEN estiver definido, chamadas de fora do computador precisam do cabeçalho
 Authorization: Bearer <token>.
 """
+import os
 import shutil
 import tempfile
 import time
@@ -88,6 +89,7 @@ def status():
         "teto_laco": config.LACO_TETO_USD,
         "publicador_url": config.PUBLICADOR_URL,
         "desatualizado": codigo_desatualizado(),
+        "windows": os.name == "nt",
     }
 
 

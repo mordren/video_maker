@@ -8,6 +8,10 @@ const quem = c => c.pessoas || (c.personagens || (c.personagem ? [c.personagem] 
 const usd = v => 'US$ ' + Number(v || 0).toFixed(4);
 const app = $('#app');
 let timer = null, presets = null, statusSis = null;
+// Página única do Estúdio (porta 8090): este app divide a página com o Cortador e ganha as partes dele em
+// Canais, Custos e Configurações. Sozinho (python main.py), nada muda.
+const UNIFICADO = !!window.ESTUDIO_UNIFICADO;
+const REINICIAR = UNIFICADO ? 'reinicie o serviço de Histórias (videomaker-historias)' : 'reinicie o servidor (Ctrl+C e python main.py)';
 
 async function api(url, opts = {}) {
   const o = {...opts, headers: {...(opts.headers || {})}};
@@ -15,9 +19,9 @@ async function api(url, opts = {}) {
   const r = await fetch(url, o);
   if (!r.ok) {
     let msg = 'HTTP ' + r.status;
-    try { const j = await r.json(); msg = j.detail || msg; } catch {}
+    try { const j = await r.json(); msg = j.detail || j.erro || msg; } catch {}
     // 405 numa rota que a página conhece = o servidor ainda roda o código antigo.
-    if (r.status === 405) msg = 'O servidor está rodando uma versão antiga do programa. Reinicie o servidor (Ctrl+C e python main.py) e tente de novo.';
+    if (r.status === 405) msg = `O servidor está rodando uma versão antiga do programa: ${REINICIAR} e tente de novo.`;
     throw new Error(msg);
   }
   const tipo = r.headers.get('content-type') || '';
@@ -49,12 +53,23 @@ const badge = s => { const [t, c] = STATUS[s] || [s, '']; return `<span class="b
 /* ------------------------------------------------------------------ roteador */
 async function rota() {
   clearInterval(timer); timer = null;
+  if (UNIFICADO && !location.hash) { location.replace('#/cortador'); return; }
   const h = location.hash.replace(/^#/, '') || '/';
   const [, seg, id] = h.split('/');
-  $$('nav a').forEach(a => a.classList.toggle('on', a.dataset.nav === ({'': 'projetos', projeto: 'projetos', canal: 'canais'}[seg || ''] || seg)));
+  const NAV = {'': 'projetos', projeto: 'projetos', canal: 'canais', 'canal-pub': 'canais', ...(UNIFICADO ? {desempenho: 'projetos'} : {})};
+  $$('nav a').forEach(a => a.classList.toggle('on', a.dataset.nav === (NAV[(seg || '').split('?')[0]] || seg)));
+  if (UNIFICADO) {
+    const cortador = seg === 'cortador';
+    $('#cortador').hidden = !cortador;
+    app.hidden = cortador;
+    if (cortador) { window.cortador.ativar(); return; }
+    window.cortador.desativar();
+  }
   app.innerHTML = '<div class="spin"></div>';
   try {
-    if (!presets) presets = await api('/api/presets');
+    // A tela de um canal de publicação é do Cortador: abre mesmo com o serviço de Histórias fora do ar.
+    if (seg === 'canal-pub') return await telaCanalPub(decodeURIComponent(id || ''));
+    if (!presets && !(UNIFICADO && ['canais', 'custos', 'configuracoes'].includes(seg))) presets = await api('/api/presets');
     if (!seg) await telaProjetos();
     else if (seg === 'projeto') await telaProjeto(+id);
     else if (seg === 'canais') await telaCanais();
@@ -69,14 +84,21 @@ async function rota() {
 window.addEventListener('hashchange', rota);
 
 async function carregarSistema() {
-  statusSis = await api('/api/status');
+  try { statusSis = await api('/api/status'); }
+  catch (e) {
+    if (UNIFICADO) $('#sistema').innerHTML = `<span class="badge err" title="${esc(e.message)}">Histórias fora do ar — o Cortador segue funcionando</span>`;
+    throw e;
+  }
+  // Servidor sem janela (Linux): "Escolher…" e "Abrir pasta" do Music não têm onde abrir.
+  document.body.classList.toggle('sem-janela', statusSis.windows === false);
   const faltam = [];
   if (!statusSis.chaves.openrouter) faltam.push('OPENROUTER_API_KEY');
   if (!statusSis.chaves.pollinations) faltam.push('POLLINATIONS_API_KEY');
-  $('#sistema').innerHTML = (statusSis.desatualizado ? `<span class="badge err" title="Algum arquivo .py mudou depois que o servidor subiu">código novo: reinicie o servidor (Ctrl+C e python main.py)</span> ` : '') +
+  const rotulo = UNIFICADO ? 'Histórias: ' : '';
+  $('#sistema').innerHTML = (statusSis.desatualizado ? `<span class="badge err" title="Algum arquivo .py mudou depois que o servidor subiu">código novo: ${REINICIAR}</span> ` : '') +
     (statusSis.simulacao ? '<span class="badge warn">modo simulação (nada é pago)</span>'
-    : faltam.length ? `<span class="badge err">falta no .env: ${faltam.join(', ')}</span>`
-    : `<span class="small">${esc(statusSis.modelos.texto)} · ${esc(statusSis.modelos.juiz)} · ${esc(statusSis.modelos.imagem)}</span>`);
+    : faltam.length ? `<span class="badge err">${rotulo}falta no .env: ${faltam.join(', ')}</span>`
+    : `<span class="small">${rotulo}${esc(statusSis.modelos.texto)} · ${esc(statusSis.modelos.juiz)} · ${esc(statusSis.modelos.imagem)}</span>`);
 }
 setInterval(() => carregarSistema().catch(() => {}), 30000);
 
@@ -101,7 +123,7 @@ async function telaProjetos() {
     <div class="small" style="margin-top:6px">API: <code>POST /api/projetos {"canal": "slug-ou-id", "assunto": "...", "automatico": true}</code></div>
   </div>
   <div class="panel">
-    <h2>Vídeos</h2>
+    <h2>Vídeos${UNIFICADO ? ' <a class="small" href="#/desempenho" style="margin-left:10px;font-weight:400">desempenho no YouTube →</a>' : ''}</h2>
     ${projetos.length ? `<table><tr><th>#</th><th>Título / assunto</th><th>Canal</th><th>Status</th><th>Custo</th><th>Atualizado</th></tr>
     ${projetos.map(p => `<tr class="link" data-id="${p.id}"><td>${p.id}</td>
       <td><b>${esc(p.titulo || '')}</b>${p.titulo ? '<br>' : ''}<span class="small">${esc(p.assunto)}</span>
@@ -554,13 +576,111 @@ function abaCustos(p) {
 
 /* ------------------------------------------------------------------ canais */
 async function telaCanais() {
-  const canais = await api('/api/canais');
-  app.innerHTML = `<div class="row" style="align-items:center"><h2 style="margin:0">Canais</h2><button class="fix main" onclick="location.hash='#/canal/novo'">Novo canal</button></div>
-  <p class="small">Cada canal guarda uma vez só como as histórias são escritas, julgadas pelo Jev, ilustradas, narradas e sonorizadas.</p>
-  <div class="cards">${canais.map(c => `<div class="card" data-id="${c.id}"><b>${esc(c.nome)}</b> <span class="badge">${esc(c.idioma)}</span> <span class="badge">${esc(c.formato)}</span>
+  const [canais, pub] = await Promise.all([
+    UNIFICADO ? api('/api/canais').catch(e => ({erro: e.message})) : api('/api/canais'),
+    UNIFICADO ? api('/api/estudio/canais').catch(e => ({erro: e.message})) : null]);
+  const historias = Array.isArray(canais) ? canais : [];
+  app.innerHTML = (UNIFICADO ? blocoCanaisPublicacao(pub, historias) : '') +
+  `<div class="row" style="align-items:center"><h2 style="margin:0">${UNIFICADO ? 'Canais de histórias' : 'Canais'}</h2><button class="fix main" onclick="location.hash='#/canal/novo'">Novo canal</button></div>
+  <p class="small">Cada canal guarda uma vez só como as histórias são escritas, julgadas pelo Jev, ilustradas, narradas e sonorizadas.${UNIFICADO ? ' O "canal no Publicador" (seção Custos e publicação) diz para qual canal de publicação o vídeo vai.' : ''}</p>
+  ${canais.erro ? `<div class="panel bad">${esc(canais.erro)}</div>` : `<div class="cards">${historias.map(c => `<div class="card" data-id="${c.id}"><b>${esc(c.nome)}</b> <span class="badge">${esc(c.idioma)}</span> <span class="badge">${esc(c.formato)}</span>
     <p class="small">${esc(c.descricao)}</p>
-    <div class="small">${Object.keys(c.config.juiz.perguntas || {}).length} perguntas próprias no juiz · estilo ${esc(c.config.estilo.nome)} · voz ${esc(c.config.voz.nome)} · ${c.trilhas.length} trilha(s) · ${c.projetos} vídeo(s)</div></div>`).join('')}</div>`;
-  $$('.card').forEach(d => d.onclick = () => location.hash = '#/canal/' + d.dataset.id);
+    <div class="small">${Object.keys(c.config.juiz.perguntas || {}).length} perguntas próprias no juiz · estilo ${esc(c.config.estilo.nome)} · voz ${esc(c.config.voz.nome)} · ${c.trilhas.length} trilha(s) · ${c.projetos} vídeo(s)${c.config.publicador_canal ? ` · posta em ${esc(c.config.publicador_canal)}` : ''}</div></div>`).join('')}</div>`}`;
+  $$('.card[data-id]').forEach(d => d.onclick = () => location.hash = '#/canal/' + d.dataset.id);
+  $$('.card[data-pub]').forEach(d => d.onclick = () => location.hash = '#/canal-pub/' + encodeURIComponent(d.dataset.pub));
+  const novo = $('#pubNovo');
+  if (novo) novo.onclick = () => {
+    const nome = (prompt('Nome do canal como está no Publicador (ex.: garras):') || '').trim();
+    if (nome) location.hash = '#/canal-pub/' + encodeURIComponent(nome);
+  };
+}
+
+/* ------------------------------------------------------------------ canais de publicação (página única) */
+const normal = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const linkPublicador = url => String(url || '').replace(/\/\/(127\.0\.0\.1|localhost)(?=[:/]|$)/, '//' + location.hostname);
+
+function blocoCanaisPublicacao(pub, historias) {
+  if (!pub || pub.erro) return `<div class="panel bad">Canais de publicação: ${esc(pub ? pub.erro : 'sem resposta')}</div>`;
+  const cards = pub.canais.map(c => {
+    const p = c.perfil;
+    const hist = historias.filter(h => (h.config.publicador_canal || '') === c.nome);
+    const confira = p && c.marca && p.nome_exibicao && normal(c.marca) !== normal(p.nome_exibicao);
+    const situacao = !c.no_publicador ? '<span class="badge err">fora do Publicador</span>'
+      : c.conectado ? '<span class="badge ok">conectado</span>' : '<span class="badge warn">sem login</span>';
+    const pubInfo = c.publicacao ? ` · posta a cada ${c.publicacao.intervalo_min}–${c.publicacao.intervalo_max} min${c.publicacao.tiktok_conta ? ` · TikTok ${esc(c.publicacao.tiktok_conta)}` : ''}` : '';
+    return `<div class="card" data-pub="${esc(c.nome)}">
+      <b>${esc((p && p.nome_exibicao) || c.nome)}</b> <span class="badge">${esc(c.nome)}</span> ${situacao}
+      <p class="small">${esc(p ? p.descricao : 'Sem perfil ainda: clique para criar.')}</p>
+      ${p ? `<div class="small">${esc(p.nicho)} · ${p.duracao_min_s}–${p.duracao_max_s} s · legenda ${esc(p.legenda_padrao)} · ${p.formatos.map(f => esc(pub.formatos[f] || f)).join(', ')}</div>` : ''}
+      <div class="small" style="margin-top:4px">visual: ${esc(c.visual || '(nenhum)')}${c.marca ? ` (assina «${esc(c.marca)}»)` : ''}${confira ? ' <span style="color:var(--warn)" title="O nome no visual é diferente do nome do canal">⚠ confira</span>' : ''}${pubInfo}${hist.length ? ` · histórias: ${hist.map(h => esc(h.nome)).join(', ')}` : ''}</div>
+    </div>`;
+  }).join('');
+  return `<div class="row" style="align-items:center"><h2 style="margin:0">Canais de publicação</h2>
+      <button class="fix" id="pubNovo">Perfil para outro canal</button></div>
+    <p class="small">Os canais de verdade (YouTube/TikTok), como estão no Publicador${pub.publicador_ok ? '' : ' (<span style="color:var(--err)">o Publicador não respondeu</span>)'}. O perfil diz o que o canal é e como os cortes dele saem; o Cortador usa a legenda padrão, o visual e a duração do perfil.</p>
+    <div class="cards" style="margin-bottom:26px">${cards}</div>`;
+}
+
+async function telaCanalPub(nome) {
+  const d = await api('/api/estudio/canais');
+  if (!rotaAtiva('#/canal-pub/' + encodeURIComponent(nome))) return;
+  const c = d.canais.find(x => x.nome === nome) || {nome, perfil: null, visual: '', marca: '', publicacao: null, no_publicador: false};
+  const p = {...d.padrao, ...(c.perfil || {})};
+  let historias = [];
+  try { historias = (await api('/api/canais')).filter(h => (h.config.publicador_canal || '') === nome); } catch { /* Histórias fora do ar */ }
+  const pubUrl = linkPublicador(d.publicador_url);
+  const q = c.publicacao;
+  app.innerHTML = `
+  <div class="row" style="align-items:center"><h2 style="margin:0">Canal de publicação: ${esc(p.nome_exibicao || nome)} <span class="badge">${esc(nome)}</span></h2>
+    <button class="fix" onclick="location.hash='#/canais'">Voltar</button>
+    ${c.perfil ? '<button class="fix" id="pApagar">Apagar perfil</button>' : ''}
+    <button class="fix main" id="pSalvar">Salvar perfil</button></div>
+  ${c.perfil ? '' : '<div class="panel alert small" style="margin-top:12px">Este canal ainda não tem perfil. Preencha e salve.</div>'}
+  <div class="panel" style="margin-top:12px">
+    <h3 style="margin-top:0">Identidade</h3>
+    <div class="row"><div><label>Nome que aparece</label><input type="text" id="pNome" value="${esc(p.nome_exibicao)}" placeholder="${esc(nome)}"></div>
+      <div><label>Nicho</label><input type="text" id="pNicho" value="${esc(p.nicho)}"></div></div>
+    <label>Sobre o canal</label><textarea id="pDesc">${esc(p.descricao)}</textarea>
+    <div class="row"><div><label>Público</label><input type="text" id="pPublico" value="${esc(p.publico)}"></div>
+      <div><label>Tom</label><input type="text" id="pTom" value="${esc(p.tom)}"></div></div>
+    <label>De onde vêm os cortes</label><input type="text" id="pFontes" value="${esc(p.fontes)}">
+  </div>
+  <div class="panel">
+    <h3 style="margin-top:0">Como os cortes saem</h3>
+    <div class="row"><div><label>Duração mínima (s)</label><input type="number" id="pDMin" min="5" max="3600" value="${p.duracao_min_s}"></div>
+      <div><label>Duração máxima (s)</label><input type="number" id="pDMax" min="5" max="3600" value="${p.duracao_max_s}"></div>
+      <div><label>Legenda padrão</label><select id="pLeg"><option value="new" ${p.legenda_padrao === 'new' ? 'selected' : ''}>new (glow + karaokê)</option><option value="old" ${p.legenda_padrao === 'old' ? 'selected' : ''}>old (amarela)</option></select></div>
+      <div><label>Visual (logo e cores)</label><select id="pVisual"><option value="">(não definido)</option>${d.visuais.map(v => `<option value="${esc(v.nome)}" ${v.nome === c.visual ? 'selected' : ''}>${esc(v.nome)}${v.marca ? ' · assina ' + esc(v.marca) : ''}</option>`).join('')}</select></div></div>
+    <label>Formatos que combinam com o canal</label>
+    <div class="row">${Object.entries(d.formatos).map(([k, v]) => `<label class="inline fix"><input type="checkbox" data-fmt="${k}" ${p.formatos.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>
+    <label class="inline"><input type="checkbox" id="pLongo" ${p.video_longo ? 'checked' : ''}> aceita vídeo longo (15–20 min)</label>
+    <label>Aberturas que seguram</label><textarea id="pAbertura">${esc(p.abertura)}</textarea>
+    <label>Como escrever o título</label><textarea id="pTitulo">${esc(p.titulo_estilo)}</textarea>
+    <label>Observações</label><textarea id="pObs">${esc(p.observacoes)}</textarea>
+    <div class="small" style="margin-top:8px">O Cortador pré-seleciona a legenda e o visual deste canal nas propostas e avisa quando o corte passa da duração máxima. O visual é o mesmo que a produção sempre usou (lembrado por canal).</div>
+  </div>
+  <div class="panel"><h3 style="margin-top:0">Publicação</h3>
+    ${q ? `<p class="small">No Publicador: privacidade <b>${esc(q.privacidade)}</b> · intervalo de ${q.intervalo_min} a ${q.intervalo_max} min${q.ordem_aleatoria ? ' · ordem aleatória' : ''} · TikTok: ${esc(q.tiktok_conta || 'nenhum')}${q.descricao ? ` · descrição: «${esc(q.descricao)}»` : ''}</p>`
+      : `<p class="small">${c.no_publicador ? 'Sem configuração de postagem lida.' : 'Este canal não está no Publicador.'}</p>`}
+    <p class="small">Intervalo, privacidade, descrição e TikTok se mudam no <a href="${esc(pubUrl)}" target="_blank" rel="noopener">Publicador ↗</a>.</p>
+    ${historias.length ? `<p class="small">Canais de história que postam aqui: ${historias.map(h => `<a href="#/canal/${h.id}">${esc(h.nome)}</a>`).join(', ')}</p>` : ''}
+  </div>`;
+  $('#pSalvar').onclick = async () => {
+    const corpo = {nome_exibicao: $('#pNome').value, descricao: $('#pDesc').value, nicho: $('#pNicho').value,
+      publico: $('#pPublico').value, tom: $('#pTom').value, fontes: $('#pFontes').value,
+      duracao_min_s: +$('#pDMin').value, duracao_max_s: +$('#pDMax').value, legenda_padrao: $('#pLeg').value,
+      formatos: $$('[data-fmt]').filter(x => x.checked).map(x => x.dataset.fmt), video_longo: $('#pLongo').checked,
+      abertura: $('#pAbertura').value, titulo_estilo: $('#pTitulo').value, observacoes: $('#pObs').value,
+      visual: $('#pVisual').value};
+    await acao(() => api('/api/estudio/canais/' + encodeURIComponent(nome), {method: 'PUT', body: corpo}), 'Perfil do canal salvo.');
+    telaCanalPub(nome);
+  };
+  const apagar = $('#pApagar');
+  if (apagar) apagar.onclick = async () => {
+    if (!confirm(`Apagar o perfil de ${nome}? O canal continua no Publicador e o visual continua lembrado.`)) return;
+    await acao(() => api('/api/estudio/canais/' + encodeURIComponent(nome), {method: 'DELETE'}), 'Perfil apagado.');
+    location.hash = '#/canais';
+  };
 }
 
 const IDIOMAS = ['pt-BR', 'pt-PT', 'en-US', 'en-GB', 'es-ES', 'es-MX', 'fr-FR', 'de-DE', 'it-IT', 'ja-JP'];
@@ -840,10 +960,48 @@ async function telaCanal(id) {
 
 /* ------------------------------------------------------------------ custos */
 async function telaCustos() {
-  const c = await api('/api/custos');
-  app.innerHTML = `<div class="panel"><h2>Custos: ${usd(c.total)}</h2><table><tr><th>Serviço</th><th>Modelo</th><th>Etapa</th><th>Chamadas</th><th>Valor</th><th></th></tr>
+  const [c, k] = await Promise.all([
+    UNIFICADO ? api('/api/custos').catch(e => ({erro: e.message})) : api('/api/custos'),
+    UNIFICADO ? api('/api/estudio/custos').catch(e => ({erro: e.message})) : null]);
+  if (!rotaAtiva('#/custos')) return;
+  const historias = c.erro ? `<div class="panel bad">Histórias: ${esc(c.erro)}</div>`
+    : `<div class="panel"><h2>${UNIFICADO ? 'Histórias e Music' : 'Custos'}: ${usd(c.total)}</h2><table><tr><th>Serviço</th><th>Modelo</th><th>Etapa</th><th>Chamadas</th><th>Valor</th><th></th></tr>
   ${c.por_servico.map(l => `<tr><td>${esc(l.servico)}</td><td class="small">${esc(l.modelo)}</td><td>${esc(l.etapa)}</td><td>${l.chamadas}</td><td>${usd(l.valor)}</td><td class="small">${l.todos_reais ? 'real' : 'estimado'}</td></tr>`).join('')}</table>
-  <p class="small">Calibração: depois de 15 a 20 shorts, compare as notas do gancho (arquivo avaliacoes.jsonl de cada projeto) com a retenção no YouTube Studio e ajuste os cortes no canal.</p></div>`;
+  <p class="small">${UNIFICADO ? 'O custo de cada vídeo de história está na aba Custos do próprio vídeo. O Music não gasta API (só o computador). ' : ''}Calibração: depois de 15 a 20 shorts, compare as notas do gancho (arquivo avaliacoes.jsonl de cada projeto) com a retenção no YouTube Studio e ajuste os cortes no canal.</p></div>`;
+  app.innerHTML = (UNIFICADO ? blocoCustosCortador(k, c) : '') + historias;
+}
+
+function blocoCustosCortador(k, h) {
+  if (!k || k.erro) return `<div class="panel bad">Cortador: ${esc(k ? k.erro : 'sem resposta')}</div>`;
+  const p = k.periodos;
+  const quadro = (rotulo, valor, sub = '') => `<div class="panel fix" style="min-width:150px;margin:0"><div class="small">${esc(rotulo)}</div><div style="font-size:20px;font-weight:600">${usd(valor)}</div>${sub ? `<div class="small">${sub}</div>` : ''}</div>`;
+  const totalHist = h && !h.erro ? h.total : null;
+  const contas = (k.contas || []).map(a => {
+    if (a.erro) return `<tr><td>${esc(a.servico)} …${esc(a.final)}</td><td class="small">${esc(a.usado_por.join(', '))}</td><td colspan="4" class="small" style="color:var(--err)">não respondeu (${esc(a.erro)})</td></tr>`;
+    if (a.servico === 'deepseek') return `<tr><td>DeepSeek …${esc(a.final)}</td><td class="small">${esc(a.usado_por.join(', '))}</td><td colspan="4">saldo: ${(a.saldos || []).map(s => `<b>${esc(s.total_balance)} ${esc(s.currency)}</b>`).join(' · ') || '?'}</td></tr>`;
+    return `<tr><td>OpenRouter …${esc(a.final)}</td><td class="small">${esc(a.usado_por.join(', '))}</td><td>${usd(a.usage_daily)}</td><td>${usd(a.usage_weekly)}</td><td>${usd(a.usage_monthly)}</td>
+      <td>${usd(a.usage)}${a.limit_remaining != null ? `<div class="small">restam ${usd(a.limit_remaining)}</div>` : ''}</td></tr>`;
+  }).join('');
+  const maiorDia = Math.max(0.000001, ...k.por_dia.map(d => d.valor));
+  const dias = k.por_dia.map(d => `<div class="row" style="align-items:center;gap:8px;margin:2px 0"><span class="small fix" style="width:78px">${esc(d.dia.slice(5).split('-').reverse().join('/'))}</span>
+    <div style="flex:1;background:var(--panel2);border-radius:3px;height:10px"><div style="width:${(100 * d.valor / maiorDia).toFixed(1)}%;height:100%;background:var(--acc);border-radius:3px"></div></div><span class="small fix" style="width:96px;text-align:right">${usd(d.valor)}</span></div>`).join('');
+  return `<h2>Custos</h2>
+  <div class="row" style="align-items:stretch;margin-bottom:16px">
+    ${quadro('Cortador hoje', p.hoje)}${quadro('Cortador 7 dias', p['7 dias'])}${quadro('Cortador 30 dias', p['30 dias'])}
+    ${quadro('Cortador total', p.total, k.desde ? 'desde ' + esc(k.desde.slice(0, 10).split('-').reverse().join('/')) : 'ainda sem registro')}
+    ${totalHist != null ? quadro('Histórias total', totalHist) : ''}
+  </div>
+  <div class="panel"><h3 style="margin-top:0">Gasto real das contas</h3>
+    <table><tr><th>Chave</th><th>Usada por</th><th>Hoje</th><th>7 dias</th><th>Mês</th><th>Total</th></tr>${contas || '<tr><td colspan="6" class="small">Nenhuma chave configurada.</td></tr>'}</table>
+    <p class="small">Direto da conta (OpenRouter /key e saldo do DeepSeek): inclui o que foi gasto com a mesma chave fora do Estúdio. Atualiza a cada 5 min.</p></div>
+  <div class="grid2">
+    <div class="panel"><h3 style="margin-top:0">Cortador por modelo</h3>
+      ${k.por_modelo.length ? `<table><tr><th>Serviço</th><th>Modelo</th><th>Chamadas</th><th>Valor</th><th></th></tr>${k.por_modelo.map(l => `<tr><td>${esc(l.servico)} <span class="small">${esc(l.tipo)}</span></td><td class="small">${esc(l.modelo)}</td><td>${l.chamadas}</td><td>${usd(l.valor)}</td><td class="small">${l.todos_reais ? 'real' : l.algum_real ? 'parte real' : 'estimado'}</td></tr>`).join('')}</table>` : '<p class="small">Nenhuma chamada registrada ainda: o registro começa com esta versão.</p>'}
+      ${k.por_etapa.length ? `<h3>Por etapa</h3><table>${k.por_etapa.map(e => `<tr><td>${esc(e.etapa)}</td><td>${usd(e.valor)}</td></tr>`).join('')}</table>` : ''}
+      <p class="small">"real" é o valor devolvido pelo OpenRouter; "estimado" usa os preços da aba Configurações (o DeepSeek não devolve o custo).</p></div>
+    <div class="panel"><h3 style="margin-top:0">Cortador por dia (30 dias)</h3>${dias || '<p class="small">Sem gasto registrado.</p>'}
+      ${k.por_trabalho.length ? `<h3>Por trabalho</h3><table><tr><th>Vídeo</th><th>Canal</th><th>Chamadas</th><th>Valor</th></tr>${k.por_trabalho.map(t => `<tr><td>${esc(t.titulo)}${t.existe ? '' : ' <span class="small">(apagado)</span>'}<div class="small">${esc(t.id)}</div></td><td class="small">${esc(t.canal)}</td><td>${t.chamadas}</td><td>${usd(t.valor)}</td></tr>`).join('')}</table>` : ''}</div>
+  </div>`;
 }
 
 /* ------------------------------------------------------------------ gerador de vídeo (playlists lo-fi 16:9) */
@@ -1168,36 +1326,49 @@ carregarSistema().catch(() => {});
 rota();
 
 /* ------------------------------------------------------------------ configurações globais */
-let abaConfig = 'acesso';
+let abaConfig = UNIFICADO ? 'c_acesso' : 'acesso';
+const BASE_HIST = '/api/configuracoes', BASE_CORT = '/api/estudio/configuracoes';
 
 async function telaConfiguracoes() {
-  const cfg = await api('/api/configuracoes');
+  // Página única: os grupos do Cortador (Flask) vêm antes dos das Histórias (este serviço); cada campo sabe
+  // para onde salvar. As chaves do Cortador chegam com o prefixo "c:".
+  const [hist, cort] = await Promise.all([
+    UNIFICADO ? api(BASE_HIST).catch(e => ({erro: e.message})) : api(BASE_HIST),
+    UNIFICADO ? api(BASE_CORT).catch(e => ({erro: e.message})) : null]);
   if (!rotaAtiva('#/configuracoes')) return;
-  const grupos = cfg.grupos;
+  const marcar = (cfg, base, lado) => (cfg && !cfg.erro ? cfg.grupos : []).map(g => ({...g, base, lado}));
+  const grupos = [...marcar(cort, BASE_CORT, 'Cortador'), ...marcar(hist, BASE_HIST, UNIFICADO ? 'Histórias e Music' : '')];
+  if (!grupos.length) { app.innerHTML = `<div class="panel bad">${esc((hist && hist.erro) || (cort && cort.erro) || 'Sem configurações.')}</div>`; return; }
+  const formatos = (hist && !hist.erro && hist.formatos) || {};
   if (!grupos.some(g => g.id === abaConfig)) abaConfig = grupos[0].id;
-  const campos = Object.fromEntries(grupos.flatMap(g => g.campos).map(c => [c.chave, c]));
-  const nomeCampo = c => (c.formato ? cfg.formatos[c.formato] + ' · ' : '') + c.rotulo;
+  const campos = Object.fromEntries(grupos.flatMap(g => g.campos.map(c => [c.chave, {...c, base: g.base}])));
+  const nomeCampo = c => (c.formato ? formatos[c.formato] + ' · ' : '') + c.rotulo;
   const textoPadrao = c => {
     if (c.padrao_rotulo) return c.padrao_rotulo;
     if (c.tipo === 'booleano') return c.padrao ? 'ligado' : 'desligado';
     if (c.tipo === 'escolha') return (c.opcoes.find(o => o.valor === c.padrao) || {rotulo: c.padrao}).rotulo;
     return c.padrao === '' || c.padrao == null ? '(vazio)' : String(c.padrao);
   };
-  const ORIGEM = {'.env': ['.env', 'ok'], 'configuracoes.json': ['json', 'ok'], 'ambiente do sistema': ['ambiente do sistema', 'warn'], 'padrão': ['padrão', '']};
+  const ORIGEM = {'.env': ['.env', 'ok'], 'configuracoes.json': ['json', 'ok'], 'ambiente do sistema': ['ambiente do sistema', 'warn'], 'padrão': ['padrão', ''],
+                  'config_cortador.json': ['config_cortador.json', 'ok'], 'fase1/.env': ['fase1/.env', 'ok'], 'publicador.env': ['publicador.env', 'ok'],
+                  'config.json': ['config.json', 'ok'], 'config_crop.yaml': ['config_crop.yaml', '']};
   const selos = c => {
     const [t, cls] = ORIGEM[c.origem] || [c.origem, ''];
     return `<span class="badge ${cls}" title="Onde este valor está salvo">${esc(t)}</span>` +
-      (c.ao_vivo ? '' : ' <span class="badge warn" title="Só vale depois de reiniciar o servidor">reiniciar</span>') +
-      (c.pendente_reinicio ? ' <span class="badge err" title="O valor salvo ainda não está em uso: reinicie o servidor">aguardando reinício</span>' : '');
+      (c.ao_vivo ? '' : ` <span class="badge warn" title="Só vale depois de reiniciar">reiniciar</span>`) +
+      (c.pendente_reinicio ? ' <span class="badge err" title="O valor salvo ainda não está em uso: reinicie">aguardando reinício</span>' : '');
   };
   const entrada = (c, curto = false) => {
     const k = esc(c.chave), pad = esc(textoPadrao(c));
+    if (c.tipo === 'leitura') {
+      return `<div class="cfg-linha"><input type="text" value="${esc(typeof c.valor === 'object' ? JSON.stringify(c.valor) : c.valor)}" disabled></div>`;
+    }
     if (c.tipo === 'segredo') {
       const v = c.valor || {};
       return `<div class="cfg-linha"><input type="password" data-cfg="${k}" autocomplete="new-password" spellcheck="false"
         placeholder="${v.definido ? `definida (…${esc(v.final)}) — deixe em branco para manter` : 'não definida'}">
         <button class="small" type="button" data-mostrar="${k}">Mostrar</button>
-        ${v.definido ? `<button class="small" type="button" data-apagar="${k}" title="Remove a chave do .env">Apagar</button>` : ''}</div>`;
+        ${v.definido ? `<button class="small" type="button" data-apagar="${k}" title="Remove a chave do arquivo">Apagar</button>` : ''}</div>`;
     }
     const restaurar = `<button class="small" type="button" data-restaurar="${k}" title="Restaurar padrão: ${pad}">${curto ? 'padrão' : 'Restaurar padrão'}</button>`;
     if (c.tipo === 'booleano') {
@@ -1223,25 +1394,30 @@ async function telaConfiguracoes() {
   const celula = c => `<div class="cfg-campo" data-bloco="${esc(c.chave)}" title="${esc(nomeCampo(c))} · ${esc(c.origem)}">${entrada(c, true)}
     <div class="small">${c.origem !== 'padrão' ? esc((ORIGEM[c.origem] || [c.origem])[0]) : ''}${c.pendente_reinicio ? ' · aguardando reinício' : ''}</div></div>`;
   const tabelaFormatos = g => {
-    const fmts = Object.keys(cfg.formatos);
+    const fmts = Object.keys(formatos);
     const linhas = g.campos.filter(c => c.formato === fmts[0]);
-    return `<table class="cfg-fmt"><tr><th>Parâmetro</th>${fmts.map(f => `<th>${esc(cfg.formatos[f])}</th>`).join('')}</tr>
+    return `<table class="cfg-fmt"><tr><th>Parâmetro</th>${fmts.map(f => `<th>${esc(formatos[f])}</th>`).join('')}</tr>
       ${linhas.map(l => `<tr><td><b>${esc(l.rotulo)}</b>${l.unidade ? ` <span class="small">(${esc(l.unidade)})</span>` : ''}<div class="small">${esc(l.ajuda)}</div></td>
         ${fmts.map(f => `<td>${celula(campos[`FORMATOS.${f}.${l.campo}`])}</td>`).join('')}</tr>`).join('')}</table>`;
   };
+  const idTeste = (g, t) => `${g.id}:${t.servico}`;
   const corpoGrupo = g => `<section data-grupo="${g.id}" ${g.id === abaConfig ? '' : 'hidden'}>
-    <div class="panel"><p class="small" style="margin-top:0">${esc(g.descricao)}</p>
+    <div class="panel"><p class="small" style="margin-top:0">${g.lado ? `<b>${esc(g.lado)}</b> · ` : ''}${esc(g.descricao)}</p>
     ${g.testes.length ? `<div class="row" style="align-items:center;margin-bottom:10px">${g.testes.map(t =>
-      `<div class="fix"><button type="button" data-testar="${t.servico}">${esc(t.rotulo)}</button><span class="small cfg-res" data-res="${t.servico}">usa o que está salvo</span></div>`).join('')}</div>` : ''}
+      `<div class="fix"><button type="button" data-testar="${esc(idTeste(g, t))}">${esc(t.rotulo)}</button><span class="small cfg-res" data-res="${esc(idTeste(g, t))}">usa o que está salvo</span></div>`).join('')}</div>` : ''}
     ${g.id === 'formatos' ? tabelaFormatos(g) : `<div class="cfg-grade">${g.campos.map(bloco).join('')}</div>`}</div></section>`;
+  const abas = lado => grupos.filter(g => g.lado === lado).map(g => `<button data-g="${g.id}" class="${g.id === abaConfig ? 'on' : ''}">${esc(g.titulo)}</button>`).join('');
+  const lados = [...new Set(grupos.map(g => g.lado))];
+  const arquivos = [cort && !cort.erro ? `Cortador: chaves em <code>${esc(cort.env_arquivo)}</code>, o resto em <code>${esc(cort.json_arquivo)}</code> (só o que difere dos YAML do repositório)` : '',
+    hist && !hist.erro ? `${UNIFICADO ? 'Histórias: ' : ''}chaves em <code>${esc(hist.env_arquivo)}</code>, o resto em <code>${esc(hist.json_arquivo)}</code>` : ''].filter(Boolean);
 
   app.innerHTML = `
   <div class="row" style="align-items:center"><h2 style="margin:0">Configurações</h2>
     <span class="small fix" id="kConta"></span><button class="fix main" id="kSalvar">Salvar configurações</button></div>
-  <p class="small">As chaves ficam no arquivo <code>${esc(cfg.env_arquivo)}</code>, neste computador (o Git ignora). Nenhuma volta inteira pela API: para trocar uma, digite a nova; em branco, a atual é mantida.
-    Os demais parâmetros ficam em <code>${esc(cfg.json_arquivo)}</code>, só os que diferem do padrão. O que é por canal fica em Canais; as pastas e efeitos de cada render, em Music.</p>
-  ${(cfg.avisos || []).map(a => `<div class="panel alert small">${esc(a)}</div>`).join('')}
-  <div class="tabs" id="kTabs">${grupos.map(g => `<button data-g="${g.id}" class="${g.id === abaConfig ? 'on' : ''}">${esc(g.titulo)}</button>`).join('')}</div>
+  <p class="small">${arquivos.join('. ')}. Nenhuma chave volta inteira pela API: para trocar uma, digite a nova; em branco, a atual é mantida. O que é por canal fica em Canais; as pastas e efeitos de cada render, em Music.</p>
+  ${[...(hist && hist.erro ? [`Histórias: ${hist.erro}`] : []), ...(cort && cort.erro ? [`Cortador: ${cort.erro}`] : []),
+     ...((cort && cort.avisos) || []), ...((hist && hist.avisos) || [])].map(a => `<div class="panel alert small">${esc(a)}</div>`).join('')}
+  ${lados.map(l => `<div class="tabs" data-lado="${esc(l)}" style="flex-wrap:wrap;align-items:center">${l ? `<span class="small fix" style="padding:0 8px 0 0;font-weight:600">${esc(l)}</span>` : ''}${abas(l)}</div>`).join('')}
   ${grupos.map(corpoGrupo).join('')}`;
 
   const els = Object.fromEntries($$('[data-cfg]').map(e => [e.dataset.cfg, e]));
@@ -1262,9 +1438,9 @@ async function telaConfiguracoes() {
   Object.values(els).forEach(e => { e.oninput = atualizar; e.onchange = atualizar; });
   atualizar();
 
-  $$('#kTabs button').forEach(b => b.onclick = () => {
+  $$('.tabs[data-lado] button').forEach(b => b.onclick = () => {
     abaConfig = b.dataset.g;
-    $$('#kTabs button').forEach(x => x.classList.toggle('on', x === b));
+    $$('.tabs[data-lado] button').forEach(x => x.classList.toggle('on', x === b));
     $$('[data-grupo]').forEach(s => s.hidden = s.dataset.grupo !== abaConfig);
   });
   $$('[data-restaurar]').forEach(b => b.onclick = () => {
@@ -1278,17 +1454,19 @@ async function telaConfiguracoes() {
   });
   $$('[data-apagar]').forEach(b => b.onclick = async () => {
     const c = campos[b.dataset.apagar];
-    if (!confirm(`Apagar "${c.rotulo}"?\n\nA linha ${c.chave} sai do arquivo .env (há uma cópia em .env.bak desde a primeira gravação desta execução). Sem ela, o programa volta a avisar que falta a chave.`)) return;
-    try { await acao(() => api('/api/configuracoes/restaurar', {method: 'POST', body: {chaves: [c.chave]}}), `${c.rotulo} apagada.`); }
+    if (!confirm(`Apagar "${c.rotulo}"?\n\nA linha sai do arquivo de chaves (há uma cópia .bak desde a primeira gravação). Sem ela, o programa volta a avisar que falta a chave.`)) return;
+    try { await acao(() => api(c.base + '/restaurar', {method: 'POST', body: {chaves: [c.chave]}}), `${c.rotulo} apagada.`); }
     catch { return; }
     carregarSistema().catch(() => {});
     telaConfiguracoes();
   });
   $$('[data-testar]').forEach(b => b.onclick = async () => {
+    const [gid, servico] = b.dataset.testar.split(':');
+    const g = grupos.find(x => x.id === gid);
     const res = $(`[data-res="${b.dataset.testar}"]`);
     b.disabled = true; res.className = 'small cfg-res'; res.textContent = 'testando...';
     try {
-      const r = await api('/api/configuracoes/testar/' + b.dataset.testar, {method: 'POST'});
+      const r = await api(`${g.base}/testar/${servico}`, {method: 'POST'});
       res.className = 'small cfg-res ' + (r.ok ? 'ok' : 'err'); res.textContent = r.mensagem;
     } catch (e) { res.className = 'small cfg-res err'; res.textContent = e.message; }
     finally { b.disabled = false; }
@@ -1298,13 +1476,20 @@ async function telaConfiguracoes() {
     if (!Object.keys(mud).length) return toast('Nada mudou.');
     const b = $('#kSalvar'); b.disabled = true;
     try {
-      const r = await acao(() => api('/api/configuracoes', {method: 'PUT', body: mud}));
+      // Um lote por serviço; cada um é tudo ou nada.
+      const porBase = {};
+      for (const [k, v] of Object.entries(mud)) (porBase[campos[k].base] ||= {})[k] = v;
+      const r = {salvos: [], restaurados: [], ao_vivo: [], reiniciar: []};
+      for (const [base, lote] of Object.entries(porBase)) {
+        const x = await acao(() => api(base, {method: 'PUT', body: lote}));
+        for (const chave of Object.keys(r)) r[chave].push(...(x[chave] || []));
+      }
       const nomes = ks => ks.map(k => nomeCampo(campos[k])).join(', ');
       const feitos = [...r.salvos, ...r.restaurados];
       const partes = [];
       const vivos = r.ao_vivo.filter(k => feitos.includes(k)), reinicia = r.reiniciar.filter(k => feitos.includes(k));
       if (vivos.length) partes.push(`Já vale: ${nomes(vivos)}.`);
-      if (reinicia.length) partes.push(`Precisa reiniciar o servidor (Ctrl+C e python main.py): ${nomes(reinicia)}.`);
+      if (reinicia.length) partes.push(`Precisa reiniciar: ${nomes(reinicia)}.`);
       toast(`Salvo. ${partes.join(' ')}`);
       carregarSistema().catch(() => {});
       await telaConfiguracoes();

@@ -44,11 +44,21 @@ def api_key() -> str:
     return key
 
 
+def _registrar_custo(path: str, payload: dict, resposta: dict) -> None:
+    try:
+        import custos_api
+    except ImportError:
+        return
+    custos_api.registrar_openrouter(path, payload, resposta)
+
+
 def post(path: str, payload: dict, timeout: float, tentativas: int) -> dict:
     """POST com novas tentativas em erro de rede, 429 e 5xx. Erro 4xx falha na
     hora — menos o 400 "Provider returned 400": é o provedor por trás do
     OpenRouter recusando naquele instante (30/09: a mesma janela de áudio
     passou minutos depois), não um pedido nosso malformado."""
+    if path.endswith("/chat/completions"):
+        payload = {**payload, "usage": {"include": True}}   # a resposta traz o custo real (aba Custos)
     body = json.dumps(payload).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {api_key()}",
@@ -60,7 +70,9 @@ def post(path: str, payload: dict, timeout: float, tentativas: int) -> dict:
         req = urllib.request.Request(BASE_URL + path, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                resposta = json.loads(resp.read().decode("utf-8"))
+            _registrar_custo(path, payload, resposta)
+            return resposta
         except urllib.error.HTTPError as exc:
             detalhe = exc.read().decode("utf-8", errors="replace")[:500]
             ultimo = f"HTTP {exc.code}: {detalhe}"

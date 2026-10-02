@@ -32,7 +32,7 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import quote
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
@@ -209,7 +209,7 @@ def normalizar_config(cfg: dict | None) -> dict:
     t["posicao"] = t["posicao"] if t["posicao"] in POSICOES else "inf_esq"
     t["tamanho"] = int(_num(t["tamanho"], 34, 12, 120))
     t["cor"] = _cor(t["cor"])
-    t["fonte"] = str(t["fonte"] or "") if t["fonte"] and Path(str(t["fonte"])).is_file() else fonte_padrao()
+    t["fonte"] = _achar_fonte(str(t["fonte"] or "")) or fonte_padrao()
     c["nome_saida"] = _nome_seguro(c["nome_saida"])
     p = c["previa_inicio"]
     c["previa_inicio"] = None if p in (None, "") else _num(p, 0, 0, 10**6)
@@ -222,16 +222,23 @@ _fontes: list[dict] | None = None
 _SIMBOLOS = re.compile(r"symbol|wingdings|webdings|marlett|mdl2|icons|emoji|holomdl|fluent", re.I)
 
 
+def _pastas_fontes() -> list[Path]:
+    if os.name == "nt":
+        return [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows" / "Fonts"]
+    # Linux (servidor .133): as do usuário primeiro, depois a do repositório (Montserrat) e as do sistema
+    return [Path.home() / ".local" / "share" / "fonts", Path.home() / ".fonts",
+            config.CODIGO.parent / "assets" / "fonts", Path("/usr/share/fonts"), Path("/usr/local/share/fonts")]
+
+
 def fontes() -> list[dict]:
     global _fontes
     if _fontes is None:
-        pastas = [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts",
-                  Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows" / "Fonts"]
         achadas: dict[str, str] = {}
-        for pasta in pastas:
+        for pasta in _pastas_fontes():
             if not pasta.is_dir():
                 continue
-            for f in sorted(pasta.iterdir()):
+            for f in sorted(pasta.iterdir() if os.name == "nt" else pasta.rglob("*")):
                 if f.suffix.lower() not in (".ttf", ".otf", ".ttc"):
                     continue
                 try:
@@ -245,11 +252,25 @@ def fontes() -> list[dict]:
     return _fontes
 
 
-def fonte_padrao() -> str:
-    pasta = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-    for nome in ("seguisb.ttf", "segoeui.ttf", "arial.ttf"):  # Segoe UI Semibold
+def _achar_fonte(caminho: str) -> str:
+    """O arquivo da fonte escolhida; uma escolha feita no Windows (C:\\Windows\\Fonts\\x.ttf) vale no servidor
+    Linux se o mesmo arquivo estiver numa das pastas de fontes de lá."""
+    if not caminho:
+        return ""
+    if Path(caminho).is_file():
+        return caminho
+    nome = PureWindowsPath(caminho).name
+    for pasta in _pastas_fontes():
         if (pasta / nome).is_file():
             return str(pasta / nome)
+    return ""
+
+
+def fonte_padrao() -> str:
+    for pasta in _pastas_fontes()[:3]:
+        for nome in ("seguisb.ttf", "segoeui.ttf", "arial.ttf", "Montserrat-ExtraBold.ttf"):  # Segoe UI Semibold
+            if (pasta / nome).is_file():
+                return str(pasta / nome)
     return fontes()[0]["arquivo"] if fontes() else ""
 
 

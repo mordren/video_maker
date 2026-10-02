@@ -1,0 +1,30 @@
+# Estúdio de Histórias (historias/: histórias narradas, Music e a parte deles
+# em Canais/Custos/Configurações). Só escuta nesta máquina: quem fala com ele é
+# o Estúdio (:8090), que mostra tudo numa página só (estudio/historias_ponte.py).
+#
+# Serviço de USUÁRIO (o mordren tem linger=yes, então sobe no boot sem login),
+# instalado por servidor/instalar-historias.sh — não precisa de sudo:
+#   systemctl --user status videomaker-historias
+#   journalctl --user -u videomaker-historias -f
+[Unit]
+Description=VideoMaker - Estudio de Historias (127.0.0.1:8091, atras do Estudio :8090)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/video_maker/historias
+# Dados (banco, projetos, biblioteca, trilhas, Music) e chaves fora do código
+Environment=ESTUDIO_RAIZ=%h/VideoMaker/historias
+Environment=ESTUDIO_ENV=%h/VideoMaker/historias/.env
+Environment=TMPDIR=%h/VideoMaker/tmp
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=PATH=%h/video_maker/historias/.venv/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/video_maker/historias/.venv/bin/python -m uvicorn estudio.web:app --host 127.0.0.1 --port 8091
+Restart=always
+RestartSec=5
+# A GPU e o processador são do Cortador primeiro
+Nice=5
+
+[Install]
+WantedBy=default.target

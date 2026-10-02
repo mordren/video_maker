@@ -79,6 +79,10 @@ import pipeline_cortes  # noqa: E402  (Fase 2, chamada por bloco só na produç�
 import ai_srt  # noqa: E402
 import fila  # noqa: E402  (fila de trabalho/corte no Redis — sobrevive a reinício)
 import video_longo  # noqa: E402  (produção do vídeo longo, com a moldura do canal)
+import canais_publicacao  # noqa: E402  (perfil de cada canal do Publicador)
+import config_cortador  # noqa: E402  (aba Configurações: o que muda por cima dos YAML e constantes)
+import custos_cortador  # noqa: E402  (aba Custos)
+import historias_ponte  # noqa: E402  (as abas do Estúdio de Histórias na mesma página)
 from utils import parse_csv_moments, yt_dlp_path  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("ESTUDIO_DATA") or r"C:\VideoMaker\estudio")
@@ -108,7 +112,7 @@ CONFIG_PADRAO = {
 #  então o Estúdio avisa por e-mail e só produz transparente e fotos.
 # ──────────────────────────────────────────────────────────────────
 
-RAM_MINIMA_GB = 16
+RAM_MINIMA_GB = config_cortador.valor_salvo(DATA_DIR, "estudio.RAM_MINIMA_GB", 16)
 # as mesmas variáveis PUBLICADOR_EMAIL_* do Publicador (servidor/LEIA-ME.md)
 EMAIL_ENV = Path(os.environ.get("ESTUDIO_EMAIL_ENV") or (DATA_DIR.parent / "publicador" / "publicador.env"))
 
@@ -188,7 +192,8 @@ def _cancelar_por_pouca_ram(tid: str, cid: str, c: dict) -> None:
                          "vem no máximo uma vez por hora.)")
 
 
-app = Flask(__name__)
+# static/ é a interface do Estúdio de Histórias (historias_ponte.py)
+app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = TAMANHO_MAXIMO
 _TRAVA = threading.RLock()
 _cancelar: set[str] = set()        # ids de trabalhos com cancelamento pedido
@@ -476,10 +481,30 @@ def _blocos_do_csv(video: Path, csv_path: Path, destino: Path) -> Path:
     return caminho
 
 
+def _etapa(tid: str | None, etapa: str = "") -> None:
+    """Trabalho e etapa no ambiente: fase1/custos_api.py anota cada chamada paga
+    com eles (aba Custos), inclusive nos subprocessos da Fase 1. Só o laço de
+    trabalho chama APIs pagas, e ele é uma thread só."""
+    if tid:
+        os.environ["ESTUDIO_TRABALHO"], os.environ["ESTUDIO_ETAPA"] = tid, etapa
+    else:
+        os.environ.pop("ESTUDIO_TRABALHO", None)
+        os.environ.pop("ESTUDIO_ETAPA", None)
+
+
+def _config_fase1(tid: str) -> Path:
+    """fase1/config.yaml com o que foi mudado na aba Configurações por cima,
+    numa cópia na pasta do trabalho (o do repositório continua sendo o padrão)."""
+    caminho = _pasta(tid) / "config_fase1.yaml"
+    caminho.write_text(yaml.safe_dump(config_cortador.mesclar_yaml("config.yaml", "fase1"), allow_unicode=True,
+                                      sort_keys=False), encoding="utf-8")
+    return caminho
+
+
 def _config_cortes(tid: str) -> Path:
     """config_cortes.yaml do fase1, com a pasta de sons de transição desta
     máquina e sem o crop: a proposta sai em 16:9, o formato vem depois."""
-    cfg = yaml.safe_load((FASE1 / "config_cortes.yaml").read_text(encoding="utf-8"))
+    cfg = config_cortador.mesclar_yaml("config_cortes.yaml", "cortes")
     cfg["transicao"]["pasta_sons"] = carregar_config()["pasta_transicoes"]
     cfg.setdefault("crop", {})["ativo"] = False
     caminho = _pasta(tid) / "config_cortes.yaml"
@@ -539,7 +564,9 @@ def processar_trabalho(t: dict) -> None:
         blocos_path = _blocos_do_csv(video, entrada / t["csv"], pasta / "fase1")
     else:
         _atualizar(tid, etapa="escolhendo os melhores trechos (Fase 1)")
-        _rodar(tid, [py, str(FASE1 / "pipeline.py"), str(video), "--workspace", str(pasta / "fase1")])
+        _etapa(tid, "fase1")
+        _rodar(tid, [py, str(FASE1 / "pipeline.py"), str(video), "--workspace", str(pasta / "fase1"),
+                     "--config", str(_config_fase1(tid))])
         blocos_path = pasta / "fase1" / "blocos_finais.json"
     blocos = json.loads(blocos_path.read_text(encoding="utf-8")).get("blocos") or []
     _checar_cancelamento(tid)
@@ -549,9 +576,10 @@ def processar_trabalho(t: dict) -> None:
     longos: list[dict] = []
     if t["tipo"] != "csv":
         _atualizar(tid, etapa="procurando trechos para vídeo longo")
+        _etapa(tid, "longo")
         try:
             _rodar(tid, [py, str(FASE1 / "trechos_longos.py"), str(video), "--workspace", str(pasta / "fase1"),
-                         "--titulo-live", video.stem])
+                         "--titulo-live", video.stem, "--config", str(_config_fase1(tid))])
             longos = json.loads((pasta / "fase1" / "longos.json").read_text(encoding="utf-8")).get("blocos") or []
         except (RuntimeError, OSError, ValueError) as exc:
             _registrar(tid, f"   vídeo longo: busca falhou ({exc}) — seguem só os shorts")
@@ -580,6 +608,7 @@ def processar_trabalho(t: dict) -> None:
                                           destino_cortes / f"{bloco['id']}.mp4")
 
     # 4. cada corte vira uma proposta; o resto (Fase 2 + acabamento) só quando for escolhido
+    _etapa(tid, "proposta")
     jev, _ = _jev_e_config(tid)
     novos = []
     for bloco in blocos:
@@ -691,6 +720,7 @@ def _produzir_pendente() -> bool:
     if c["status"] == "refazendo":
         _atualizar_corte(tid, cid, status="produzindo")
     _LogDoTrabalho.atual = tid
+    _etapa(tid, "producao")
     _registrar(tid, f"🎬 {cid}: produzindo em {NOMES_FORMATO.get(formato, formato)}"
                     + ("" if c.get("tipo") == "longo" else f", legenda {legenda}"))
     try:
@@ -741,6 +771,7 @@ def _produzir_pendente() -> bool:
     finally:
         _produzindo_agora = None
         _LogDoTrabalho.atual = None
+        _etapa(None)
         finalizar.liberar_modelos()
     return True
 
@@ -797,6 +828,7 @@ def _laco() -> None:
             finally:
                 _cancelar.discard(tid)
                 _LogDoTrabalho.atual = None
+                _etapa(None)
                 finalizar.liberar_modelos()
         except Exception as exc:  # noqa: BLE001 — o laço nunca morre
             log.error("laço: %s", exc)
@@ -846,10 +878,123 @@ def estado():
         "canais": [c["nome"] for c in pub.get("canais", [])],
         "publicador_ok": bool(pub),
         "publicador_porta": cfg["publicador_url"].rsplit(":", 1)[-1],
+        # em outra máquina (hoje o .157), o link vai direto; na mesma, pelo endereço que o navegador usou
+        "publicador_link": None if re.search(r"//(127\.0\.0\.1|localhost)[:/]", cfg["publicador_url"] + "/")
+                           else cfg["publicador_url"].rstrip("/") + "/",
         "canal_perfil": cfg["canal_perfil"],
         "produzindo_agora": list(_produzindo_agora) if _produzindo_agora else None,
         "pouca_ram": AVISO_POUCA_RAM,
+        "legenda_padrao": LEGENDA_PADRAO,
+        "canais_perfil": canais_publicacao.todos(DATA_DIR),
     })
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Abas da página única: Canais, Custos e Configurações (lado do Cortador)
+# ──────────────────────────────────────────────────────────────────
+
+def _erro_valor(exc: ValueError):
+    return jsonify({"detail": str(exc), "erro": str(exc)}), 400
+
+
+@app.get("/api/estudio/canais")
+def canais_publicacao_listar():
+    """Os canais do Publicador com o perfil de cada um, o visual e a config de
+    postagem de lá (intervalo, privacidade, TikTok)."""
+    pub = _publicador_estado()
+    cfg = carregar_config()
+    perfis = canais_publicacao.todos(DATA_DIR)
+    conectados = {c["nome"]: c.get("conectado") for c in pub.get("canais", [])}
+    publicacao = (pub.get("config") or {}).get("canais") or {}
+    marcas = {nome: (p or {}).get("brand_name", "") for nome, p in (ai_srt.load_config().get("profiles") or {}).items()}
+    nomes = list(dict.fromkeys([*conectados, *perfis]))
+    return jsonify({
+        "publicador_ok": bool(pub),
+        "canais": [{"nome": n, "no_publicador": n in conectados, "conectado": conectados.get(n),
+                    "perfil": perfis.get(n), "visual": cfg["canal_perfil"].get(n, ""),
+                    "marca": marcas.get(cfg["canal_perfil"].get(n, ""), ""),
+                    "publicacao": publicacao.get(n)} for n in nomes],
+        "visuais": [{"nome": p, "marca": marcas.get(p, "")} for p in finalizar.perfis()],
+        "formatos": canais_publicacao.FORMATOS,
+        "padrao": canais_publicacao.PADRAO,
+        "publicador_url": cfg["publicador_url"],
+    })
+
+
+@app.put("/api/estudio/canais/<nome>")
+def canais_publicacao_salvar(nome: str):
+    dados = request.get_json(silent=True) or {}
+    visual = str(dados.pop("visual", "") or "").strip()
+    if visual and visual not in finalizar.perfis():
+        return jsonify({"detail": f"Visual '{visual}' não existe."}), 400
+    try:
+        perfil = canais_publicacao.salvar(DATA_DIR, nome, dados)
+    except ValueError as exc:
+        return _erro_valor(exc)
+    if visual:
+        with _TRAVA:
+            cfg = carregar_config()
+            cfg["canal_perfil"][nome] = visual
+            salvar_config(cfg)
+    return jsonify({"ok": True, "perfil": perfil})
+
+
+@app.delete("/api/estudio/canais/<nome>")
+def canais_publicacao_apagar(nome: str):
+    canais_publicacao.apagar(DATA_DIR, nome)
+    return jsonify({"ok": True})
+
+
+def _chave_env(arquivo: Path, nome: str) -> str:
+    try:
+        for linha in arquivo.read_text(encoding="utf-8-sig").splitlines():
+            k, _, v = linha.partition("=")
+            if k.strip() == nome:
+                return v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+@app.get("/api/estudio/custos")
+def custos_estudio():
+    env_cortes = FASE1 / ".env"
+    env_hist = historias_ponte.raiz_dados(DATA_DIR) / ".env"
+    chaves = [("openrouter", "Cortador", _chave_env(env_cortes, "OPENROUTER_API_KEY")),
+              ("openrouter", "Histórias", _chave_env(env_hist, "OPENROUTER_API_KEY")),
+              ("deepseek", "Cortador", _chave_env(env_cortes, "DEEPSEEK_API_KEY")
+               or str(ai_srt.load_config().get("api_key") or ""))]
+    return jsonify({**custos_cortador.resumo(DATA_DIR, carregar_trabalhos()),
+                    "contas": custos_cortador.contas(chaves)})
+
+
+@app.get("/api/estudio/configuracoes")
+def configuracoes_ver():
+    return jsonify(config_cortador.estado())
+
+
+@app.put("/api/estudio/configuracoes")
+def configuracoes_salvar():
+    try:
+        return jsonify(config_cortador.salvar(request.get_json(silent=True)))
+    except ValueError as exc:
+        return _erro_valor(exc)
+
+
+@app.post("/api/estudio/configuracoes/restaurar")
+def configuracoes_restaurar():
+    try:
+        return jsonify(config_cortador.restaurar((request.get_json(silent=True) or {}).get("chaves") or []))
+    except ValueError as exc:
+        return _erro_valor(exc)
+
+
+@app.post("/api/estudio/configuracoes/testar/<servico>")
+def configuracoes_testar(servico: str):
+    try:
+        return jsonify(config_cortador.testar(servico))
+    except ValueError as exc:
+        return _erro_valor(exc)
 
 
 def _novo_id() -> str:
@@ -862,7 +1007,9 @@ def novo_trabalho():
     dados = request.get_json(silent=True) or request.form
     url = str(dados.get("url") or "").strip()
     canal = str(dados.get("canal") or "").strip()
-    perfil = str(dados.get("perfil") or "").strip()
+    # Sem perfil (agente/bot): o visual lembrado para o canal, senão o padrão do app.
+    perfil = (str(dados.get("perfil") or "").strip()
+              or carregar_config()["canal_perfil"].get(canal) or ai_srt.get_current_profile_name())
     arquivo = request.files.get("video")
     legenda = request.files.get("legenda")
     csv = request.files.get("csv")
@@ -914,6 +1061,48 @@ def novo_trabalho():
             salvar_config(cfg)
     fila.enfileirar_trabalho(tid)
     return jsonify({"id": tid})
+
+
+def _links_corte(tid: str, c: dict) -> dict:
+    base = f"/midia/{tid}/{c['id']}/"
+    links = {"previa": f"/previa/{tid}/{c['id']}"} if c.get("status") in ("proposta", "produzindo", "revisar") else {}
+    if c.get("arquivo") and c.get("status") == "revisar":
+        links["video"] = base + c["arquivo"]
+    if c.get("capa") and c.get("status") == "revisar":
+        links["capa"] = base + c["capa"]
+    return links
+
+
+def _resumo_trabalho(t: dict) -> dict:
+    cortes = t.get("cortes", [])
+    contar = lambda *st: sum(1 for c in cortes if c.get("status") in st)  # noqa: E731
+    return {k: t.get(k) for k in ("id", "status", "etapa", "mensagem", "titulo_video", "url", "canal", "perfil", "tipo",
+                                  "criado_em", "terminado_em")} | {
+        "propostas": contar("proposta"), "produzindo": contar("produzindo", "refazendo"),
+        "revisar": contar("revisar"), "na_fila": contar("na_fila"), "descartados": contar("descartado")}
+
+
+@app.get("/api/trabalhos")
+def listar_trabalhos():
+    """Resumo de cada trabalho, o mais novo primeiro (para um agente/bot: o
+    /api/estado traz tudo, inclusive os cortes, e é grande)."""
+    return jsonify({"trabalhos": [_resumo_trabalho(t) for t in reversed(carregar_trabalhos())]})
+
+
+@app.get("/api/trabalhos/<tid>")
+def ver_trabalho(tid: str):
+    """Um trabalho com os cortes e os links (prévia 16:9, vídeo pronto, capa)."""
+    t = next((t for t in carregar_trabalhos() if t["id"] == tid), None)
+    if t is None:
+        return jsonify({"erro": "Trabalho não existe."}), 404
+    campos = ("id", "tipo", "status", "canal", "perfil", "gancho", "comentario", "titulo_publicacao", "duracao", "nota",
+              "tipo_abertura", "formato_sugerido", "formato", "formato_pedido", "estilo_legenda", "mensagem",
+              "arquivo_publicador", "enviado_em", "titulos", "tema")
+    cortes = [{**{k: c.get(k) for k in campos if c.get(k) is not None}, "links": _links_corte(tid, c)}
+              for c in t.get("cortes", [])]
+    return jsonify({**_resumo_trabalho(t), "cortes": cortes,
+                    "produzindo_agora": list(_produzindo_agora) if _produzindo_agora and _produzindo_agora[0] == tid
+                    else None})
 
 
 @app.post("/api/trabalhos/<tid>/cancelar")
@@ -1164,6 +1353,9 @@ def grande_demais(_erro):
 # Um processo só (waitress com threads) → exatamente um laço de trabalho, e a
 # GPU nunca é disputada por dois trabalhos.
 TRABALHOS_DIR.mkdir(parents=True, exist_ok=True)
+historias_ponte.iniciar(app, DATA_DIR)
+config_cortador.iniciar(DATA_DIR, EMAIL_ENV, sys.modules[__name__])
+canais_publicacao.semear(DATA_DIR)
 with _TRAVA:
     _ts = carregar_trabalhos()
     for _t in _ts:

@@ -286,7 +286,14 @@ def _request(path: str, api_key: str, payload: dict | None = None,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            data = json.loads(response.read().decode("utf-8"))
+        if payload is not None:
+            try:  # aba Custos do Estúdio (só registra com ESTUDIO_DATA definido)
+                import custos_api
+                custos_api.registrar_deepseek(payload, data)
+            except ImportError:
+                pass
+        return data
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:400]
         try:  # a API devolve {"error": {"message": ...}} ou {"error": "..."}

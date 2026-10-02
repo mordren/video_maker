@@ -14,12 +14,16 @@ reconstrução) ou não (fila antiga é substituída, não somada).
 
 from __future__ import annotations
 
+import os
+
 import redis
 
 _r = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True, socket_connect_timeout=2)
 
-_FILA_TRABALHOS = "estudio:fila:trabalhos"
-_FILA_CORTES = "estudio:fila:cortes"
+# Outro prefixo = outra fila: uma instância de teste não apaga nem rouba a fila da produção.
+_PREFIXO = os.environ.get("ESTUDIO_FILA_PREFIXO") or "estudio"
+_FILA_TRABALHOS = f"{_PREFIXO}:fila:trabalhos"
+_FILA_CORTES = f"{_PREFIXO}:fila:cortes"
 
 
 def enfileirar_trabalho(tid: str) -> None:
