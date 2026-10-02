@@ -64,6 +64,11 @@
   .propostas { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
   .propostas .corte video { aspect-ratio: 16/9; }
   .corte.escolhido { border-color: var(--aviso); }
+  .corte.longo { border-color: #3d6bb3; }
+  .cortes .corte.longo { grid-column: span 2; }
+  .cortes .corte.longo video { aspect-ratio: 16/9; }
+  .pilula-longo { display: inline-block; background: #1f3558; color: #cfe0ff; border-radius: 999px; padding: 1px 9px; font-weight: 600; }
+  @media (max-width: 600px) { .cortes .corte.longo { grid-column: auto; } }
   .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
   .corte .meta b { color: var(--texto); font-weight: 600; }
   pre#log { margin: 10px 0 0; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--fraco); white-space: pre-wrap; background: #14161b; border-radius: 8px; padding: 10px; }
@@ -77,7 +82,7 @@
     <h1>🎬 Estúdio de cortes</h1>
     <span class="fraco">Publicação: <a id="link-publicador" href="#" target="_blank" rel="noopener">abrir o Publicador ↗</a></span>
   </div>
-  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16, transparente ou fotos do assunto, legenda, GC, trilha → revisão → fila de publicação.</p>
+  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16, transparente ou fotos do assunto, legenda, GC, trilha → revisão → fila de publicação. Quando a live tem um assunto que sustenta 15–20 min, também sai uma proposta de <b>📺 vídeo longo</b> (16:9 com a moldura do canal).</p>
   <div id="aviso-conexao" hidden></div>
   <div id="aviso-ram" hidden></div>
 
@@ -289,6 +294,21 @@ function desenharCortes() {
     const opcoesRefazer = Object.keys(FORMATOS)
       .map(f => `<option value="${f}" ${f === c.formato ? "selected" : ""} ${semCrop(f) ? "disabled" : ""}>${FORMATOS[f]}${semCrop(f) ? " (desligado: pouca RAM)" : ""}</option>`).join("");
     const legendaAtual = c.estilo_legenda || "old";
+    if (c.tipo === "longo") {
+      // título: o campo aceita qualquer texto, e as sugestões da IA aparecem ao clicar
+      const lista = `lt-${t.id}-${c.id}`;
+      return `<div class="corte longo" data-t="${t.id}" data-c="${c.id}">
+        <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
+        <div class="meta"><span class="pilula-longo">📺 vídeo longo · ${mmss(c.duracao || 0)}</span> · ${c.remocoes || 0} pedaço(s) tirados · ${c.silencios_cortados || 0} silêncio(s) &gt; 4 s${etiquetaAudio(c.audio)}<br>${escapar(c.tema || "")} · de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
+        <div><label>Título no YouTube <span class="fraco">(clique para ver as ${(c.titulos || []).length} sugestões)</span></label><input class="titulo" maxlength="100" list="${lista}" value="${escapar(c.titulo_publicacao || "")}"><datalist id="${lista}">${(c.titulos || []).map(x => `<option value="${escapar(x)}">`).join("")}</datalist></div>
+        <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
+        <div class="acoes">
+          <button class="principal enviar">📤 Enviar para a fila</button>
+          <button class="perigo descartar">descartar</button>
+          <a class="fraco" style="align-self:center;font-size:13px" href="${base + encodeURIComponent(c.arquivo)}" download>baixar</a>
+        </div>
+      </div>`;
+    }
     return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
       <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
       <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato} · legenda ${legendaAtual}${etiquetaAudio(c.audio)}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${detalheRitmo(c.ritmo)}${creditos}</div>
@@ -367,6 +387,7 @@ function desenharPropostas() {
   $("propostas").innerHTML = lista.map(([t, c]) => {
     const produzindo = c.status === "produzindo";
     const rodando = agora[0] === t.id && agora[1] === c.id;
+    if (c.tipo === "longo") return cardLongo(t, c, produzindo, rodando);
     const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : "",
                     etiquetaAbertura(c.tipo_abertura)].filter(Boolean).join(" · ");
     const sugerido = FORMATOS[c.formato_sugerido] ? c.formato_sugerido : "dinamico";
@@ -390,14 +411,39 @@ function desenharPropostas() {
   }).join("");
 }
 
+// Vídeo longo (fase1/trechos_longos.py): a prévia é o trecho bruto inteiro; a
+// lista diz o que vai sair (no tempo da prévia), além do silêncio > 4 s.
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function cardLongo(t, c, produzindo, rodando) {
+  const rem = c.remover || [];
+  const saem = rem.length
+    ? `<details style="margin-top:4px"><summary class="fraco" style="cursor:pointer">✂ ${rem.length} pedaço(s) saem (${Math.round(rem.reduce((s, r) => s + r.fim - r.inicio, 0) / 60)} min) + silêncio &gt; 4 s</summary><div class="fraco" style="font-size:12px">${rem.map(r => `${mmss(r.inicio - c.inicio)}–${mmss(r.fim - c.inicio)} ${escapar(r.motivo)}`).join("<br>")}</div></details>`
+    : `<br><span class="fraco">sai só o silêncio &gt; 4 s</span>`;
+  const titulos = (c.titulos || []).length
+    ? `<details style="margin-top:4px"><summary class="fraco" style="cursor:pointer">📝 ${c.titulos.length} títulos sugeridos</summary><div class="fraco" style="font-size:12px">${c.titulos.map(x => `• ${escapar(x)} <span style="opacity:.6">(${x.length})</span>`).join("<br>")}${c.motivo_titulo ? `<br><i>${escapar(c.motivo_titulo)}</i>` : ""}</div></details>` : "";
+  const perfilAtual = c.perfil || perfilDoCanal(c.canal || t.canal, t.perfil);
+  const opcoesPerfil = estado.perfis.map(p => `<option ${p === perfilAtual ? "selected" : ""}>${escapar(p)}</option>`).join("");
+  const acoes = produzindo
+    ? `<span class="fraco">${rodando ? "⚙️ produzindo agora (~7 min)" : "⏳ na fila de produção"} (vídeo longo)</span>
+       ${rodando ? "" : `<button class="mini cancelar">cancelar</button>`}`
+    : `<select class="perfil" style="width:auto" title="moldura (logo e cores) deste vídeo">${opcoesPerfil}</select>
+       <button class="principal produzir">✂ Produzir vídeo longo</button>
+       <button class="perigo descartar">descartar</button>`;
+  return `<div class="corte longo ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
+    <video controls preload="metadata" src="/previa/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}"></video>
+    <div class="meta"><span class="pilula-longo">📺 vídeo longo · ~${Math.round((c.duracao || 0) / 60)} min</span><br><b>${escapar(c.titulo_publicacao || c.tema || c.id)}</b><br>${escapar(c.tema || "")} · de: ${escapar(t.titulo_video || "")}${c.comentario ? `<br>${escapar(c.comentario)}` : ""}${saem}${titulos}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
+    <div class="acoes">${acoes}</div>
+  </div>`;
+}
+
 $("propostas").addEventListener("click", async (e) => {
   const card = e.target.closest(".corte"); if (!card) return;
   const url = `/api/cortes/${card.dataset.t}/${card.dataset.c}`;
   try {
     if (e.target.classList.contains("produzir")) {
       e.target.disabled = true;
-      await api(url + "/produzir", {formato: card.querySelector(".formato").value, legenda: card.querySelector(".legenda").value,
-                                    perfil: card.querySelector(".perfil").value});
+      const campo = sel => (card.querySelector(sel) || {}).value;
+      await api(url + "/produzir", {formato: campo(".formato"), legenda: campo(".legenda"), perfil: campo(".perfil")});
     } else if (e.target.classList.contains("descartar")) {
       await api(url + "/descartar");
     } else if (e.target.classList.contains("cancelar")) {

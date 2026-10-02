@@ -23,6 +23,13 @@ escolhe era processamento jogado fora:
        desfocado) ou imagens (fotos do assunto no topo, trocando ao longo
        do corte — imagens.py —, e o corte embaixo); legenda, GC, marca d'água, censura, trilha e capa
 
+Vídeo longo: depois da Fase 1, uma consulta à parte ao DeepSeek
+(fase1/trechos_longos.py) procura 1-3 trechos corridos de 15-20 min, com o que
+tirar de dentro (superchat fora do tema, problema técnico, recado do canal) e
+o título. Cada um vira uma proposta "📺 vídeo longo" (prévia = o trecho bruto);
+produzir (video_longo.py) tira esses pedaços e o silêncio > 4 s e põe o vídeo
+16:9 dentro da moldura do canal (moldura.py) — sem crop, legenda nem GC.
+
 Os produzidos ficam em "Revisar": assiste, ajusta o título e o canal, e
 manda para a fila do Publicador (outro serviço, na mesma máquina) — ou
 descarta, ou refaz em outro formato. Nada é publicado sem passar pela revisão.
@@ -71,6 +78,7 @@ import finalizar  # noqa: E402  (também põe RAIZ e fase1 no sys.path)
 import pipeline_cortes  # noqa: E402  (Fase 2, chamada por bloco só na produção)
 import ai_srt  # noqa: E402
 import fila  # noqa: E402  (fila de trabalho/corte no Redis — sobrevive a reinício)
+import video_longo  # noqa: E402  (produção do vídeo longo, com a moldura do canal)
 from utils import parse_csv_moments, yt_dlp_path  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("ESTUDIO_DATA") or r"C:\VideoMaker\estudio")
@@ -84,7 +92,7 @@ EXTENSOES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 TAMANHO_MAXIMO = 12 * 1024 * 1024 * 1024
 FORMATOS_VALIDOS = ("dinamico", "transparente", "imagens")
 NOMES_FORMATO = {"dinamico": "crop que segue quem fala", "transparente": "transparente",
-                 "imagens": "fotos do assunto + corte"}
+                 "imagens": "fotos do assunto + corte", "longo": "vídeo longo (16:9 com moldura)"}
 LEGENDA_PADRAO = "new"   # finalizar.LEGENDAS: "new" (glow + karaokê com caixa) ou "old" (SRT amarelo)
 
 CONFIG_PADRAO = {
@@ -534,18 +542,33 @@ def processar_trabalho(t: dict) -> None:
         _rodar(tid, [py, str(FASE1 / "pipeline.py"), str(video), "--workspace", str(pasta / "fase1")])
         blocos_path = pasta / "fase1" / "blocos_finais.json"
     blocos = json.loads(blocos_path.read_text(encoding="utf-8")).get("blocos") or []
-    if not blocos:
+    _checar_cancelamento(tid)
+
+    # 2b. vídeo longo (15-20 min): consulta à parte ao DeepSeek, na mesma
+    # transcrição. Falhar aqui não derruba os shorts.
+    longos: list[dict] = []
+    if t["tipo"] != "csv":
+        _atualizar(tid, etapa="procurando trechos para vídeo longo")
+        try:
+            _rodar(tid, [py, str(FASE1 / "trechos_longos.py"), str(video), "--workspace", str(pasta / "fase1"),
+                         "--titulo-live", video.stem])
+            longos = json.loads((pasta / "fase1" / "longos.json").read_text(encoding="utf-8")).get("blocos") or []
+        except (RuntimeError, OSError, ValueError) as exc:
+            _registrar(tid, f"   vídeo longo: busca falhou ({exc}) — seguem só os shorts")
+        _checar_cancelamento(tid)
+    if not blocos and not longos:
         _atualizar(tid, etapa="", mensagem="Nenhum trecho forte o bastante neste vídeo.")
         return
-    _registrar(tid, f"{len(blocos)} trecho(s) para cortar")
-    _checar_cancelamento(tid)
+    _registrar(tid, f"{len(blocos)} trecho(s) para cortar" + (f" + {len(longos)} vídeo(s) longo(s)" if longos else ""))
+    for b in longos:
+        b["duracao"] = b["fim"] - b["inicio"]    # o recorte bruto leva o trecho inteiro, com os buracos
 
     # 3. corte BRUTO (ffmpeg -c copy, sem Whisper/silêncio/abertura — quase
     # instantâneo), só dos trechos que ainda não têm corte pronto (retomada
     # depois de cair no meio). A Fase 2 de verdade (mecânica + abertura) só
     # roda depois, no que for escolhido pra produzir (ver _preparar_fase2).
     feitos = {c["id"] for c in t.get("cortes", [])}
-    pendentes = [b for b in blocos if b["id"] not in feitos
+    pendentes = [b for b in blocos + longos if b["id"] not in feitos
                  and not (pasta / "cortes" / f"{b['id']}.mp4").exists()]
     if pendentes:
         _atualizar(tid, etapa=f"recortando {len(pendentes)} trecho(s)")
@@ -571,6 +594,18 @@ def processar_trabalho(t: dict) -> None:
                       "tipo_abertura": bloco.get("tipo_abertura", ""),
                       "duracao": round(finalizar.duracao_de(clipe), 1),
                       "formato_sugerido": _sugerir_formato(jev, bloco)})
+    for bloco in longos:
+        if bloco["id"] in feitos or not _fonte(tid, bloco["id"]).exists():
+            continue
+        # Proposta do vídeo longo: a prévia é o trecho bruto inteiro (com o que
+        # vai sair); os tempos ficam no da live, para a produção cortar dela.
+        novos.append({"id": bloco["id"], "tipo": "longo", "status": "proposta", "canal": t["canal"],
+                      "titulo_publicacao": bloco.get("titulo") or bloco.get("tema", "")[:100],
+                      "gancho": bloco.get("titulo", ""), "titulos": bloco.get("titulos", []),
+                      "motivo_titulo": bloco.get("motivo_titulo", ""), "tema": bloco.get("tema", ""),
+                      "comentario": bloco.get("comentario", ""), "remover": bloco.get("remover", []),
+                      "inicio": bloco["inicio"], "fim": bloco["fim"],
+                      "duracao": bloco.get("duracao_estimada"), "formato_sugerido": "longo"})
     with _TRAVA:
         trabalhos = carregar_trabalhos()
         for tt in trabalhos:
@@ -656,8 +691,16 @@ def _produzir_pendente() -> bool:
     if c["status"] == "refazendo":
         _atualizar_corte(tid, cid, status="produzindo")
     _LogDoTrabalho.atual = tid
-    _registrar(tid, f"🎬 {cid}: produzindo em {NOMES_FORMATO.get(formato, formato)}, legenda {legenda}")
+    _registrar(tid, f"🎬 {cid}: produzindo em {NOMES_FORMATO.get(formato, formato)}"
+                    + ("" if c.get("tipo") == "longo" else f", legenda {legenda}"))
     try:
+        if c.get("tipo") == "longo":
+            meta = _produzir_longo(tid, cid, c, t)
+            if (_corte(tid, cid) or {}).get("status") == "produzindo":
+                _atualizar_corte(tid, cid, status="revisar", formato="longo", versao=c.get("versao", 0) + 1,
+                                 mensagem="", **meta)
+                _registrar(tid, f"✅ {cid} produzido — em Revisar")
+            return True
         ja_pronto = _fase2_pronto(tid, cid).exists()
         clipe = _preparar_fase2(tid, cid, c)
         _registrar(tid, f"   Fase 2 {'(reaproveitada)' if ja_pronto else '(silêncio, abertura, transição)'} ok")
@@ -700,6 +743,28 @@ def _produzir_pendente() -> bool:
         _LogDoTrabalho.atual = None
         finalizar.liberar_modelos()
     return True
+
+
+def _produzir_longo(tid: str, cid: str, c: dict, t: dict) -> dict:
+    """Vídeo longo: sai direto da live (corte preciso, sem depender do
+    keyframe do recorte bruto); sem ela, do recorte bruto."""
+    entrada = _pasta(tid) / "entrada"
+    live = next((p for p in entrada.glob("*") if p.suffix.lower() in EXTENSOES), None) if entrada.exists() else None
+    if live is not None:
+        fonte, inicio, fim, remover = live, c["inicio"], c["fim"], c.get("remover", [])
+    else:
+        fonte = _fonte(tid, cid)
+        inicio, fim = 0.0, finalizar.duracao_de(fonte)
+        remover = [{**r, "inicio": r["inicio"] - c["inicio"], "fim": r["fim"] - c["inicio"]}
+                   for r in c.get("remover", [])]
+    canal_corte = c.get("canal") or t.get("canal")
+    perfil_nome = (c.get("perfil") or carregar_config().get("canal_perfil", {}).get(canal_corte) or t["perfil"])
+    _registrar(tid, f"   visual: {perfil_nome} (canal {canal_corte or '—'}), moldura do vídeo longo")
+    meta = video_longo.produzir(fonte, inicio, fim, remover, perfil_nome, _pasta(tid) / "final" / cid,
+                                c.get("titulo_publicacao") or c.get("gancho") or cid)
+    _registrar(tid, f"   {meta['duracao'] / 60:.1f} min, {meta['remocoes']} remoção(ões), "
+                    f"{meta['silencios_cortados']} silêncio(s) longo(s) cortado(s)")
+    return meta
 
 
 def _laco() -> None:
@@ -1031,6 +1096,8 @@ def produzir(tid: str, cid: str):
     c = _corte(tid, cid)
     if c is None:
         return jsonify({"erro": "Corte não existe."}), 404
+    if c.get("tipo") == "longo":
+        formato = "longo"      # sem crop nem legenda: só a moldura
     if c.get("status") not in ("proposta", "revisar", "descartado"):
         return jsonify({"erro": "Este corte já está na produção ou na fila."}), 409
     if not _fonte(tid, cid).exists():

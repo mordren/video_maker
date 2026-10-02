@@ -20,6 +20,9 @@ Environment=PYTHONPATH=/home/mordren/video_maker
 # não no cache do usuário.
 Environment=PLAYWRIGHT_BROWSERS_PATH=0
 Environment=PATH=/home/mordren/video_maker/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+# E-mail de aviso: PUBLICADOR_EMAIL_* (o publicador.py também lê este arquivo
+# sozinho, caso a unidade instalada seja uma versão antiga sem esta linha).
+EnvironmentFile=-/home/mordren/VideoMaker/publicador/publicador.env
 # rodar_com_xvfb.sh dá um display virtual ao Chromium — esta máquina não tem
 # tela. Um processo só, com threads: nunca dois envios da mesma conta ao
 # mesmo tempo.

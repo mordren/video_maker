@@ -126,6 +126,27 @@ Sua regra: **não gastar processamento com o que vai ser jogado fora.**
   bloqueia (erro 429), o Estúdio lê o painel "Transcrição" da página do vídeo (commit `a116564`).
 - Canal escolhido por corte; o perfil visual (banner) segue o canal do corte.
 
+### Vídeo longo (15–20 min, desde 30/09)
+
+Pedido seu: junto com os shorts, um vídeo longo com título muito bem pensado.
+- **Uma consulta à parte ao DeepSeek** (`fase1/trechos_longos.py`), com a live inteira em linhas de
+  ~10 s: de 0 a 3 trechos **corridos** com um fio condutor (em live de plantão o assunto muda a cada
+  5–10 min, então vale juntar assuntos vizinhos ligados — mesmo escândalo, mesma eleição, mesmo
+  convidado). Se algum trecho sai fora de 15–20 min, ele recebe uma segunda chance para corrigir.
+- **Dentro do trecho sai** o que não dá contexto: superchat fora do tema, problema técnico, recado
+  do canal (like, PIX, sorteio, propaganda), conversa paralela. Na produção sai também o **silêncio
+  > 4 s** (vira 0,5 s) — não o compacto dos shorts, que tira toda a respiração.
+- **Título:** uma segunda chamada lê só a fala que fica e escreve 8 títulos (até 70 letras, nome de
+  gente, o conflito concreto, sem tratar como fato o que a própria live põe em dúvida) e escolhe um.
+  Os 8 aparecem como sugestão no campo de título da revisão.
+- **Moldura** (`estudio/moldura.py`): o vídeo encolhe para 90% e fica numa moldura com o tom do
+  canal, borda na cor de destaque, logo como selo no canto de baixo, o nome do canal e "INSCREVA-SE"
+  no rodapé. Carimbar o logo por cima não servia, porque numa live todo canto já está ocupado.
+  As cores e o logo vêm do perfil visual.
+- Sem crop, legenda nem GC. Produção de ~7 min para 18 min de vídeo (NVENC); áudio em −14 LUFS.
+- Teste de 30/09: a live de 2 h ("ESSA SEMANA É GUERRA!") rendeu 2 trechos (17,7 e 18,4 min). A de
+  54 min não rendeu nenhum (o melhor fio dava 12 min).
+
 ---
 
 ## 7. O que está aberto (por ordem de retorno esperado)

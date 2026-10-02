@@ -64,3 +64,14 @@ ranking:
   peso_llm: 0.0
   duracao_ideal: 45
   duracao_zero: 90
+
+# Vídeo longo (trechos_longos.py): uma consulta à parte ao DeepSeek, com a live
+# inteira, pede 1-3 trechos corridos de 15-20 min — com o que tirar de dentro
+# (superchat fora do tema, problema técnico, recado do canal) — e depois uma
+# chamada só para o título de cada um. O silêncio > 4 s sai na produção.
+longo:
+  modelo: "deepseek-chat"
+  duracao_minima: 14   # minutos que SOBRAM depois dos cortes internos (o prompt pede 15-20;
+  duracao_maxima: 21   # a margem cobre o arredondamento das linhas de ~10 s)
+  timeout: 300
+  tentativas: 3

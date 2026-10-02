@@ -95,6 +95,16 @@
   <!-- Sem isto, uma queda de rede entre o navegador e o servidor faz a página
        parecer travada: os cliques não fazem nada e nada explica o porquê. -->
   <div id="aviso-conexao" hidden></div>
+  <!-- Só aparece quando o servidor tem PUBLICADOR_ESTUDIO_URL/_MAC (a TV box,
+       que liga pela rede a máquina do Estúdio). -->
+  <div id="estudio" class="barra-topo" hidden style="margin-top:10px">
+    <span id="estudio-estado" class="fraco">Estúdio: —</span>
+    <span class="acoes">
+      <button id="btn-acordar-estudio">⏻ Acordar Estúdio</button>
+      <button id="btn-desligar-estudio" hidden>⏻ Desligar Estúdio</button>
+      <a id="link-estudio" target="_blank" rel="noopener" hidden>Abrir Estúdio ↗</a>
+    </span>
+  </div>
 
   <nav class="abas">
     <button data-aba="fila" class="ativa">Fila</button>
@@ -601,6 +611,60 @@ el("proximos").addEventListener("click", async (evento) => {
     await atualizar();
   } catch (erro) { recado("recado-fila", erro.message, "erro"); }
 });
+/* ── Estúdio (outra máquina, ligada pela rede) ───────────────────── */
+let acordandoDesde = 0;                              // ms; 0 = não está acordando
+let desligandoDesde = 0;                             // ms; 0 = não está desligando
+async function atualizarEstudio() {
+  let dados;
+  try { dados = await (await fetch("/api/estudio")).json(); } catch (erro) { return; }
+  el("estudio").hidden = !dados.configurado;
+  if (!dados.configurado) return;
+  const link = el("link-estudio");
+  link.href = dados.url;
+  link.hidden = !dados.ligado;
+  el("btn-acordar-estudio").hidden = dados.ligado;
+  el("btn-desligar-estudio").hidden = !(dados.ligado && dados.pode_desligar);
+  el("btn-desligar-estudio").disabled = desligandoDesde > 0;
+  if (!dados.ligado) desligandoDesde = 0;
+  if (dados.ligado && desligandoDesde) {
+    el("estudio-estado").textContent = "Estúdio: 🟠 desligando…";
+    if (Date.now() - desligandoDesde > 3 * 60 * 1000) {
+      desligandoDesde = 0;
+      recado("recado-fila", "O Estúdio continua ligado depois de 3 min. Confira se algum programa travou o desligamento.", "erro");
+    }
+  } else if (dados.ligado) {
+    acordandoDesde = 0;
+    el("estudio-estado").textContent = "Estúdio: 🟢 ligado";
+  } else if (acordandoDesde && Date.now() - acordandoDesde < 5 * 60 * 1000) {
+    const segundos = Math.round((Date.now() - acordandoDesde) / 1000);
+    el("estudio-estado").textContent = "Estúdio: 🟡 ligando… (" + segundos + " s; costuma levar ~1 min)";
+  } else {
+    if (acordandoDesde) recado("recado-fila", "O Estúdio não ligou em 5 min. Confira a energia e o cabo de rede da máquina.", "erro");
+    acordandoDesde = 0;
+    el("estudio-estado").textContent = "Estúdio: ⚫ desligado";
+  }
+  el("btn-acordar-estudio").disabled = acordandoDesde > 0;
+}
+el("btn-acordar-estudio").onclick = async () => {
+  try {
+    const r = await pedir("/api/estudio/acordar");
+    if (!r.ligado) acordandoDesde = Date.now();
+    await atualizarEstudio();
+  } catch (erro) { recado("recado-fila", erro.message, "erro"); }
+};
+el("btn-desligar-estudio").onclick = async () => {
+  if (!confirm("Desligar a máquina do Estúdio? Se ela estiver processando algum vídeo, o trabalho é interrompido.")) return;
+  try {
+    const r = await pedir("/api/estudio/desligar");
+    if (r.desligando) desligandoDesde = Date.now();
+    await atualizarEstudio();
+  } catch (erro) { recado("recado-fila", erro.message, "erro"); }
+};
+// Acordando ou desligando, confere a cada 5 s; no resto do tempo, a cada 30 s.
+setInterval(() => { if (acordandoDesde || desligandoDesde) atualizarEstudio(); }, 5000);
+setInterval(() => { if (!acordandoDesde && !desligandoDesde) atualizarEstudio(); }, 30000);
+atualizarEstudio();
+
 el("btn-limpar").onclick = async () => {
   if (!confirm("Apagar do servidor os vídeos que já foram publicados?")) return;
   const dados = await pedir("/api/limpar-enviados");

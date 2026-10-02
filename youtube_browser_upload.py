@@ -42,7 +42,10 @@ _VISIBILITY_RADIO = {
 
 # Espera padrão para elementos da tela (ms). O Studio é lento para montar cada
 # etapa do diálogo; um teto curto derruba envios que só estavam carregando.
-_ESPERA = 60_000
+# YOUTUBE_BROWSER_ESPERA_MS aumenta o teto em máquina lenta: na TV box ARM
+# (x96q, 192.168.31.157) o clique em "Enviar vídeos" passou dos 60 s em
+# 30/09/2026 — o diálogo abriu, mas depois de o Playwright já ter desistido.
+_ESPERA = int(os.environ.get("YOUTUBE_BROWSER_ESPERA_MS") or 60_000)
 
 # Teto de espera pro upload do arquivo e pras verificações iniciais (direitos
 # autorais / diretrizes da comunidade) do YouTube. Vídeo grande ou fila cheia

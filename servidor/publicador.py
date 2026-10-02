@@ -45,6 +45,7 @@ import os
 import random
 import re
 import smtplib
+import socket
 import subprocess
 import sys
 import threading
@@ -77,13 +78,44 @@ import youtube_browser_upload  # noqa: E402  (precisa do VIDEOMAKER_DIR já defi
 # credenciais de SMTP ficam fora do código de propósito — veja o LEIA-ME
 # (EnvironmentFile aponta para <DATA_DIR>/publicador.env, um arquivo que a
 # instalação nunca sobrescreve).
+#
+# O serviço do Arch (.133) nasceu sem o EnvironmentFile, e de 28 a 30/09 nenhum
+# aviso saiu (a falha do TikTok de 30/09 não mandou e-mail). Por isso o arquivo
+# também é lido daqui — o que já estiver no ambiente vale mais.
+def _carregar_env_de_email(arquivo: Path) -> None:
+    try:
+        linhas = arquivo.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+    for linha in linhas:
+        linha = linha.strip()
+        if not linha or linha.startswith("#") or "=" not in linha:
+            continue
+        chave, valor = linha.split("=", 1)
+        if chave.strip().startswith("PUBLICADOR_EMAIL_"):
+            os.environ.setdefault(chave.strip(), valor.strip().strip('"').strip("'"))
+
+
+_carregar_env_de_email(DATA_DIR / "publicador.env")
 EMAIL_PARA = os.environ.get("PUBLICADOR_EMAIL_PARA", "").strip()
 EMAIL_SMTP_HOST = os.environ.get("PUBLICADOR_EMAIL_SMTP_HOST", "smtp.gmail.com").strip()
 EMAIL_SMTP_PORT = int(os.environ.get("PUBLICADOR_EMAIL_SMTP_PORT") or 587)
 EMAIL_SMTP_USER = os.environ.get("PUBLICADOR_EMAIL_SMTP_USER", "").strip()
 EMAIL_SMTP_SENHA = os.environ.get("PUBLICADOR_EMAIL_SMTP_SENHA", "")
 EMAIL_DE = os.environ.get("PUBLICADOR_EMAIL_DE", "").strip() or EMAIL_SMTP_USER
-URL_PUBLICADOR = os.environ.get("PUBLICADOR_URL", "http://192.168.31.130:8080").strip()
+URL_PUBLICADOR = os.environ.get("PUBLICADOR_URL", "http://192.168.31.133:8080").strip()   # o .130 (Debian) foi desligado
+
+# Botão "Acordar Estúdio": quando o Publicador roda na TV box (sempre ligada) e
+# o Estúdio numa máquina que fica desligada, a página liga essa máquina pela
+# rede (Wake-on-LAN). Sem as duas variáveis, o botão nem aparece.
+ESTUDIO_URL = os.environ.get("PUBLICADOR_ESTUDIO_URL", "").strip().rstrip("/")
+ESTUDIO_MAC = os.environ.get("PUBLICADOR_ESTUDIO_MAC", "").strip()
+# Botão "Desligar Estúdio": SSH até a máquina (usuario@ip) com uma chave que,
+# lá no authorized_keys, só pode rodar "sudo -n systemctl poweroff". Sem a
+# variável ou sem a chave, o botão não aparece.
+ESTUDIO_SSH = os.environ.get("PUBLICADOR_ESTUDIO_SSH", "").strip()
+ESTUDIO_SSH_CHAVE = os.path.expanduser(
+    os.environ.get("PUBLICADOR_ESTUDIO_SSH_CHAVE", "~/.ssh/id_ed25519_estudio"))
 
 EXTENSOES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 TAMANHO_MAXIMO = 12 * 1024 * 1024 * 1024        # 12 GB por requisição
@@ -92,6 +124,7 @@ ESPERA_SEM_REDE = 5                             # minutos até tentar de novo se
 MAX_TENTATIVAS_REDE = 12                        # ~3h insistindo antes de desistir
 ESPERA_APOS_RECUSA = 30                         # minutos até tentar de novo após recusa
 MAX_TENTATIVAS_RECUSA = 5                       # 30, 60, 90… ~7h antes de desistir
+TIKTOK_DURACAO_MAXIMA = 120                     # s; acima disso (o vídeo longo do Estúdio) não vai pro TikTok
 
 # Quedas de rede no servidor (DNS fora do ar, link caído, Wi-Fi oscilando) não
 # são culpa do vídeo: o envio é refeito sozinho em vez de marcar "falhou" e
@@ -533,6 +566,17 @@ def _legenda_tiktok(titulo: str, cfg_canal: dict) -> str:
     return f"{titulo}\n\n{legenda}" if legenda else titulo
 
 
+def _duracao_video(caminho: Path) -> float | None:
+    """Duração em segundos (ffprobe); None se não der para medir."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=nw=1:nk=1", str(caminho)],
+                           capture_output=True, text=True, timeout=30, check=True)
+        return float(r.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def _talvez_publicar_no_tiktok(
         item_id: str, item: dict, cfg_canal: dict, caminho: Path, titulo: str) -> None:
     """Publica o mesmo vídeo no TikTok, depois de o YouTube já ter dado certo.
@@ -558,6 +602,17 @@ def _talvez_publicar_no_tiktok(
     # falha costuma acontecer *depois* de o arquivo já ter subido, e a segunda
     # tentativa publicaria o mesmo vídeo de novo.
     if not conta or item.get("tiktok_status"):
+        return
+    # Vídeo longo (15-20 min, 16:9): no TikTok quase ninguém assiste até o fim
+    # e o envio de centenas de MB pela página deles é arriscado — decisão do
+    # usuário em 30/09/2026: nada acima de 2 min vai pra lá.
+    duracao = _duracao_video(caminho)
+    if duracao is not None and duracao > TIKTOK_DURACAO_MAXIMA:
+        registrar(f"TikTok: “{titulo}” tem {duracao / 60:.1f} min (limite {TIKTOK_DURACAO_MAXIMA // 60} min) — "
+                  "fica só no YouTube.")
+        _atualizar_item(item_id, tiktok_status="pulado",
+                        tiktok_mensagem=f"Vídeo de {duracao / 60:.1f} min: acima de "
+                                        f"{TIKTOK_DURACAO_MAXIMA // 60} min não vai pro TikTok.")
         return
     if not tiktok_upload.is_authorized(conta):
         registrar(f"⚠️ TikTok: conta '{conta}' sem cookies importados, pulando “{titulo}”.")
@@ -1041,6 +1096,74 @@ def adiar():
     _marcar_proximo(canal, quando)
     registrar(f"⏳ Canal {canal} adiado para {quando:%d/%m %H:%M}.")
     return jsonify({"proximos": (carregar_fila().get("proximos") or {})})
+
+
+def _estudio_ligado() -> bool:
+    """O Estúdio aceita conexão agora? (TCP só, rápido; a máquina pode estar desligada)."""
+    endereco = ESTUDIO_URL.split("://", 1)[-1].split("/", 1)[0]
+    host, _, porta = endereco.partition(":")
+    try:
+        with socket.create_connection((host, int(porta or 80)), timeout=1.5):
+            return True
+    except OSError:
+        return False
+
+
+def _estudio_pode_desligar() -> bool:
+    return bool(ESTUDIO_URL and ESTUDIO_SSH and Path(ESTUDIO_SSH_CHAVE).exists())
+
+
+@app.get("/api/estudio")
+def estudio_estado():
+    """Para os botões "Acordar/Desligar Estúdio": configurado aqui? ligado agora?"""
+    if not (ESTUDIO_URL and ESTUDIO_MAC):
+        return jsonify({"configurado": False})
+    return jsonify({"configurado": True, "ligado": _estudio_ligado(), "url": ESTUDIO_URL,
+                    "pode_desligar": _estudio_pode_desligar()})
+
+
+@app.post("/api/estudio/desligar")
+def estudio_desligar():
+    """Desliga a máquina do Estúdio por SSH (a chave lá só roda o poweroff)."""
+    if not _estudio_pode_desligar():
+        return jsonify({"erro": "O desligamento do Estúdio não está configurado neste servidor."}), 400
+    if not _estudio_ligado():
+        return jsonify({"ligado": False})
+    try:
+        r = subprocess.run(
+            ["ssh", "-i", ESTUDIO_SSH_CHAVE, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+             "-o", "ConnectTimeout=10", ESTUDIO_SSH, "sudo -n /usr/bin/systemctl poweroff"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as erro:
+        return jsonify({"erro": f"Não consegui falar com o Estúdio: {erro}"}), 500
+    # O poweroff pode derrubar a conexão antes de o comando "voltar": isso
+    # também é sucesso (a máquina já está desligando).
+    if r.returncode != 0 and "closed" not in r.stderr:
+        return jsonify({"erro": "O Estúdio recusou o desligamento: "
+                                + (r.stderr.strip() or f"código {r.returncode}")[:200]}), 500
+    registrar("⏻ Estúdio desligado pelo botão da página.")
+    return jsonify({"ligado": True, "desligando": True})
+
+
+@app.post("/api/estudio/acordar")
+def estudio_acordar():
+    """Manda o "pacote mágico" do Wake-on-LAN para a máquina do Estúdio."""
+    if not (ESTUDIO_URL and ESTUDIO_MAC):
+        return jsonify({"erro": "O Estúdio não está configurado neste servidor."}), 400
+    if _estudio_ligado():
+        return jsonify({"ligado": True})
+    try:
+        mac = bytes.fromhex(ESTUDIO_MAC.replace(":", "").replace("-", ""))
+        pacote = b"\xff" * 6 + mac * 16
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            for _ in range(3):
+                sock.sendto(pacote, ("255.255.255.255", 9))
+                time.sleep(0.3)
+    except (ValueError, OSError) as erro:
+        return jsonify({"erro": f"Não consegui mandar o sinal de ligar: {erro}"}), 500
+    registrar("⏻ Sinal para acordar o Estúdio enviado (Wake-on-LAN).")
+    return jsonify({"ligado": False, "enviado": True})
 
 
 @app.post("/api/config")

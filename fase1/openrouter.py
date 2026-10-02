@@ -45,7 +45,10 @@ def api_key() -> str:
 
 
 def post(path: str, payload: dict, timeout: float, tentativas: int) -> dict:
-    """POST com novas tentativas em erro de rede, 429 e 5xx. Erro 4xx falha na hora."""
+    """POST com novas tentativas em erro de rede, 429 e 5xx. Erro 4xx falha na
+    hora — menos o 400 "Provider returned 400": é o provedor por trás do
+    OpenRouter recusando naquele instante (30/09: a mesma janela de áudio
+    passou minutos depois), não um pedido nosso malformado."""
     body = json.dumps(payload).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {api_key()}",
@@ -61,7 +64,8 @@ def post(path: str, payload: dict, timeout: float, tentativas: int) -> dict:
         except urllib.error.HTTPError as exc:
             detalhe = exc.read().decode("utf-8", errors="replace")[:500]
             ultimo = f"HTTP {exc.code}: {detalhe}"
-            if exc.code != 429 and exc.code < 500:
+            do_provedor = exc.code == 400 and "Provider returned" in detalhe
+            if exc.code != 429 and exc.code < 500 and not do_provedor:
                 raise APIError(ultimo) from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             ultimo = f"{type(exc).__name__}: {exc}"

@@ -15,10 +15,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
 import sys
+from array import array
+from concurrent.futures import ThreadPoolExecutor
+from operator import mul
 from pathlib import Path
 
 log = logging.getLogger("fase1")
@@ -177,7 +181,13 @@ def rodar_whisper(audio: Path, pasta: Path, modelo: str, idioma: str) -> list[di
 # ---------------------------------------------------------------------------
 
 _API_MODELO = "openai/whisper-large-v3-turbo"
-_API_JANELA = 600.0  # s por chamada — mantém o corpo da requisição (base64) num tamanho razoável
+# Pedaço de ~2 min por chamada. O 400 "Provider returned 400" é intermitente
+# (30/09: a janela de 10 min que falhou às 15:11 passou depois nos dois
+# provedores, e já falhou até em corte de 60 s) — pedaço pequeno custa pouco
+# pra repetir e, se falhar de vez, só ele vai pro Whisper local.
+_API_JANELA = 120.0
+_API_BUSCA_PAUSA = 15.0  # s antes/depois do ponto de corte onde procurar a pausa
+_API_PARALELO = 4
 
 
 def _duracao_audio(audio: Path) -> float:
@@ -223,23 +233,131 @@ def _transcrever_trecho_api(audio_wav: Path, offset: float, duracao: float, idio
             "response_format": "verbose_json",
             "timestamp_granularities": ["word", "segment"],
         }
-        r = post("/v1/audio/transcriptions", payload, timeout=120, tentativas=3)
+        r = post("/v1/audio/transcriptions", payload, timeout=120, tentativas=4)
     finally:
         recorte.unlink(missing_ok=True)
-    return _monta_segmentos(r, offset)
+    # A API estica a última palavra além do fim do áudio ("aqui." até 4820,11
+    # num pedaço que acabava em 4819,62) — encavalaria com a primeira palavra
+    # do pedaço seguinte na legenda.
+    fim = round(offset + duracao, 3)
+    segs = _monta_segmentos(r, offset)
+    for s in segs:
+        for item in (s, *s["words"]):
+            item["start"], item["end"] = min(item["start"], fim), min(item["end"], fim)
+    return segs
 
 
-def rodar_whisper_api(audio_wav: Path, idioma: str) -> list[dict]:
-    """Mesmo formato de rodar_whisper, mas pela API. Corta em janelas de
-    10min (a maioria dos casos — um corte de alguns minutos — sai numa
-    chamada só) pra manter o corpo da requisição num tamanho razoável."""
+def _janela_local(audio_wav: Path, offset: float, duracao: float, pasta: Path, modelo: str,
+                  idioma: str) -> list[dict]:
+    """Só esta janela no Whisper local, com os tempos levados para o do áudio inteiro."""
+    recorte = pasta / f"{audio_wav.stem}_local_{int(offset)}.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{offset:.3f}", "-i", str(audio_wav),
+                    "-t", f"{duracao:.3f}", "-c", "copy", str(recorte)], check=True)
+    try:
+        segs = rodar_whisper(recorte, pasta, modelo, idioma)
+    finally:
+        recorte.unlink(missing_ok=True)
+        (pasta / f"{recorte.stem}.json").unlink(missing_ok=True)
+    for s in segs:
+        s["start"], s["end"] = round(s["start"] + offset, 3), round(s["end"] + offset, 3)
+        for w in s["words"]:
+            w["start"], w["end"] = round(w["start"] + offset, 3), round(w["end"] + offset, 3)
+    return segs
+
+
+def _ponto_de_pausa(audio: Path, ini: float, fim: float) -> float:
+    """Meio da pausa mais longa entre `ini` e `fim`: cortar ali não parte
+    palavra entre dois pedaços. Pausa = 160 ms ou mais 25 dB abaixo do nível
+    da fala do trecho (a mediana), não um limiar fixo — live com música de
+    fundo quase nunca chega a -35 dB. Em fala corrida o limiar afrouxa.
+
+    Não serve "o trecho de 0,4 s mais quieto": na live de 30/09, em fala
+    corrida, ele caiu no meio de "sensação" e a palavra saiu nos dois pedaços."""
+    taxa, quadro = 16000, 320  # quadros de 20 ms
+    r = subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", f"{ini:.3f}", "-t", f"{fim - ini:.3f}",
+                        "-i", str(audio), "-ac", "1", "-ar", str(taxa), "-f", "s16le", "-"],
+                       capture_output=True, check=True)
+    amostras = array("h", r.stdout)
+    db = []
+    for i in range(0, len(amostras) - quadro + 1, quadro):
+        q = amostras[i:i + quadro]
+        db.append(10 * math.log10(sum(map(mul, q, q)) / quadro + 1))
+    if len(db) < 10:
+        return round((ini + fim) / 2, 3)
+    fala = sorted(db)[len(db) // 2]
+    for queda in (25, 20, 15, 10):
+        pausas, i = [], 0
+        while i < len(db):
+            j = i
+            while j < len(db) and db[j] < fala - queda:
+                j += 1
+            if j - i >= 8:
+                pausas.append((i, j))
+            i = j + 1
+        if pausas:
+            i, j = max(pausas, key=lambda p: p[1] - p[0])
+            return round(ini + (i + j) / 2 * quadro / taxa, 3)
+    # Nenhuma pausa: o trecho de 0,2 s mais quieto.
+    meio = min(range(len(db) - 9), key=lambda k: sum(db[k:k + 10])) + 5
+    return round(ini + meio * quadro / taxa, 3)
+
+
+def _pedacos(audio: Path, duracao: float) -> list[tuple[float, float]]:
+    """(início, fim) de cada pedaço: ~2 min, cortado na pausa mais longa a
+    até 15 s do alvo. O último pedaço leva o resto (45 s a 3 min), pra não
+    sobrar um fiapo de 1 s — o Whisper inventa frase em áudio curto demais."""
+    cortes = [0.0]
+    while duracao - cortes[-1] > _API_JANELA * 1.5:
+        alvo = cortes[-1] + _API_JANELA
+        cortes.append(_ponto_de_pausa(audio, alvo - _API_BUSCA_PAUSA, alvo + _API_BUSCA_PAUSA))
+    cortes.append(duracao)
+    return list(zip(cortes, cortes[1:]))
+
+
+def rodar_whisper_api(audio_wav: Path, idioma: str, pasta: Path | None = None,
+                      modelo: str = "small") -> list[dict]:
+    """Mesmo formato de rodar_whisper, mas pela API. Picota o áudio em
+    pedaços de ~2 min (um corte de 1 min sai numa chamada só), manda 4 por
+    vez e junta tudo: cada pedaço volta com o tempo contado do zero, e
+    _monta_segmentos soma o início do pedaço — fica no tempo do áudio inteiro.
+
+    Com `pasta`, o pedaço que a API recusar (mesmo depois das novas
+    tentativas do openrouter.post) vai pro Whisper local; pedaços vizinhos
+    que falharam vão juntos, numa rodada só. Com a API fora do ar, tudo vira
+    uma rodada local do áudio inteiro — o mesmo custo de antes."""
     duracao = _duracao_audio(audio_wav)
+    pedacos = _pedacos(audio_wav, duracao)
+    if len(pedacos) > 1:
+        log.info("   Whisper pela API: %d pedaços de ~%d s, %d por vez", len(pedacos), _API_JANELA,
+                 _API_PARALELO)
+    with ThreadPoolExecutor(_API_PARALELO) as pool:
+        futuros = [pool.submit(_transcrever_trecho_api, audio_wav, ini, fim - ini, idioma)
+                   for ini, fim in pedacos]
+        resultados: list[list[dict] | None] = []
+        for (ini, fim), futuro in zip(pedacos, futuros):
+            try:
+                resultados.append(futuro.result())
+            except Exception as exc:  # noqa: BLE001
+                if pasta is None:
+                    for f in futuros:
+                        f.cancel()
+                    raise
+                log.warning("Whisper pela API falhou no pedaço %d-%ds (%s); vai pro Whisper local",
+                            ini, fim, exc)
+                resultados.append(None)
     segs: list[dict] = []
-    inicio = 0.0
-    while inicio < duracao:
-        janela = min(_API_JANELA, duracao - inicio)
-        segs += _transcrever_trecho_api(audio_wav, inicio, janela, idioma)
-        inicio += janela
+    i = 0
+    while i < len(pedacos):
+        if resultados[i] is not None:
+            segs += resultados[i]
+            i += 1
+            continue
+        j = i
+        while j < len(pedacos) and resultados[j] is None:
+            j += 1
+        ini, fim = pedacos[i][0], pedacos[j - 1][1]
+        segs += _janela_local(audio_wav, ini, fim - ini, pasta, modelo, idioma)
+        i = j
     return segs
 
 
@@ -258,7 +376,7 @@ def transcrever_audio(midia: Path, pasta: Path, modelo: str, idioma: str) -> tup
     try:
         if limpar:
             extrair_audio(midia, wav)
-        return rodar_whisper_api(wav, idioma), "whisper-api"
+        return rodar_whisper_api(wav, idioma, pasta, modelo), "whisper-api"
     except Exception as exc:  # noqa: BLE001 — API falhou, cai pro Whisper local
         log.warning("Whisper pela API falhou (%s); caindo pro Whisper local", exc)
         return rodar_whisper(midia, pasta, modelo, idioma), "whisper"
