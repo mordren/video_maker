@@ -11,12 +11,12 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import canais, config, custos, db, efeitos, historia, montagem, narracao, pipeline, publicador, registro, relatorio, revisao, youtube
+from . import canais, config, configuracoes, custos, db, efeitos, gerador, historia, montagem, narracao, pipeline, publicador, registro, relatorio, revisao, youtube
 
 ESTATICOS = Path(__file__).parent / "static"
 INICIO = time.time()
@@ -65,7 +65,7 @@ app.mount("/static", StaticFiles(directory=ESTATICOS), name="static")
 @app.get("/arquivos/{caminho:path}")
 def arquivo(caminho: str):
     alvo = (config.BASE / caminho).resolve()
-    raizes = [config.PROJETOS.resolve(), config.BIBLIOTECA.resolve(), config.TRILHAS.resolve()]
+    raizes = [config.PROJETOS.resolve(), config.BIBLIOTECA.resolve(), config.TRILHAS.resolve(), config.GERADOR_SAIDA.resolve()]
     if not any(alvo.is_relative_to(r) for r in raizes) or not alvo.is_file():
         raise HTTPException(404)
     return FileResponse(alvo, headers={"Cache-Control": "no-store"})
@@ -97,6 +97,40 @@ def presets():
             "universais": canais.PERGUNTAS_UNIVERSAIS, "padrao": canais.CONFIG_PADRAO,
             "modelos_qwen": canais.MODELOS_QWEN,
             "formatos": {k: v["nome"] for k, v in config.FORMATOS.items()}}
+
+
+# ---------------------------------------------------------------- configurações globais (aba Configurações)
+
+class RestaurarIn(BaseModel):
+    chaves: list[str]
+
+
+@app.get("/api/configuracoes", dependencies=[api])
+def ver_configuracoes():
+    """Esquema por grupo com valor atual, padrão, origem (.env, configuracoes.json, ambiente ou padrão) e se vale ao vivo.
+    Segredos só voltam como {"definido": bool, "final": "últimos 4"}."""
+    return configuracoes.estado()
+
+
+@app.put("/api/configuracoes", dependencies=[api])
+def salvar_configuracoes(dados: dict = Body(...)):
+    """Corpo: {chave: valor} só dos campos alterados. Vazio = volta ao padrão (segredo vazio = mantém). Valor inválido: 400
+    com o campo, e nada é gravado."""
+    return configuracoes.salvar(dados)
+
+
+@app.post("/api/configuracoes/restaurar", dependencies=[api])
+def restaurar_configuracoes(dados: RestaurarIn):
+    """Volta ao padrão (tira do .env ou do configuracoes.json). É também o "Apagar" de um segredo."""
+    return configuracoes.restaurar(dados.chaves)
+
+
+@app.post("/api/configuracoes/testar/{servico}", dependencies=[api])
+def testar_configuracao(servico: str):
+    """Confere, com o que está salvo, se o serviço responde: openrouter (GET /key), comfy ou publicador. Nada que gaste crédito."""
+    if servico not in ("openrouter", "comfy", "publicador"):
+        raise HTTPException(404, "serviço desconhecido")
+    return configuracoes.testar(servico)
 
 
 # ---------------------------------------------------------------- canais
@@ -389,6 +423,7 @@ def excluir_projeto(pid: int):
 class RefazerIn(BaseModel):
     prompt_imagem: str | None = None
     destaque: str | None = None
+    referencias: list[str] | None = None  # ["personagem:id" | "ambiente:id"], no máximo 2, a primeira vale mais
 
 
 @app.post("/api/projetos/{pid}/cenas/{n}/refazer", dependencies=[api])
@@ -396,17 +431,61 @@ def refazer_cena(pid: int, n: int, dados: RefazerIn):
     p = _projeto(pid)
     if p["status"] not in ("aguardando_imagens", "pronto", "erro", "interrompido"):
         raise HTTPException(409, f"ação indisponível no estado '{p['status']}'")
-    if dados.prompt_imagem or dados.destaque is not None:
+    if dados.prompt_imagem or dados.destaque is not None or dados.referencias is not None:
         for c in p["historia"]["cenas"]:
             if c["n"] == n:
+                if dados.referencias is not None:
+                    c["referencias"] = dados.referencias
+                    historia.normalizar_cenas(p["historia"])
                 if dados.prompt_imagem:
                     c["prompt_imagem"] = dados.prompt_imagem.strip()
                 if dados.destaque is not None:
                     c["destaque"] = dados.destaque.strip()
         db.atualizar("projetos", pid, historia_json=p["historia"])
     db.evento(pid, f"Refazendo a cena {n}.")
+    antes = _estado_arquivo_cena(pid, n)
+    _pedidos_refazer[(pid, n)] = {"t": time.time(), "versao": antes["versao"], "sha1": antes["sha1"], "mtime": antes["mtime"]}
     pipeline.enfileirar(pid, "refazer", n=n)
-    return {"ok": True}
+    return {"ok": True, "pedido_em": _pedidos_refazer[(pid, n)]["t"]}
+
+
+# Diagnóstico do Refazer (não muda a geração): guarda como a imagem estava quando o pedido entrou.
+_pedidos_refazer: dict[tuple[int, int], dict] = {}
+
+
+def _estado_arquivo_cena(pid: int, n: int) -> dict:
+    import hashlib
+    c = db.um("SELECT status, versao, seed, arquivo, erro FROM cenas WHERE projeto_id = ? AND n = ?", (pid, n))
+    saida = {"cena_status": c["status"] if c else None, "versao": c["versao"] if c else None, "seed": c["seed"] if c else None,
+             "erro": c["erro"] if c else None, "arquivo": c["arquivo"] if c else None, "mtime": None, "tamanho": None, "sha1": None}
+    if c and c["arquivo"] and (config.BASE / c["arquivo"]).exists():
+        f = config.BASE / c["arquivo"]
+        saida.update(mtime=f.stat().st_mtime, tamanho=f.stat().st_size, sha1=hashlib.sha1(f.read_bytes()).hexdigest()[:12])
+    return saida
+
+
+@app.get("/api/projetos/{pid}/cenas/{n}/status", dependencies=[api])
+def status_cena(pid: int, n: int):
+    """Estado da (re)geração de uma cena: aguardando | gerando | pronto | erro, mais dados para conferir se a imagem mudou."""
+    _projeto(pid)
+    atual = _estado_arquivo_cena(pid, n)
+    pedido = _pedidos_refazer.get((pid, n))
+    mudou = None
+    if atual["cena_status"] == "gerando":
+        estado = "gerando"
+    elif atual["cena_status"] == "erro":
+        estado = "erro"
+    elif pedido and atual["versao"] == pedido["versao"] and atual["sha1"] == pedido["sha1"]:
+        estado = "aguardando"  # pedido aceito, o trabalhador ainda não começou (fila) ou está preparando referências
+    else:
+        estado = "pronto"
+    if pedido and estado in ("pronto", "erro"):
+        mudou = atual["sha1"] != pedido["sha1"]
+    seg = round(time.time() - pedido["t"], 1) if pedido else None
+    if pedido and estado in ("pronto", "erro"):
+        _pedidos_refazer.pop((pid, n), None)
+    return {"estado": estado, "segundos": seg, "imagem_mudou": mudou, "projeto_status": _projeto(pid)["status"],
+            "fila": pipeline._fila.qsize(), **atual}
 
 
 @app.post("/api/projetos/{pid}/continuar", dependencies=[api])
@@ -456,6 +535,104 @@ def custos_gerais():
         "por_servico": db.todos("SELECT servico, modelo, etapa, COUNT(*) AS chamadas, SUM(valor_usd) AS valor, "
                                 "MIN(real) AS todos_reais FROM custos GROUP BY servico, modelo, etapa ORDER BY valor DESC"),
     }
+
+
+# ---------------------------------------------------------------- gerador de vídeo (playlists lo-fi 16:9)
+
+class GeradorIn(BaseModel):
+    config: dict = {}
+    faixas: list[str] = []
+
+
+def _gerador(fn, *args):
+    try:
+        return fn(*args)
+    except gerador.Ocupado as e:
+        raise HTTPException(409, str(e))
+    except gerador.ErroGerador as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/gerador", dependencies=[api])
+def gerador_estado():
+    return gerador.estado()
+
+
+@app.put("/api/gerador/config", dependencies=[api])
+def gerador_salvar(dados: GeradorIn):
+    gerador.salvar(dados.config, dados.faixas)
+    return {"ok": True}
+
+
+@app.get("/api/gerador/fontes", dependencies=[api])
+def gerador_fontes():
+    return gerador.fontes()
+
+
+@app.post("/api/gerador/musicas", dependencies=[api])
+def gerador_enviar_musicas(arquivos: list[UploadFile] = File(...)):
+    """Arquivos arrastados do Explorer: são copiados para a pasta de músicas."""
+    return [_gerador(gerador.receber, a.filename, a.file, "musicas") for a in arquivos]
+
+
+@app.post("/api/gerador/clipes", dependencies=[api])
+def gerador_enviar_clipe(arquivo: UploadFile = File(...)):
+    return _gerador(gerador.receber, arquivo.filename, arquivo.file, "videos")
+
+
+@app.get("/api/gerador/miniatura/{nome}", dependencies=[api])
+def gerador_miniatura(nome: str):
+    return FileResponse(_gerador(gerador.miniatura, nome), headers={"Cache-Control": "max-age=3600"})
+
+
+@app.post("/api/gerador/abrir/{pasta}", dependencies=[api])
+def gerador_abrir(pasta: str):
+    _gerador(gerador.abrir_pasta, pasta)
+    return {"ok": True}
+
+
+@app.post("/api/gerador/escolher-pasta/{qual}", dependencies=[api])
+def gerador_escolher_pasta(qual: str):
+    """Abre a janela de escolha de pasta do Windows (o servidor roda neste computador) e espera o usuário. Não salva:
+    a tela põe o caminho no campo e o salvamento automático cuida do resto. {"pasta": null} = cancelou."""
+    return {"pasta": _gerador(gerador.escolher, qual)}
+
+
+@app.get("/api/gerador/saida/{nome}", dependencies=[api])
+def gerador_saida(nome: str):
+    """Vídeo ou capítulos da pasta de saída escolhida (ela pode ficar fora da pasta do programa)."""
+    alvo = gerador.pasta("saida") / Path(nome).name
+    if alvo.suffix.lower() not in (".mp4", ".txt") or not alvo.is_file():
+        raise HTTPException(404)
+    return FileResponse(alvo, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/gerador/previa", dependencies=[api])
+def gerador_previa(dados: GeradorIn):
+    return _gerador(gerador.iniciar, "previa", dados.config, dados.faixas)
+
+
+@app.post("/api/gerador/renderizar", dependencies=[api])
+def gerador_renderizar(dados: GeradorIn):
+    return _gerador(gerador.iniciar, "video", dados.config, dados.faixas)
+
+
+@app.get("/api/gerador/progresso", dependencies=[api])
+def gerador_progresso():
+    return gerador.progresso()
+
+
+@app.post("/api/gerador/cancelar", dependencies=[api])
+def gerador_cancelar():
+    _gerador(gerador.cancelar)
+    return {"ok": True}
+
+
+@app.get("/api/gerador/previa.mp4", dependencies=[api])
+def gerador_previa_video():
+    if not gerador.ARQ_PREVIA.exists():
+        raise HTTPException(404, "ainda não há prévia")
+    return FileResponse(gerador.ARQ_PREVIA, media_type="video/mp4", headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- logs

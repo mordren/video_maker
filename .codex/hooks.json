@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python 'C:\\Users\\joaor\\Documents\\gerador_video\\.codex\\hooks\\jev_router.py'",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -21,10 +21,7 @@ SCHEMA_REVISAO = {
                    "narracao": {"type": "string"}},
 }
 
-# Limites de tolerância: o humanizer só é desfeito em caso grave.
-COERENCIA_MINIMA = 0.6
-GANCHO_FOLGA = 2.0
-VOLTAS_VERIFICADOR = 2
+# Limites de tolerância do humanizer (COERENCIA_MINIMA, GANCHO_FOLGA, VOLTAS_VERIFICADOR): config.py, aba Configurações.
 
 _DASHES = re.compile(r"[—–]| -- |--")
 
@@ -144,7 +141,7 @@ def humanizar(projeto: dict, canal: dict, h: dict) -> tuple[dict, dict]:
     fixo = projeto.pop("gancho_fixo", None)
     sistema = _sistema(canal, historia.contar_palavras(h["narracao"]))
     novo, achados = h, rel["achados_antes"]
-    for volta in range(VOLTAS_VERIFICADOR):
+    for volta in range(config.VOLTAS_VERIFICADOR):
         if not achados:
             break
         db.evento(pid, f"Verificador achou {len(achados)} trecho(s) com cara de IA; volta {volta + 1} ao humanizer.")
@@ -182,12 +179,12 @@ def humanizar(projeto: dict, canal: dict, h: dict) -> tuple[dict, dict]:
         projeto["gancho_fixo"] = fixo
     rel["rechecagem"] = aval
     coer = aval["perguntas"]["coerencia"]["valor"]
-    if coer < COERENCIA_MINIMA:
+    if coer < config.COERENCIA_MINIMA:
         rel["motivo"] = f"a coerência caiu para {coer:.2f} depois da passada; mantida a versão aprovada"
         db.evento(pid, rel["motivo"], "aviso")
         return h, rel
     gancho = aval["perguntas"]["gancho"]
-    if gancho["valor"] < base["gancho"]["corte"] - GANCHO_FOLGA and novo["gancho"] != h["gancho"]:
+    if gancho["valor"] < base["gancho"]["corte"] - config.GANCHO_FOLGA and novo["gancho"] != h["gancho"]:
         fs = historia.frases(novo["narracao"])
         novo = historia.normalizar_narrativa({**novo, "narracao": " ".join([h["gancho"]] + fs[1:])})
         rel["revertidas"].append({"n": 1, "motivo": f"a nota do gancho caiu para {gancho['valor']:.1f}; "

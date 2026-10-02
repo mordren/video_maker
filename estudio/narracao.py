@@ -129,9 +129,6 @@ def previa(voz: dict, texto: str, destino: Path) -> Path:
 # O modelo não aceita "speed": a velocidade é aplicada depois, no FFmpeg (atempo, sem mudar o tom).
 # O jeito de falar vai na instrução, uma opção do provedor Alibaba.
 
-OPENROUTER_TTS_URL = "https://openrouter.ai/api/v1/audio/speech"
-PRECO_TTS_POR_CARACTERE = 0.000015  # qwen-audio-3.0-tts-flash (conferido: 96 caracteres = US$ 0,00144)
-
 
 def _ffmpeg_audio(args: list[str]):
     r = subprocess.run([config.FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *args],
@@ -174,9 +171,9 @@ def _qwen_sintetizar(texto: str, voz: dict, tensao: int | None, projeto_id) -> t
     if instr:
         corpo["provider"] = {"options": {"alibaba": {"instruction": instr}}}
     ultimo = None
-    for _ in range(3):
+    for _ in range(config.API_TENTATIVAS):
         try:
-            r = httpx.post(OPENROUTER_TTS_URL, json=corpo, timeout=180,
+            r = httpx.post(config.OPENROUTER_TTS_URL, json=corpo, timeout=config.API_TIMEOUT_S,
                            headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
                                     "Content-Type": "application/json"})
         except (httpx.TimeoutException, httpx.TransportError) as e:
@@ -198,7 +195,7 @@ def _qwen_sintetizar(texto: str, voz: dict, tensao: int | None, projeto_id) -> t
             dados, ext = wav.read_bytes(), "wav"
         else:
             dados, ext = r.content, "mp3" if ("mpeg" in tipo or "mp3" in tipo) else "wav"
-        custos.registrar(projeto_id, "narracao", "openrouter", modelo, len(texto) * PRECO_TTS_POR_CARACTERE, False,
+        custos.registrar(projeto_id, "narracao", "openrouter", modelo, len(texto) * config.PRECO_TTS_POR_CARACTERE, False,
                          f"voz {corpo['voice']} · {len(texto)} caracteres · {r.headers.get('x-generation-id', '')}")
         return dados, ext
     raise RuntimeError(f"Qwen TTS sem resposta: {ultimo}")

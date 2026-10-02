@@ -1,4 +1,4 @@
-"""Chamadas externas: texto (OpenRouter), juiz Jev (OpenRouter Decisions) e imagem (Pollinations).
+"""Chamadas externas: texto (OpenRouter), juiz Jev (OpenRouter Decisions) e imagem (Pollinations ou ComfyUI).
 Toda chamada registra o custo em custos.py. Em modo simulação nada é pago (ver simulacao.py)."""
 import json
 import re
@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import config, custos, registro, simulacao
+from . import comfy, config, custos, registro, simulacao
 
 
 class ErroAPI(Exception):
@@ -32,7 +32,9 @@ def _cabecalhos_polli():
     return {"Authorization": f"Bearer {config.POLLINATIONS_API_KEY}"}
 
 
-def _post(url, corpo, cabecalhos, timeout=180, tentativas=3):
+def _post(url, corpo, cabecalhos, timeout=None, tentativas=None):
+    timeout = timeout or config.API_TIMEOUT_S
+    tentativas = tentativas or config.API_TENTATIVAS
     ultimo = None
     for i in range(tentativas):
         try:
@@ -175,23 +177,50 @@ def nota_score(resposta: dict, niveis: int | None = None) -> float:
 
 # ---------------------------------------------------------------- imagem (Pollinations)
 
-def gerar_imagem(prompt: str, largura: int, altura: int, seed: int, referencias: list[str] | None = None, *,
+# Depois de uma queda do Comfy, as próximas imagens vão direto para a Pollinations por um tempo (sem esperar
+# o túnel morto a cada cena).
+_comfy_fora_ate = 0.0
+
+
+def usa_comfy() -> bool:
+    return config.motor_imagem() == "comfy" and time.time() >= _comfy_fora_ate
+
+
+def gerar_imagem(prompt: str, largura: int, altura: int, seed: int, referencias: list | None = None, *,
                  projeto_id=None, etapa="imagens", modelo: str | None = None):
-    """Devolve (bytes, url_link, custo). O cabeçalho Link traz a URL pública da imagem, reaproveitável como referência."""
+    """Devolve (bytes, url_link, custo). O cabeçalho Link traz a URL pública da imagem, reaproveitável como referência.
+    Referências: URL pública (Pollinations) ou Path local (Comfy); um Path que cair na Pollinations é enviado antes."""
+    global _comfy_fora_ate
     modelo = modelo or config.MODELO_IMAGEM
+    referencias = referencias or []
     if config.SIMULACAO:
-        dados = simulacao.imagem(prompt, largura, altura, seed, referencias or [])
+        dados = simulacao.imagem(prompt, largura, altura, seed, referencias)
         custos.registrar(projeto_id, etapa, "simulacao", modelo, 0.0, True, f"seed {seed}")
         return dados, None, 0.0
 
+    if usa_comfy():
+        inicio = time.time()
+        try:
+            dados = comfy.gerar(prompt, largura, altura, seed, [Path(r) for r in referencias])
+        except comfy.ComfyFora as e:
+            _comfy_fora_ate = time.time() + config.COMFY_PAUSA_S
+            registro.escrever(projeto_id, "API", f"comfy fora, usando Pollinations: {e}")
+        except comfy.ErroComfy as e:
+            raise ErroAPI(str(e)) from e
+        else:
+            custos.registrar(projeto_id, etapa, "comfy", config.comfy_workflow().stem, 0.0, True,
+                             f"{largura}x{altura} seed {seed} refs {len(referencias)} {time.time() - inicio:.0f}s")
+            return dados, None, 0.0
+
+    referencias = [enviar_midia(r) if isinstance(r, Path) else r for r in referencias]
     params = {"model": modelo, "width": largura, "height": altura, "seed": seed, "nologo": "true"}
     if referencias:
         params["image"] = "|".join(referencias)
     url = f"{config.POLLI_URL}/image/{quote(prompt, safe='')}"
     ultimo = None
-    for i in range(3):
+    for i in range(config.API_TENTATIVAS):
         try:
-            r = httpx.get(url, params=params, headers=_cabecalhos_polli(), timeout=240)
+            r = httpx.get(url, params=params, headers=_cabecalhos_polli(), timeout=config.IMAGEM_TIMEOUT_S)
         except (httpx.TimeoutException, httpx.TransportError) as e:
             ultimo = e
             time.sleep(3 * (i + 1))

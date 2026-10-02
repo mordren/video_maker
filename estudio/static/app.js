@@ -60,6 +60,8 @@ async function rota() {
     else if (seg === 'canais') await telaCanais();
     else if (seg === 'canal') await telaCanal(id === 'novo' ? null : +id);
     else if (seg === 'custos') await telaCustos();
+    else if (seg === 'gerador') await telaGerador();
+    else if (seg === 'configuracoes') await telaConfiguracoes();
     else if (seg && seg.startsWith('desempenho')) await telaDesempenho();
     else app.innerHTML = '<p>Página não encontrada.</p>';
   } catch (e) { app.innerHTML = `<div class="panel bad">${esc(e.message)}</div>`; }
@@ -295,12 +297,59 @@ function abaAvaliacao(p) {
   }).join('');
 }
 
+/* Acompanha o Refazer de uma cena: consulta /cenas/{n}/status, mostra estado e segundos, e confere se o arquivo mudou. */
+const vigias = {};
+const ROTULO = {aguardando: 'Na fila, aguardando começar', gerando: 'Gerando imagem', pronto: 'Pronto', erro: 'Erro'};
+function textoVigia(n) {
+  const v = vigias[n]; if (!v) return '';
+  const seg = Math.round((Date.now() - v.t0) / 1000);
+  return `${ROTULO[v.estado] || 'Enviando pedido'}... ${seg}s` + (v.fila > 0 && v.estado === 'aguardando' ? ` (fila: ${v.fila})` : '');
+}
+function vigiarCena(pid, n) {
+  vigias[n] = {t0: Date.now(), estado: 'aguardando', fila: 0};
+  const tick = async () => {
+    const v = vigias[n]; if (!v) return;
+    try {
+      const s = await api(`/api/projetos/${pid}/cenas/${n}/status`);
+      if (v.estado !== s.estado) console.log(`[refazer] cena ${n}: estado ${v.estado} -> ${s.estado} (${Math.round((Date.now() - v.t0) / 1000)}s)`);
+      v.estado = s.estado; v.fila = s.fila;
+      const el = document.querySelector(`[data-ov="${n}"] .ovt`); if (el) el.textContent = textoVigia(n);
+      if (s.estado === 'pronto' || s.estado === 'erro') {
+        console.log(`[refazer] cena ${n}: recebido em ${Math.round((Date.now() - v.t0) / 1000)}s (v${s.versao}, seed ${s.seed}, sha1 ${s.sha1}, ${s.tamanho} bytes)`);
+        console.log(`[refazer] cena ${n}: atualizando interface`);
+        delete vigias[n];
+        if (s.estado === 'erro') toast(`Cena ${n} falhou: ${s.erro}`, true);
+        else if (s.imagem_mudou === false) toast(`Cena ${n}: o arquivo NÃO mudou (mesmo hash ${s.sha1}). Veja o Registro.`, true);
+        else toast(`Cena ${n} atualizada (v${s.versao}, seed ${s.seed}, ${Math.round(s.segundos)}s).`);
+        if (rotaAtiva('#/projeto/' + pid)) telaProjeto(pid);
+        return;
+      }
+    } catch (e) { /* servidor ocupado ou reiniciando: tenta de novo */ }
+    setTimeout(tick, 1500);
+  };
+  setTimeout(tick, 500);
+  setInterval_ovt(n);
+}
+// atualiza o contador de segundos a cada segundo, mesmo entre consultas
+function setInterval_ovt(n) {
+  const i = setInterval(() => {
+    if (!vigias[n]) return clearInterval(i);
+    const el = document.querySelector(`[data-ov="${n}"] .ovt`); if (el) el.textContent = textoVigia(n);
+  }, 1000);
+}
+
 function abaImagens(p) {
   const el = $('#aba'), h = p.historia;
   if (!h) { el.innerHTML = '<p class="small">Sem história ainda.</p>'; return; }
   const porN = Object.fromEntries(p.cenas.map(c => [c.n, c]));
   const larga = p.canal.formato !== 'short';
   const podeRefazer = ['aguardando_imagens', 'pronto', 'erro', 'interrompido'].includes(p.status);
+  // Opções do combobox de referência da cena: só o que já tem imagem na biblioteca deste projeto
+  const opcoesRef = [...(h.personagens || []).filter(x => x.bib_chave).map(x => [`personagem:${x.id}`, 'Ficha: ' + (x.nome || x.id)]),
+    ...(h.ambientes || []).filter(x => x.bib_chave).map(x => [`ambiente:${x.id}`, 'Placa: ' + x.id])];
+  const linhaRef = (n, sel, ativo) => `<div class="row" data-refl style="align-items:center;gap:6px"><select data-ref="${n}" ${ativo ? '' : 'disabled'}>
+    ${opcoesRef.map(([v, r]) => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select>
+    <button class="small" data-refx="${n}" title="Remover referência" ${ativo ? '' : 'disabled'}>X</button></div>`;
   const refs = [...(h.personagens || []).filter(x => x.bib_chave).map(x => ['Ficha: ' + (x.nome || x.id), `biblioteca/${p.canal.slug}/personagens/${x.bib_chave}/ficha.jpg`]),
     ...(h.ambientes || []).filter(x => x.bib_chave).map(x => ['Placa: ' + x.id, `biblioteca/${p.canal.slug}/ambientes/${x.bib_chave}/placa.jpg`])];
   const t = Date.now();
@@ -312,21 +361,39 @@ function abaImagens(p) {
     ${podeRefazer ? '<button class="fix" id="iRefazerTodas" title="Gera fichas, placas e cenas de novo com o estilo atual do canal">Refazer todas as imagens</button>' : ''}</div>
   <div class="scenes">${h.cenas.map(c => {
     const s = porN[c.n];
-    const img = s && s.status === 'ok' && s.arquivo ? `<img data-zoom src="/arquivos/${s.arquivo}?v=${s.versao}&t=${t}">`
-      : s && s.status === 'gerando' ? '<div class="spin"></div>' : s && s.status === 'erro' ? `<span class="small fail" style="padding:10px">${esc(s.erro)}</span>` : '<span class="small">aguardando</span>';
+    const ov = vigias[c.n] ? `<div class="ov" data-ov="${c.n}"><div class="spin"></div><div class="ovt">${esc(textoVigia(c.n))}</div></div>` : '';
+    const img = ov + (s && s.status === 'ok' && s.arquivo ? `<img data-zoom src="/arquivos/${s.arquivo}?v=${s.versao}&t=${t}">`
+      : s && s.status === 'gerando' && !ov ? '<div class="spin"></div>' : s && s.status === 'erro' ? `<span class="small fail" style="padding:10px">${esc(s.erro)}</span>` : '<span class="small">aguardando</span>');
     return `<div class="scene ${larga ? 'wide' : ''}"><div class="img">${img}<span class="n">${c.n}</span></div>
       <div class="body"><div>${esc(c.narracao)}</div>
       <textarea data-n="${c.n}" ${podeRefazer ? '' : 'disabled'}>${esc(c.prompt_imagem)}</textarea>
       <input type="text" data-dest="${c.n}" placeholder="destaque (objeto em vermelho)" value="${esc(c.destaque || '')}" ${podeRefazer ? '' : 'disabled'}>
+      ${opcoesRef.length ? `<div class="small">Referências desta cena (a 1ª vale mais; vazio = automático)</div>
+      <div data-refs="${c.n}">${(c.referencias || []).filter(v => opcoesRef.some(o => o[0] === v)).map(v => linhaRef(c.n, v, podeRefazer)).join('')}</div>
+      <button class="small" data-refadd="${c.n}" ${podeRefazer ? '' : 'disabled'}>Adicionar referência</button>` : ''}
       ${c.mesma_imagem_de ? `<div class="small" style="color:var(--acc)">mesma imagem da cena ${c.mesma_imagem_de}, com outro movimento (${esc(c.efeito || 'detalhe')}), sem custo</div>` : ''}
       <div class="small">tensão ${c.tensao} · ${esc(c.efeito || '')}${c.extra ? ' + ' + esc(c.extra) : ''}${s && !c.mesma_imagem_de ? ' · seed ' + s.seed + (s.versao ? ' · v' + s.versao : '') : ''}</div>
       <div class="row"><button class="small" data-refazer="${c.n}" ${podeRefazer ? '' : 'disabled'} title="${c.mesma_imagem_de ? 'Gera uma imagem própria para esta cena' : 'Gera esta imagem de novo'}">${c.mesma_imagem_de ? 'Imagem própria' : 'Refazer'}</button>
       <button class="small" data-testar="${c.n}" ${s && s.status === 'ok' ? '' : 'disabled'}>Testar efeito</button></div></div></div>`;
   }).join('')}</div>`;
+  const ligarRemover = box => $$('[data-refx]', box).forEach(x => x.onclick = () => x.closest('[data-refl]').remove());
+  $$('[data-refs]', el).forEach(ligarRemover);
+  $$('[data-refadd]', el).forEach(b => b.onclick = () => {
+    const n = b.dataset.refadd, box = $(`[data-refs="${n}"]`, el);
+    if ($$('[data-refl]', box).length >= 2) return alert('No máximo 2 referências por cena.');
+    const usadas = $$('select', box).map(x => x.value);
+    const livre = opcoesRef.find(o => !usadas.includes(o[0])) || opcoesRef[0];
+    box.insertAdjacentHTML('beforeend', linhaRef(n, livre[0], true));
+    ligarRemover(box);
+  });
   $$('[data-refazer]', el).forEach(b => b.onclick = async () => {
     const n = +b.dataset.refazer, prompt = $(`textarea[data-n="${n}"]`, el).value, destaque = $(`input[data-dest="${n}"]`, el).value;
+    const box = $(`[data-refs="${n}"]`, el);
+    const referencias = box ? [...new Set($$('select', box).map(x => x.value))].slice(0, 2) : undefined;
     b.disabled = true;
-    await acao(() => api(`/api/projetos/${p.id}/cenas/${n}/refazer`, {method: 'POST', body: {prompt_imagem: prompt, destaque}}), `Refazendo a cena ${n}...`);
+    console.log(`[refazer] cena ${n}: iniciando geração (pedido enviado)`);
+    await acao(() => api(`/api/projetos/${p.id}/cenas/${n}/refazer`, {method: 'POST', body: {prompt_imagem: prompt, destaque, referencias}}), `Refazendo a cena ${n}...`);
+    vigiarCena(p.id, n);
     telaProjeto(p.id);
   });
   const rt = $('#iRefazerTodas');
@@ -545,6 +612,10 @@ async function telaCanal(id) {
           <div><label>Palavras máx.</label><input type="number" id="cPMax" placeholder="do formato" value="${cfg.palavras_max ?? ''}"></div>
           <div><label>Máx. personagens</label><input type="number" id="cMaxP" min="1" max="3" value="${cfg.max_personagens}"></div>
           <div><label>Máx. lugares</label><input type="number" id="cMaxA" min="1" max="8" value="${cfg.max_ambientes}" title="Lugares diferentes nas imagens"></div></div>
+        <div class="row"><div><label>Duração mínima (s)</label><input type="number" id="cDMin" min="5" step="1" placeholder="pelas palavras" value="${cfg.duracao_min_s ?? ''}" title="Segundos de narração; preenchido, vale mais que as palavras"></div>
+          <div><label>Duração máxima (s)</label><input type="number" id="cDMax" min="5" step="1" placeholder="pelas palavras" value="${cfg.duracao_max_s ?? ''}" title="Segundos de narração; preenchido, vale mais que as palavras"></div>
+          <div><label>Imagens mín.</label><input type="number" id="cIMin" min="1" step="1" placeholder="do formato" value="${cfg.imagens_min ?? ''}" title="Imagens (cenas) por vídeo"></div>
+          <div><label>Imagens máx.</label><input type="number" id="cIMax" min="1" step="1" placeholder="do formato" value="${cfg.imagens_max ?? ''}" title="Imagens (cenas) por vídeo"></div></div>
         <label class="inline"><input type="checkbox" id="cHuman" ${cfg.humanizer ? 'checked' : ''}> passar o texto pelo humanizer-br no fim (só português)</label>
       </div>
     </section>
@@ -677,6 +748,8 @@ async function telaCanal(id) {
         estrutura: $('#cEstrutura').value.split(',').map(s => s.trim()).filter(Boolean),
         max_personagens: +$('#cMaxP').value, max_ambientes: +$('#cMaxA').value,
         palavras_min: num($('#cPMin').value), palavras_max: num($('#cPMax').value),
+        duracao_min_s: num($('#cDMin').value), duracao_max_s: num($('#cDMax').value),
+        imagens_min: num($('#cIMin').value), imagens_max: num($('#cIMax').value),
         humanizer: $('#cHuman').checked, orcamento_usd: +$('#cOrc').value, publicador_canal: $('#cPubCanal').value.trim(), cta: $('#cCta').value.trim(), teto_laco_usd: num($('#cTetoLaco').value),
         juiz: {perguntas},
         estilo: {nome: $('#cEstiloNome').value, prefixo: $('#cEstiloPrefixo').value.trim(), sufixo: $('#cEstiloSufixo').value.trim(), recorte: recorteEstilo},
@@ -773,5 +846,468 @@ async function telaCustos() {
   <p class="small">Calibração: depois de 15 a 20 shorts, compare as notas do gancho (arquivo avaliacoes.jsonl de cada projeto) com a retenção no YouTube Studio e ajuste os cortes no canal.</p></div>`;
 }
 
+/* ------------------------------------------------------------------ gerador de vídeo (playlists lo-fi 16:9) */
+let gFontes = null, gSalvarT = null;
+const G_POSICOES = [['inf_esq', 'inferior esquerdo'], ['inf_centro', 'inferior, no centro'], ['inf_dir', 'inferior direito'],
+  ['sup_esq', 'superior esquerdo'], ['sup_dir', 'superior direito'], ['centro', 'centro']];
+const G_AUDIO = /\.(mp3|wav)$/i;
+const hms = s => {
+  s = Math.max(0, Math.floor((s || 0) + 0.01));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), p = n => String(n).padStart(2, '0');
+  return (h ? p(h) + ':' : '') + p(m) + ':' + p(s % 60);
+};
+const falta = s => s < 60 ? `~${Math.max(5, Math.round(s / 5) * 5)} s` : s < 3600 ? `~${Math.round(s / 60)} min` : `~${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min`;
+const tamanhoArq = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixed(0) + ' MB';
+// mesma conta de gerador.linha_do_tempo: o crossfade não passa de metade de uma faixa do meio
+function gLinhaTempo(durs, xf) {
+  const n = durs.length, soma = durs.reduce((a, b) => a + b, 0);
+  if (n < 2) return {xf: 0, soma, total: soma};
+  let lim = Math.min(durs[0], durs[n - 1]) - 0.1;
+  for (const d of durs.slice(1, -1)) lim = Math.min(lim, d / 2 - 0.05);
+  const x = Math.max(0, Math.min(xf, lim));
+  return {xf: x, soma, total: soma - x * (n - 1)};
+}
+
+async function telaGerador() {
+  const [e, fontes] = await Promise.all([api('/api/gerador'), gFontes || api('/api/gerador/fontes')]);
+  gFontes = fontes;
+  if (!rotaAtiva('#/gerador')) return;
+  clearInterval(timer); timer = null;
+  const cfg = e.config, tx = cfg.texto, cod = e.codificador;
+  let faixas = e.faixas;
+  const opt = (pares, atual) => pares.map(([v, r]) => `<option value="${esc(v)}" ${String(v) === String(atual) ? 'selected' : ''}>${esc(r)}</option>`).join('');
+  const chk = v => v ? 'checked' : '';
+  // linha "Pasta": caminho editável + janela de escolha; a saída é criada se não existir
+  const campoPasta = k => `<div class="row pasta"><label class="fix">Pasta</label>
+    <input type="text" data-pasta="${k}" value="${esc(e.pastas[k])}" spellcheck="false" title="Digite o caminho ou clique em Escolher. Vazio volta para a pasta padrão ao lado do programa.">
+    <button class="fix small" data-escolher="${k}">Escolher…</button></div>
+    ${k !== 'saida' && !e.pastas_existem[k] ? '<div class="small aviso">Esta pasta não existe. Escolha outra.</div>' : ''}`;
+  app.innerHTML = `<div id="gTela">
+  <div class="row" style="align-items:center">
+    <div><h2 style="margin:0">Music</h2>
+      <div class="small">Junta a playlist e o fundo num vídeo ${esc(e.resolucao.replace('x', '×'))} · ${e.fps} fps pronto para o YouTube ·
+        codificador: <span class="badge ${cod.gpu ? 'ok' : ''}" title="${esc(cod.motivo || '')}">${esc(cod.rotulo)}</span>${cod.gpu ? '' : ' <span class="small">(sem GPU NVIDIA neste computador)</span>'}</div></div>
+    <div class="fix row" id="gAcoes"><button id="gPrevia" title="Renderiza 10 s do vídeo final com as configurações atuais">Prévia de 10 s</button>
+      <button class="main" id="gRender">Renderizar vídeo</button></div>
+  </div>
+  <div id="gProg" style="margin-top:12px"></div>
+  <div class="grid2" id="gCorpo" style="margin-top:12px">
+    <div>
+      <div class="panel" id="gDrop">
+        <div class="row" style="align-items:center"><h3 style="margin:0">Músicas</h3>
+          <button class="fix small" id="gCarregar" title="Acrescenta os arquivos da pasta de músicas que ainda não estão na lista">Carregar da pasta</button>
+          <button class="fix small" data-abrir="musicas">Abrir pasta</button>
+          <button class="fix small" id="gLimpar">Limpar lista</button></div>
+        ${campoPasta('musicas')}
+        <div class="small" style="margin:6px 0 10px">Arraste arquivos .mp3 ou .wav do Explorer para cá (eles são copiados para a pasta de músicas). Arraste as linhas para mudar a ordem.</div>
+        <div id="gFaixas" class="faixas"></div>
+        <div id="gTotais" style="margin-top:10px"></div>
+      </div>
+    </div>
+    <div>
+      <div class="panel"><h3 style="margin-top:0">Fundo</h3>
+        <div class="row"><label class="inline fix"><input type="radio" name="gModo" value="slideshow" ${chk(cfg.modo === 'slideshow')}> slideshow de imagens</label>
+          <label class="inline fix"><input type="radio" name="gModo" value="clipe" ${chk(cfg.modo === 'clipe')}> clipe em loop</label></div>
+        <div data-modo="slideshow">
+          <div class="row" style="align-items:center"><span class="small"><b>${e.imagens.length}</b> imagem(ns) na pasta de imagens</span>
+            <button class="fix small" data-abrir="imagens">Abrir pasta</button><button class="fix small" id="gAtualizar">Atualizar</button></div>
+          ${campoPasta('imagens')}
+          <div class="thumbs">${e.imagens.slice(0, 14).map(n => `<img loading="lazy" src="/api/gerador/miniatura/${encodeURIComponent(n)}" title="${esc(n)}">`).join('')}
+            ${e.imagens.length > 14 ? `<span class="small">+${e.imagens.length - 14}</span>` : ''}</div>
+          <div class="row"><div><label>Ordem</label><select id="gOrdem">${opt([['nome', 'pelo nome do arquivo'], ['aleatoria', 'aleatória']], cfg.ordem)}</select></div>
+            <div><label>Segundos por imagem</label><input type="number" id="gSeg" min="3" step="1" value="${cfg.segundos_imagem}"></div>
+            <div><label>Crossfade (s)</label><input type="number" id="gTrans" min="0.3" step="0.1" value="${cfg.transicao_s}"></div></div>
+          <div class="row" style="align-items:center"><label class="inline fix"><input type="checkbox" id="gKB" ${chk(cfg.ken_burns)}> zoom lento (Ken Burns)</label>
+            <div></div><button class="fix small" id="gSortear" title="A prévia e o vídeo usam a mesma ordem sorteada">Sortear outra ordem</button></div>
+        </div>
+        <div data-modo="clipe">
+          <div class="row" style="align-items:center"><span class="small"><b>${e.clipes.length}</b> vídeo(s) nas pastas de vídeos e de imagens</span>
+            <button class="fix small" data-abrir="videos">Abrir pasta de vídeos</button><button class="fix small" id="gAtualizarClipes">Atualizar</button></div>
+          ${campoPasta('videos')}
+          <label>Clipe</label>
+          <div class="row"><select id="gClipe">${e.clipes.length ? opt(e.clipes.map(c => [c.nome, `${c.nome} (${hms(c.duracao)})`]), cfg.clipe) : '<option value="">(nenhum vídeo nas pastas de vídeos e de imagens)</option>'}</select>
+            <label class="fix small" style="margin:0"><input type="file" id="gClipeArq" accept="video/*" style="display:none"><span class="badge run" style="cursor:pointer;padding:6px 10px">Enviar clipe</span></label></div>
+          <div class="small" style="margin-top:4px">O clipe se repete até o fim do áudio; o som dele é ignorado.</div>
+        </div>
+        <label>Ajuste a 16:9</label><select id="gAjuste">${opt([['cortar', 'cortar o que sobra (sem distorcer)'], ['preencher', 'imagem inteira sobre fundo desfocado']], cfg.ajuste)}</select>
+      </div>
+      <div class="panel"><h3 style="margin-top:0">Áudio</h3>
+        <div class="row" style="align-items:flex-end"><div class="fix" style="width:210px"><label>Crossfade entre faixas (s)</label><input type="number" id="gXf" min="0" max="15" step="0.5" value="${cfg.crossfade_s}"></div>
+          <label class="inline fix"><input type="checkbox" id="gNorm" ${chk(cfg.normalizar)}> normalizar o volume (${e.alvo_lufs} LUFS, a referência do YouTube)</label></div>
+      </div>
+      <div class="panel"><h3 style="margin-top:0">Nome da música na tela</h3>
+        <label class="inline"><input type="checkbox" id="gTxt" ${chk(tx.ligado)}> mostrar o nome da faixa atual (aparece e some com fade a cada troca)</label>
+        <div class="row"><div><label>Posição</label><select id="gPos">${opt(G_POSICOES, tx.posicao)}</select></div>
+          <div><label>Fonte</label><select id="gFonte">${opt(fontes.map(f => [f.arquivo, f.nome]), tx.fonte)}</select></div></div>
+        <div class="row"><div><label>Tamanho</label><input type="number" id="gTam" min="12" max="120" value="${tx.tamanho}"></div>
+          <div><label>Cor</label><input type="color" id="gCor" value="${esc(tx.cor)}"></div></div>
+        <h3>Efeitos</h3>
+        <div class="row"><label class="inline fix"><input type="checkbox" id="gVin" ${chk(cfg.vinheta)}> vinheta</label>
+          <label class="inline fix"><input type="checkbox" id="gGrao" ${chk(cfg.grao)}> grão de filme</label>
+          <label class="inline fix"><input type="checkbox" id="gChuva" ${chk(cfg.chuva)}> chuva</label></div>
+      </div>
+      <div class="panel"><h3 style="margin-top:0">Saída</h3>
+        ${campoPasta('saida')}
+        <div class="row"><div><label>Nome do arquivo</label><input type="text" id="gNome" value="${esc(cfg.nome_saida)}"></div>
+          <div class="fix" style="width:150px"><label>Início da prévia (s)</label><input type="number" id="gIniPrev" min="0" step="1" placeholder="automático" value="${cfg.previa_inicio ?? ''}"></div></div>
+        <div class="small" style="margin-top:6px">Sai na pasta acima, como <code><span id="gNomeEx"></span></code> (MP4 H.264 + AAC), com o .txt de capítulos ao lado. A pasta é criada se não existir.
+          Sem início definido, a prévia mostra a troca da 1ª para a 2ª faixa.</div>
+      </div>
+    </div>
+  </div>
+  <div class="panel" id="gSaidas"></div></div>`;
+
+  /* lista de músicas */
+  const renderTotais = () => {
+    const lt = gLinhaTempo(faixas.map(f => f.duracao), +$('#gXf').value || 0);
+    $('#gTotais').innerHTML = faixas.length ? `<b>${faixas.length}</b> faixa(s) · soma ${hms(lt.soma)} · <b>vídeo final ${hms(lt.total)}</b>` +
+      (faixas.length > 1 && lt.xf > 0 ? ` <span class="small">(${faixas.length - 1} crossfade(s) de ${lt.xf.toFixed(1)} s)</span>` : '') : '';
+  };
+  const renderFaixas = () => {
+    $('#gFaixas').innerHTML = faixas.length ? faixas.map((f, i) => `<div class="faixa" draggable="true" data-i="${i}">
+        <span class="alca" title="Arraste para mudar a ordem">⠿</span><span class="num">${i + 1}</span>
+        <div class="nome"><b>${esc(f.titulo)}</b><span class="small">${esc(f.nome)}</span></div>
+        <span class="dur">${hms(f.duracao)}</span><button class="small" data-del="${i}" title="Tirar da lista (o arquivo continua na pasta)">×</button></div>`).join('')
+      : '<div class="small vazio">Lista vazia. Arraste arquivos .mp3 ou .wav do Explorer para cá ou clique em Carregar da pasta.</div>';
+    renderTotais();
+  };
+
+  /* configurações: salvas sozinhas a cada mudança e restauradas ao abrir a aba */
+  const coletar = () => ({
+    ...cfg, modo: $('input[name=gModo]:checked').value, ordem: $('#gOrdem').value,
+    segundos_imagem: +$('#gSeg').value, transicao_s: +$('#gTrans').value, ken_burns: $('#gKB').checked, ajuste: $('#gAjuste').value,
+    clipe: $('#gClipe').value, crossfade_s: +$('#gXf').value, normalizar: $('#gNorm').checked,
+    texto: {ligado: $('#gTxt').checked, posicao: $('#gPos').value, fonte: $('#gFonte').value, tamanho: +$('#gTam').value, cor: $('#gCor').value},
+    vinheta: $('#gVin').checked, grao: $('#gGrao').checked, chuva: $('#gChuva').checked,
+    nome_saida: $('#gNome').value.trim(), previa_inicio: $('#gIniPrev').value === '' ? null : +$('#gIniPrev').value,
+    pastas: Object.fromEntries($$('[data-pasta]').map(i => [i.dataset.pasta, i.value.trim()])),
+  });
+  const corpo = () => ({config: coletar(), faixas: faixas.map(f => f.nome)});
+  const salvarAgora = () => { clearTimeout(gSalvarT); return api('/api/gerador/config', {method: 'PUT', body: corpo()}); };
+  const salvar = () => { clearTimeout(gSalvarT); gSalvarT = setTimeout(() => salvarAgora().catch(err => toast('Não consegui salvar as configurações: ' + err.message, true)), 500); };
+  const mostrarModo = () => {
+    const m = $('input[name=gModo]:checked').value;
+    $$('[data-modo]').forEach(d => d.hidden = d.dataset.modo !== m);
+    $('#gSortear').style.visibility = $('#gOrdem').value === 'aleatoria' ? '' : 'hidden';
+    const n = ($('#gNome').value.trim() || 'lofi_mix').replace(/[<>:"/\\|?*]+/g, '');
+    $('#gNomeEx').textContent = `${n}_AAAA-MM-DD_HH-MM.mp4`;
+  };
+  // os campos de pasta só valem quando o texto fecha (change): salvar a cada letra gravaria caminhos pela metade
+  const aoMudar = ev => { if (!ev.target.matches('input,select') || ev.target.type === 'file' || ev.target.dataset.pasta) return; mostrarModo(); renderTotais(); salvar(); };
+  $('#gCorpo').addEventListener('input', aoMudar);
+  $('#gCorpo').addEventListener('change', aoMudar);
+  // pasta nova: salva e recarrega a tela (músicas, miniaturas, clipes e saídas vêm da pasta nova); a lista de músicas antiga não vale mais
+  const trocouPasta = async qual => {
+    if (qual === 'musicas') faixas = [];
+    await salvarAgora().catch(err => toast('Não consegui salvar as configurações: ' + err.message, true));
+    telaGerador();
+  };
+  $('#gCorpo').addEventListener('change', ev => { if (ev.target.dataset.pasta) trocouPasta(ev.target.dataset.pasta); });
+  $('#gSortear').onclick = () => { cfg.semente = Math.floor(Math.random() * 1e6) + 1; salvar(); toast('Nova ordem sorteada (vale para a prévia e para o vídeo).'); };
+
+  /* arrastar: arquivos do Explorer entram na lista; linhas da lista mudam de lugar */
+  const drop = $('#gDrop'), lista = $('#gFaixas');
+  let arrastando = null;
+  const limparMarcas = () => $$('.faixa', lista).forEach(r => r.classList.remove('antes', 'depois'));
+  const posicao = ev => {
+    const r = ev.target.closest('.faixa'); if (!r) return {r: null, i: faixas.length};
+    const b = r.getBoundingClientRect(), antes = ev.clientY < b.top + b.height / 2;
+    return {r, antes, i: +r.dataset.i + (antes ? 0 : 1)};
+  };
+  lista.addEventListener('dragstart', ev => {
+    const r = ev.target.closest('.faixa'); if (!r) return;
+    arrastando = +r.dataset.i; ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/x-faixa', r.dataset.i);
+    r.classList.add('arrastando');
+  });
+  lista.addEventListener('dragend', () => { arrastando = null; $$('.faixa', lista).forEach(r => r.classList.remove('arrastando', 'antes', 'depois')); });
+  drop.addEventListener('dragover', ev => {
+    if (arrastando === null && [...ev.dataTransfer.types].includes('Files')) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; drop.classList.add('drop-on'); return; }
+    if (arrastando === null) return;
+    ev.preventDefault(); limparMarcas();
+    const p = posicao(ev); if (p.r) p.r.classList.add(p.antes ? 'antes' : 'depois');
+  });
+  drop.addEventListener('dragleave', ev => { if (!drop.contains(ev.relatedTarget)) { drop.classList.remove('drop-on'); limparMarcas(); } });
+  drop.addEventListener('drop', ev => {
+    ev.preventDefault(); drop.classList.remove('drop-on'); limparMarcas();
+    if (arrastando === null) { if (ev.dataTransfer.files.length) enviarMusicas(ev.dataTransfer.files); return; }
+    let destino = posicao(ev).i;
+    const [item] = faixas.splice(arrastando, 1);
+    if (destino > arrastando) destino--;
+    faixas.splice(destino, 0, item);
+    arrastando = null; renderFaixas(); salvar();
+  });
+  const enviarMusicas = async arquivos => {
+    const ok = [...arquivos].filter(f => G_AUDIO.test(f.name));
+    if (ok.length < arquivos.length) toast(`${arquivos.length - ok.length} arquivo(s) ignorado(s): só .mp3 e .wav entram na lista.`, true);
+    if (!ok.length) return;
+    const fd = new FormData(); ok.forEach(f => fd.append('arquivos', f));
+    drop.classList.add('enviando');
+    try {
+      const r = await acao(() => api('/api/gerador/musicas', {method: 'POST', body: fd}));
+      const novas = r.filter(f => !faixas.some(x => x.nome === f.nome));
+      faixas.push(...novas); renderFaixas(); salvar();
+      toast(`${novas.length} música(s) adicionada(s)${r.length > novas.length ? `; ${r.length - novas.length} já estava(m) na lista` : ''}.`);
+    } finally { drop.classList.remove('enviando'); }
+  };
+  lista.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-del]'); if (!b) return;
+    faixas.splice(+b.dataset.del, 1); renderFaixas(); salvar();
+  });
+  $('#gCarregar').onclick = async () => {
+    const r = await acao(() => api('/api/gerador'));
+    const novas = r.na_pasta.filter(f => !faixas.some(x => x.nome === f.nome));
+    faixas.push(...novas); renderFaixas(); salvar();
+    toast(novas.length ? `${novas.length} música(s) da pasta adicionada(s).` : `Nenhuma música nova na pasta (${r.pastas.musicas}).`);
+  };
+  $('#gLimpar').onclick = () => {
+    if (!faixas.length || !confirm('Tirar todas as músicas da lista? Os arquivos continuam na pasta de músicas.')) return;
+    faixas = []; renderFaixas(); salvar();
+  };
+  $('#gAtualizar').onclick = $('#gAtualizarClipes').onclick = async () => { await salvarAgora().catch(() => {}); telaGerador(); };
+  $('#gClipeArq').onchange = async ev => {
+    const f = ev.target.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('arquivo', f);
+    const r = await acao(() => api('/api/gerador/clipes', {method: 'POST', body: fd}), `Clipe ${f.name} enviado.`);
+    cfg.clipe = r.nome; await salvarAgora().catch(() => {}); telaGerador();
+  };
+  $('#gTela').onclick = async ev => {
+    const a = ev.target.closest('[data-abrir]');
+    if (a) return acao(() => api('/api/gerador/abrir/' + a.dataset.abrir, {method: 'POST'}));
+    const s = ev.target.closest('[data-escolher]');
+    if (s) {  // a janela do Windows abre no servidor (este computador) e a resposta só volta quando o usuário escolhe ou cancela
+      const qual = s.dataset.escolher; s.disabled = true;
+      try {
+        const r = await acao(() => api('/api/gerador/escolher-pasta/' + qual, {method: 'POST'})).catch(() => null);
+        const campo = $(`[data-pasta="${qual}"]`);
+        if (r && r.pasta && campo) { campo.value = r.pasta; await trocouPasta(qual); }
+      } finally { s.disabled = false; }
+      return;
+    }
+    const v = ev.target.closest('[data-ver]');
+    if (v) {
+      const d = document.createElement('div'); d.className = 'lightbox';
+      d.innerHTML = `<video src="${esc(v.dataset.ver)}" autoplay controls style="max-height:90vh;max-width:94vw"></video>`;
+      d.onclick = x => { if (x.target === d) d.remove(); }; document.body.append(d);
+    }
+  };
+
+  /* renderização: progresso, cancelar e resultado */
+  const renderSaidas = s => {
+    $('#gSaidas').innerHTML = `<div class="row" style="align-items:center"><h3 style="margin:0">Vídeos na pasta de saída</h3><button class="fix small" data-abrir="saida">Abrir pasta</button></div>` +
+      (s.length ? `<table style="margin-top:8px"><tr><th>Arquivo</th><th>Tamanho</th><th>Data</th><th></th></tr>${s.map(x => `<tr><td>${esc(x.nome)}</td>
+        <td>${tamanhoArq(x.tamanho)}</td><td class="small">${esc(x.data.replace('T', ' '))}</td>
+        <td><button class="small" data-ver="${esc(x.url)}">Assistir</button> <a href="${esc(x.url)}" download>baixar</a>${x.capitulos ? ` · <a href="${esc(x.capitulos)}" target="_blank">capítulos</a>` : ''}</td></tr>`).join('')}</table>`
+      : '<p class="small">Nenhum vídeo ainda.</p>');
+  };
+  const renderProgresso = (t, acabou = false) => {  // acabou: terminou agora (a prévia toca sozinha)
+    const el = $('#gProg'); if (!el) return;
+    const rodando = !!t && t.estado === 'rodando';
+    $('#gPrevia').disabled = $('#gRender').disabled = rodando;
+    if (!t) { el.innerHTML = ''; return; }
+    const nome = t.tipo === 'previa' ? 'Prévia de 10 s' : 'Vídeo completo';
+    const avisos = (t.avisos || []).map(a => `<div class="small" style="color:var(--warn);margin-top:6px">${esc(a)}</div>`).join('');
+    const fechar = '<button class="fix small" data-fechar>Fechar</button>';
+    if (rodando) {
+      const pct = Math.floor(t.progresso * 100);
+      el.innerHTML = `<div class="panel"><div class="row" style="align-items:center">
+        <div><b>${nome}</b> · ${esc(t.etapa)} ${t.total_etapas ? `<span class="small">(etapa ${t.n_etapa} de ${t.total_etapas})</span>` : ''}</div>
+        <span class="fix small"><b style="color:var(--txt)">${pct}%</b> · ${t.restante != null ? 'faltam ' + falta(t.restante) : 'calculando o tempo restante...'} · ${hms(t.decorrido)} decorridos</span>
+        <button class="fix" id="gCancelar">Cancelar</button></div>
+        <div class="barra"><div style="width:${pct}%"></div></div>${avisos}</div>`;
+      $('#gCancelar').onclick = async () => {
+        if (t.tipo === 'video' && !confirm('Cancelar a renderização? O que já foi feito se perde.')) return;
+        $('#gCancelar').disabled = true;
+        await acao(() => api('/api/gerador/cancelar', {method: 'POST'}), 'Cancelando...').catch(() => {});
+      };
+      return;
+    }
+    const r = t.resultado;
+    if (t.estado === 'erro') el.innerHTML = `<div class="panel bad"><div class="row" style="align-items:center"><div><b>${nome}: não deu certo.</b> ${esc(t.erro)}</div>${fechar}</div>${avisos}</div>`;
+    else if (t.estado === 'cancelado') el.innerHTML = `<div class="panel alert"><div class="row" style="align-items:center"><div><b>${nome} cancelado.</b> Os arquivos temporários foram apagados.</div>${fechar}</div></div>`;
+    else if (t.tipo === 'previa') el.innerHTML = `<div class="panel"><div class="row" style="align-items:center"><div><b>Prévia pronta</b>
+        <span class="small">de ${hms(r.inicio)} a ${hms(r.inicio + r.duracao)} do vídeo final (${hms(r.total)}) · feita em ${hms(t.decorrido)}</span></div>${fechar}</div>
+        <video src="${esc(r.video)}" controls ${acabou ? 'autoplay' : ''} style="width:100%;max-height:60vh;margin-top:8px"></video>${avisos}</div>`;
+    else el.innerHTML = `<div class="panel"><div class="row" style="align-items:center"><div><b>Vídeo pronto</b>
+        <span class="small">${hms(r.duracao)} · ${tamanhoArq(r.tamanho)} · ${esc(r.codificador)} · feito em ${hms(t.decorrido)}</span></div>${fechar}</div>
+        <div class="grid2" style="margin-top:8px"><div><video src="${esc(r.video)}" controls style="width:100%"></video>
+          <div class="small" style="margin-top:4px"><a href="${esc(r.video)}" download>Baixar MP4</a> · <a href="${esc(r.capitulos)}" download>capítulos (.txt)</a><br>${esc(r.arquivo)}</div></div>
+        <div><label style="margin-top:0">Capítulos para a descrição do YouTube</label><textarea id="gCap" readonly style="min-height:200px;font-family:Consolas,monospace">${esc(r.texto_capitulos)}</textarea>
+          <button class="small" id="gCopiar" style="margin-top:6px">Copiar capítulos</button></div></div>${avisos}</div>`;
+    const f = $('[data-fechar]', el); if (f) f.onclick = () => { el.innerHTML = ''; };
+    const c = $('#gCopiar'); if (c) c.onclick = () => navigator.clipboard.writeText(r.texto_capitulos).then(() => toast('Capítulos copiados.'), () => { $('#gCap').select(); toast('Selecionei o texto: use Ctrl+C.'); });
+  };
+  const acompanhar = () => {
+    clearInterval(timer);
+    timer = setInterval(async () => {
+      if (!rotaAtiva('#/gerador')) { clearInterval(timer); timer = null; return; }
+      try {
+        const t = await api('/api/gerador/progresso');
+        renderProgresso(t, true);
+        if (t && t.estado === 'rodando') return;
+        clearInterval(timer); timer = null;
+        if (t && t.estado === 'pronto' && t.tipo === 'video') { renderSaidas((await api('/api/gerador')).saidas); toast('Vídeo pronto.'); }
+      } catch { /* servidor ocupado: tenta de novo no próximo segundo */ }
+    }, 1000);
+  };
+  const iniciar = async tipo => {
+    $('#gPrevia').disabled = $('#gRender').disabled = true;
+    try {
+      const t = await acao(() => api('/api/gerador/' + (tipo === 'previa' ? 'previa' : 'renderizar'), {method: 'POST', body: corpo()}));
+      clearTimeout(gSalvarT);
+      renderProgresso(t); acompanhar();
+    } catch { $('#gPrevia').disabled = $('#gRender').disabled = false; }
+  };
+  $('#gPrevia').onclick = () => iniciar('previa');
+  $('#gRender').onclick = () => iniciar('video');
+
+  renderFaixas(); mostrarModo(); renderSaidas(e.saidas); renderProgresso(e.trabalho);
+  if (e.trabalho && e.trabalho.estado === 'rodando') acompanhar();
+}
+
 carregarSistema().catch(() => {});
 rota();
+
+/* ------------------------------------------------------------------ configurações globais */
+let abaConfig = 'acesso';
+
+async function telaConfiguracoes() {
+  const cfg = await api('/api/configuracoes');
+  if (!rotaAtiva('#/configuracoes')) return;
+  const grupos = cfg.grupos;
+  if (!grupos.some(g => g.id === abaConfig)) abaConfig = grupos[0].id;
+  const campos = Object.fromEntries(grupos.flatMap(g => g.campos).map(c => [c.chave, c]));
+  const nomeCampo = c => (c.formato ? cfg.formatos[c.formato] + ' · ' : '') + c.rotulo;
+  const textoPadrao = c => {
+    if (c.padrao_rotulo) return c.padrao_rotulo;
+    if (c.tipo === 'booleano') return c.padrao ? 'ligado' : 'desligado';
+    if (c.tipo === 'escolha') return (c.opcoes.find(o => o.valor === c.padrao) || {rotulo: c.padrao}).rotulo;
+    return c.padrao === '' || c.padrao == null ? '(vazio)' : String(c.padrao);
+  };
+  const ORIGEM = {'.env': ['.env', 'ok'], 'configuracoes.json': ['json', 'ok'], 'ambiente do sistema': ['ambiente do sistema', 'warn'], 'padrão': ['padrão', '']};
+  const selos = c => {
+    const [t, cls] = ORIGEM[c.origem] || [c.origem, ''];
+    return `<span class="badge ${cls}" title="Onde este valor está salvo">${esc(t)}</span>` +
+      (c.ao_vivo ? '' : ' <span class="badge warn" title="Só vale depois de reiniciar o servidor">reiniciar</span>') +
+      (c.pendente_reinicio ? ' <span class="badge err" title="O valor salvo ainda não está em uso: reinicie o servidor">aguardando reinício</span>' : '');
+  };
+  const entrada = (c, curto = false) => {
+    const k = esc(c.chave), pad = esc(textoPadrao(c));
+    if (c.tipo === 'segredo') {
+      const v = c.valor || {};
+      return `<div class="cfg-linha"><input type="password" data-cfg="${k}" autocomplete="new-password" spellcheck="false"
+        placeholder="${v.definido ? `definida (…${esc(v.final)}) — deixe em branco para manter` : 'não definida'}">
+        <button class="small" type="button" data-mostrar="${k}">Mostrar</button>
+        ${v.definido ? `<button class="small" type="button" data-apagar="${k}" title="Remove a chave do .env">Apagar</button>` : ''}</div>`;
+    }
+    const restaurar = `<button class="small" type="button" data-restaurar="${k}" title="Restaurar padrão: ${pad}">${curto ? 'padrão' : 'Restaurar padrão'}</button>`;
+    if (c.tipo === 'booleano') {
+      return `<div class="cfg-linha"><label class="inline" style="flex:1"><input type="checkbox" data-cfg="${k}" ${c.valor ? 'checked' : ''}> ligado</label>${restaurar}</div>`;
+    }
+    let campo;
+    if (c.tipo === 'escolha') {
+      campo = `<select data-cfg="${k}"><option value="">padrão (${pad})</option>${c.opcoes.map(o =>
+        `<option value="${esc(o.valor)}" ${c.valor === o.valor ? 'selected' : ''}>${esc(o.rotulo)}</option>`).join('')}</select>`;
+    } else if (c.tipo === 'inteiro' || c.tipo === 'numero') {
+      campo = `<input type="number" data-cfg="${k}" placeholder="${pad}" value="${c.valor == null ? '' : esc(c.valor)}"
+        ${c.minimo != null ? `min="${c.minimo}"` : ''} ${c.maximo != null ? `max="${c.maximo}"` : ''} step="${c.tipo === 'inteiro' ? 1 : (c.passo || 'any')}">`;
+    } else {
+      const lista = c.sugestoes && c.sugestoes.length ? `list="dl_${k}"` : '';
+      campo = `<input type="text" data-cfg="${k}" placeholder="${pad}" value="${c.valor == null ? '' : esc(c.valor)}" spellcheck="false" ${lista}>` +
+        (lista ? `<datalist id="dl_${k}">${c.sugestoes.map(s => `<option value="${esc(s)}">`).join('')}</datalist>` : '');
+    }
+    return `<div class="cfg-linha">${campo}${c.unidade ? `<span class="small fix">${esc(c.unidade)}</span>` : ''}${restaurar}</div>`;
+  };
+  const bloco = c => `<div class="cfg-campo" data-bloco="${esc(c.chave)}">
+    <label>${esc(c.rotulo)} ${selos(c)}</label>${entrada(c)}
+    <div class="small">${esc(c.ajuda)}${c.aviso ? ` <span style="color:var(--warn)">${esc(c.aviso)}</span>` : ''}</div></div>`;
+  const celula = c => `<div class="cfg-campo" data-bloco="${esc(c.chave)}" title="${esc(nomeCampo(c))} · ${esc(c.origem)}">${entrada(c, true)}
+    <div class="small">${c.origem !== 'padrão' ? esc((ORIGEM[c.origem] || [c.origem])[0]) : ''}${c.pendente_reinicio ? ' · aguardando reinício' : ''}</div></div>`;
+  const tabelaFormatos = g => {
+    const fmts = Object.keys(cfg.formatos);
+    const linhas = g.campos.filter(c => c.formato === fmts[0]);
+    return `<table class="cfg-fmt"><tr><th>Parâmetro</th>${fmts.map(f => `<th>${esc(cfg.formatos[f])}</th>`).join('')}</tr>
+      ${linhas.map(l => `<tr><td><b>${esc(l.rotulo)}</b>${l.unidade ? ` <span class="small">(${esc(l.unidade)})</span>` : ''}<div class="small">${esc(l.ajuda)}</div></td>
+        ${fmts.map(f => `<td>${celula(campos[`FORMATOS.${f}.${l.campo}`])}</td>`).join('')}</tr>`).join('')}</table>`;
+  };
+  const corpoGrupo = g => `<section data-grupo="${g.id}" ${g.id === abaConfig ? '' : 'hidden'}>
+    <div class="panel"><p class="small" style="margin-top:0">${esc(g.descricao)}</p>
+    ${g.testes.length ? `<div class="row" style="align-items:center;margin-bottom:10px">${g.testes.map(t =>
+      `<div class="fix"><button type="button" data-testar="${t.servico}">${esc(t.rotulo)}</button><span class="small cfg-res" data-res="${t.servico}">usa o que está salvo</span></div>`).join('')}</div>` : ''}
+    ${g.id === 'formatos' ? tabelaFormatos(g) : `<div class="cfg-grade">${g.campos.map(bloco).join('')}</div>`}</div></section>`;
+
+  app.innerHTML = `
+  <div class="row" style="align-items:center"><h2 style="margin:0">Configurações</h2>
+    <span class="small fix" id="kConta"></span><button class="fix main" id="kSalvar">Salvar configurações</button></div>
+  <p class="small">As chaves ficam no arquivo <code>${esc(cfg.env_arquivo)}</code>, neste computador (o Git ignora). Nenhuma volta inteira pela API: para trocar uma, digite a nova; em branco, a atual é mantida.
+    Os demais parâmetros ficam em <code>${esc(cfg.json_arquivo)}</code>, só os que diferem do padrão. O que é por canal fica em Canais; as pastas e efeitos de cada render, em Music.</p>
+  ${(cfg.avisos || []).map(a => `<div class="panel alert small">${esc(a)}</div>`).join('')}
+  <div class="tabs" id="kTabs">${grupos.map(g => `<button data-g="${g.id}" class="${g.id === abaConfig ? 'on' : ''}">${esc(g.titulo)}</button>`).join('')}</div>
+  ${grupos.map(corpoGrupo).join('')}`;
+
+  const els = Object.fromEntries($$('[data-cfg]').map(e => [e.dataset.cfg, e]));
+  const original = {};
+  for (const [k, e] of Object.entries(els)) original[k] = e.type === 'checkbox' ? e.checked : e.value;
+  const blocos = Object.fromEntries($$('[data-bloco]').map(e => [e.dataset.bloco, e]));
+  const lido = k => els[k].type === 'checkbox' ? els[k].checked : els[k].value.trim();
+  const mudou = k => campos[k].tipo === 'segredo' ? lido(k) !== '' : lido(k) !== (typeof original[k] === 'string' ? original[k].trim() : original[k]);
+  const mudancas = () => Object.fromEntries(Object.keys(els).filter(mudou).map(k => [k, lido(k)]));
+  const atualizar = () => {
+    let n = 0;
+    for (const k of Object.keys(els)) {
+      const m = mudou(k); n += m;
+      blocos[k].classList.toggle('mudou', m);
+    }
+    $('#kConta').textContent = n ? `${n} alteração(ões) não salva(s)` : '';
+  };
+  Object.values(els).forEach(e => { e.oninput = atualizar; e.onchange = atualizar; });
+  atualizar();
+
+  $$('#kTabs button').forEach(b => b.onclick = () => {
+    abaConfig = b.dataset.g;
+    $$('#kTabs button').forEach(x => x.classList.toggle('on', x === b));
+    $$('[data-grupo]').forEach(s => s.hidden = s.dataset.grupo !== abaConfig);
+  });
+  $$('[data-restaurar]').forEach(b => b.onclick = () => {
+    const k = b.dataset.restaurar, e = els[k];
+    if (e.type === 'checkbox') e.checked = !!campos[k].padrao; else e.value = '';
+    atualizar();
+  });
+  $$('[data-mostrar]').forEach(b => b.onclick = () => {
+    const e = els[b.dataset.mostrar], ver = e.type === 'password';
+    e.type = ver ? 'text' : 'password'; b.textContent = ver ? 'Ocultar' : 'Mostrar';
+  });
+  $$('[data-apagar]').forEach(b => b.onclick = async () => {
+    const c = campos[b.dataset.apagar];
+    if (!confirm(`Apagar "${c.rotulo}"?\n\nA linha ${c.chave} sai do arquivo .env (há uma cópia em .env.bak desde a primeira gravação desta execução). Sem ela, o programa volta a avisar que falta a chave.`)) return;
+    try { await acao(() => api('/api/configuracoes/restaurar', {method: 'POST', body: {chaves: [c.chave]}}), `${c.rotulo} apagada.`); }
+    catch { return; }
+    carregarSistema().catch(() => {});
+    telaConfiguracoes();
+  });
+  $$('[data-testar]').forEach(b => b.onclick = async () => {
+    const res = $(`[data-res="${b.dataset.testar}"]`);
+    b.disabled = true; res.className = 'small cfg-res'; res.textContent = 'testando...';
+    try {
+      const r = await api('/api/configuracoes/testar/' + b.dataset.testar, {method: 'POST'});
+      res.className = 'small cfg-res ' + (r.ok ? 'ok' : 'err'); res.textContent = r.mensagem;
+    } catch (e) { res.className = 'small cfg-res err'; res.textContent = e.message; }
+    finally { b.disabled = false; }
+  });
+  $('#kSalvar').onclick = async () => {
+    const mud = mudancas();
+    if (!Object.keys(mud).length) return toast('Nada mudou.');
+    const b = $('#kSalvar'); b.disabled = true;
+    try {
+      const r = await acao(() => api('/api/configuracoes', {method: 'PUT', body: mud}));
+      const nomes = ks => ks.map(k => nomeCampo(campos[k])).join(', ');
+      const feitos = [...r.salvos, ...r.restaurados];
+      const partes = [];
+      const vivos = r.ao_vivo.filter(k => feitos.includes(k)), reinicia = r.reiniciar.filter(k => feitos.includes(k));
+      if (vivos.length) partes.push(`Já vale: ${nomes(vivos)}.`);
+      if (reinicia.length) partes.push(`Precisa reiniciar o servidor (Ctrl+C e python main.py): ${nomes(reinicia)}.`);
+      toast(`Salvo. ${partes.join(' ')}`);
+      carregarSistema().catch(() => {});
+      await telaConfiguracoes();
+    } catch { /* o aviso já apareceu */ } finally { b.disabled = false; }
+  };
+}

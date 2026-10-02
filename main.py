@@ -5,6 +5,7 @@
     python main.py continuar 12
     python main.py refazer 12 cena 7
     python main.py efeito teste zoom_in caminho/imagem.jpg [--formato short]
+    python main.py comfy "prompt" [--ref ficha.jpg] [--ref placa.jpg] [--formato short|longo|ficha] [--seed 42]
 """
 import argparse
 import os
@@ -12,6 +13,7 @@ import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 
 def _preparar():
@@ -52,6 +54,11 @@ def main():
     e.add_argument("imagem")
     e.add_argument("--formato", default="short")
     e.add_argument("--tensao", type=int, default=3)
+    k = sub.add_parser("comfy", help="gera uma imagem só no ComfyUI (sem banco, sem cair na Pollinations)")
+    k.add_argument("prompt")
+    k.add_argument("--ref", action="append", default=[], help="imagem de referência (pode repetir)")
+    k.add_argument("--formato", choices=["short", "longo", "ficha"], default="short")
+    k.add_argument("--seed", type=int, default=42)
     ap.add_argument("--simulacao", action="store_true", help="não chama APIs pagas (respostas falsas)")
     ap.add_argument("--raiz", help="pasta alternativa para banco, projetos, biblioteca e trilhas")
     a = ap.parse_args()
@@ -88,6 +95,22 @@ def main():
         destino = Path("testes_efeitos") / f"{a.nome}_{Path(a.imagem).stem}.mp4"
         montagem.testar_efeito(a.nome, Path(a.imagem), destino, a.formato, a.tensao)
         print(f"Clipe de teste: {destino}")
+    elif a.cmd == "comfy":
+        import time
+        from estudio import comfy, config
+        print(f"Comfy em {config.comfy_url() or '(COMFY_URL vazia no .env)'}...")
+        if not comfy.no_ar():
+            sys.exit("Comfy fora do ar: confira se a célula do Colab está rodando e a COMFY_URL no .env.")
+        fmt = config.FORMATOS["short"]
+        w, h = {"short": (fmt["img_largura"], fmt["img_altura"]),
+                "longo": (config.FORMATOS["longo"]["img_largura"], config.FORMATOS["longo"]["img_altura"]),
+                "ficha": (fmt["ficha_largura"], fmt["ficha_altura"])}[a.formato]
+        inicio = time.time()
+        dados = comfy.gerar(a.prompt, w, h, a.seed, [Path(r) for r in a.ref])
+        destino = Path("testes_comfy") / f"{time.strftime('%Y%m%d_%H%M%S')}_{a.formato}_s{a.seed}.jpg"
+        destino.parent.mkdir(exist_ok=True)
+        destino.write_bytes(dados)
+        print(f"Pronto em {time.time() - inicio:.0f}s: {destino}")
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ def enviar(projeto: dict, canal: dict) -> dict:
     try:
         with open(video, "rb") as f:
             r = httpx.post(f"{base}/api/videos", data={"canal": canal_pub},
-                           files={"arquivos": (nome_arquivo(titulo), f, "video/mp4")}, timeout=600)
+                           files={"arquivos": (nome_arquivo(titulo), f, "video/mp4")}, timeout=config.PUBLICADOR_TIMEOUT_S)
     except httpx.HTTPError as e:
         raise ErroPublicador(f"Não consegui falar com o publicador em {base}: {e}")
     try:

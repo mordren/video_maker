@@ -4,7 +4,7 @@
 2. Os clipes são concatenados sem reencodar.
 3. Passada final: legenda queimada (ASS), narração atrasada pela introdução e trilha com ducking.
 
-Voz e música são normalizadas para -16 LUFS antes da mistura, então os níveis do canal são relativos à voz
+Voz e música são normalizadas para o mesmo volume (NARRACAO_LUFS, padrão -16 LUFS) antes da mistura, então os níveis do canal são relativos à voz
 (ex.: música sozinha -6 dB, sob a voz -20 dB).
 Ducking: o programa sabe exatamente quando o narrador fala (tempo de cada palavra), então monta um envelope
 de volume: música no nível "solo" quando só ela toca e no nível "sob voz" enquanto o narrador fala, com
@@ -15,7 +15,7 @@ import random
 import subprocess
 from pathlib import Path
 
-from . import config, db, efeitos, narracao
+from . import config, db, efeitos, historia, narracao
 
 
 class ErroMontagem(Exception):
@@ -85,7 +85,7 @@ def clipe_cena(img: Path, destino: Path, ctx: dict, efeito: str, extra: str | No
             cadeia.append(f"fade=t=out:st={ctx['dur'] - f:.3f}:d={f}")
     cadeia.append("format=yuv420p")
     _ffmpeg(["-i", str(img), "-vf", ",".join(cadeia), "-frames:v", str(ctx["frames"]), "-r", str(ctx["fps"]),
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-an", str(destino)], pasta, f"cena {destino.stem}")
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", str(config.MONTAGEM_CRF_CLIPES), "-an", str(destino)], pasta, f"cena {destino.stem}")
 
 
 def montar(projeto: dict, canal: dict, h: dict, narr: dict) -> Path:
@@ -107,11 +107,12 @@ def montar(projeto: dict, canal: dict, h: dict, narr: dict) -> Path:
     clipes = pasta / "clipes"
     clipes.mkdir(exist_ok=True)
     lista = []
+    max_cena_s = historia.limites(canal)["max_cena_s"]
     for i, c in enumerate(cenas):
         frames = max(marcas[i + 1] - marcas[i], 2)
         dur = frames / fps
-        if dur > fmt["max_cena_s"] + (intro if i == 0 else 0) + (cauda if i == len(cenas) - 1 else 0) + 0.5:
-            db.evento(projeto["id"], f"Cena {c['n']} ficou com {dur:.1f}s na tela (máximo {fmt['max_cena_s']:.0f}s).", "aviso")
+        if dur > max_cena_s + (intro if i == 0 else 0) + (cauda if i == len(cenas) - 1 else 0) + 0.5:
+            db.evento(projeto["id"], f"Cena {c['n']} ficou com {dur:.1f}s na tela (máximo {max_cena_s:.0f}s).", "aviso")
         img = pasta / "cenas" / f"{c['n']:02d}.jpg"
         if not img.exists():
             raise ErroMontagem(f"A cena {c['n']} não tem imagem")
@@ -133,7 +134,8 @@ def montar(projeto: dict, canal: dict, h: dict, narr: dict) -> Path:
     filtros = []
     entradas = ["-i", "video_sem_audio.mp4", "-i", "narracao.mp3"]
     atraso = int(intro * 1000)
-    filtros.append(f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,adelay=delays={atraso}:all=1,"
+    lufs = f"{config.NARRACAO_LUFS:g}"
+    filtros.append(f"[1:a]loudnorm=I={lufs}:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo,adelay=delays={atraso}:all=1,"
                    f"apad=whole_dur={total:.3f}[voz]")
     if trilha:
         entradas += ["-stream_loop", "-1", "-i", str(trilha)]
@@ -141,7 +143,7 @@ def montar(projeto: dict, canal: dict, h: dict, narr: dict) -> Path:
         env = envelope_musica(segs, mus.get("volume_solo_db", -6), mus.get("volume_sob_voz_db", -20),
                               mus.get("rampa_s", 0.35))
         fade_out = min(max(cauda, 1.0), 3.0)
-        filtros.append(f"[2:a]atrim=0:{total + 1:.3f},asetpts=N/SR/TB,loudnorm=I=-16:TP=-1.5:LRA=11,"
+        filtros.append(f"[2:a]atrim=0:{total + 1:.3f},asetpts=N/SR/TB,loudnorm=I={lufs}:TP=-1.5:LRA=11,"
                        f"aresample=48000,aformat=channel_layouts=stereo,atrim=0:{total:.3f},asetpts=N/SR/TB,"
                        f"volume='{env}':eval=frame,afade=t=in:st=0:d=0.8,"
                        f"afade=t=out:st={total - fade_out:.3f}:d={fade_out:.3f}[mus]")
@@ -151,9 +153,9 @@ def montar(projeto: dict, canal: dict, h: dict, narr: dict) -> Path:
     filtros.append(f"[0:v]{'ass=legendas.ass,' if leg else ''}format=yuv420p[v]")
     (pasta / "filtro_final.txt").write_text(";\n".join(filtros), encoding="utf-8")
     saida = pasta / "final.mp4"
-    _ffmpeg([*entradas, "-filter_complex_script", "filtro_final.txt", "-map", "[v]", "-map", "[a]",
-             "-c:v", "libx264", "-preset", "medium", "-crf", str(fmt["crf"]), "-maxrate", fmt["maxrate"],
-             "-bufsize", str(int(fmt["maxrate"][:-1]) * 2) + "M", "-r", str(fps), "-c:a", "aac", "-b:a", "192k",
+    _ffmpeg([*entradas, *config.filtro_de_arquivo("filtro_final.txt"), "-map", "[v]", "-map", "[a]",
+             "-c:v", "libx264", "-preset", config.MONTAGEM_PRESET, "-crf", str(fmt["crf"]), "-maxrate", fmt["maxrate"],
+             "-bufsize", str(int(fmt["maxrate"][:-1]) * 2) + "M", "-r", str(fps), "-c:a", "aac", "-b:a", f"{config.MONTAGEM_AUDIO_KBPS}k",
              "-movflags", "+faststart", "-t", f"{total:.3f}", "final.mp4"], pasta, "passada final")
     (pasta / "montagem.json").write_text(json.dumps({"intro": intro, "cauda": cauda, "total": total,
                                                      "trilha": str(trilha) if trilha else None,

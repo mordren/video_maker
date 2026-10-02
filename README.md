@@ -52,6 +52,24 @@ Cada canal guarda uma vez só:
 
 O botão "Sugerir configuração com IA" pede ao DeepSeek uma proposta a partir do nome e da descrição, e você revisa antes de salvar. Um canal em outro idioma usa uma voz do Edge nesse idioma; o humanizer-br só roda em português.
 
+## Gerador de Vídeo (aba própria)
+
+Monta vídeos longos 1280×720 · 30 fps para canais de música lo-fi: uma playlist de `musicas/` (mp3 e wav) e um fundo
+(slideshow das imagens de `imagens/` ou um clipe em loop), com o nome da faixa atual na tela. O vídeo e o `.txt` de
+capítulos ("00:00 Nome") vão para `saida/`.
+
+- Cada faixa é medida uma vez (loudness e duração exata, em cache) e normalizada para -14 LUFS; o crossfade entre faixas
+  encurta o vídeo, e os capítulos e a troca de título usam a mesma conta.
+- O slideshow renderiza um ciclo só (Ken Burns e crossfade), que emenda sem salto e se repete até o fim do áudio.
+- Codifica na GPU NVIDIA (NVENC) quando o teste dela passa; senão, na CPU. A prévia de 10 s usa o mesmo caminho.
+- As pastas de músicas, imagens, vídeos e saída podem ser escolhidas na tela (campo "Pasta" com o botão "Escolher…");
+  o padrão é `musicas/`, `imagens/`, `videos/` e `saida/` ao lado do programa. A pasta de saída é criada se não existir.
+- As últimas configurações (incluindo as pastas) e a lista ficam em `dados/gerador.json`; cache, miniaturas e temporários em `dados/gerador/`.
+
+## Configurações (aba própria)
+
+A aba **Configurações** reúne os parâmetros globais: chaves, modelos, formatos (inclusive quantos quadros/imagens cabem numa história), imagens, montagem, Music, Publicador e FFmpeg. Chaves e variáveis de ambiente são gravadas no `.env` (a variável `ESTUDIO_ENV` troca o caminho dele; a primeira gravação de cada execução deixa um `.env.bak`); o resto fica em `dados/configuracoes.json`. A maioria vale na hora; o que precisar de reinício é marcado na tela.
+
 ## API
 
 ```

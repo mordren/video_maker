@@ -73,10 +73,8 @@ SCHEMA_PROMPTS = {
                        "destaque": {"type": "string"}}}}},
 }
 
-FOLGA_PALAVRAS = 0.05      # 5% para mais ou para menos no total
-FOLGA_PALAVRAS_CENA = 2    # palavras a mais por cena
-EST_TEXTO = 0.003   # estimativa por chamada de escrita antes de haver medição
-EST_JEV = 0.001
+# Folgas de tamanho e estimativas de custo (FOLGA_PALAVRAS, FOLGA_PALAVRAS_CENA, EST_TEXTO, EST_JEV): config.py,
+# ajustáveis na aba Configurações.
 
 
 # ---------------------------------------------------------------- utilidades
@@ -89,13 +87,25 @@ def limites(canal: dict) -> dict:
     cfg = canal["config"]
     fmt = config.FORMATOS.get(canal["formato"], config.FORMATOS["short"])
     wps = float(cfg.get("palavras_por_segundo") or 2.75)
+    pmin = int(cfg.get("palavras_min") or fmt["palavras_min"])
+    pmax = int(cfg.get("palavras_max") or fmt["palavras_max"])
+    # duração da narração em segundos, quando preenchida, vale mais que as palavras
+    if cfg.get("duracao_min_s"):
+        pmin = round(float(cfg["duracao_min_s"]) * wps)
+    if cfg.get("duracao_max_s"):
+        pmax = round(float(cfg["duracao_max_s"]) * wps)
+    pmax = max(pmax, pmin)
+    cmin = int(cfg.get("imagens_min") or fmt["min_cenas"])
+    cmax = max(int(cfg.get("imagens_max") or fmt["max_imagens"]), cmin)
+    # poucas imagens para muita narração: cada cena precisa caber mais tempo (o gancho é curto, por isso cmax-1)
+    max_cena_s = max(fmt["max_cena_s"], math.ceil(pmax / wps / max(cmax - 1, 1)))
     return {
-        "palavras_min": int(cfg.get("palavras_min") or fmt["palavras_min"]),
-        "palavras_max": int(cfg.get("palavras_max") or fmt["palavras_max"]),
-        "cenas_min": fmt["min_cenas"],
-        "cenas_max": fmt["max_imagens"],
-        "max_cena_s": fmt["max_cena_s"],
-        "palavras_por_cena": int(math.floor(fmt["max_cena_s"] * wps)),
+        "palavras_min": pmin,
+        "palavras_max": pmax,
+        "cenas_min": cmin,
+        "cenas_max": cmax,
+        "max_cena_s": max_cena_s,
+        "palavras_por_cena": int(math.floor(max_cena_s * wps)),
         "wps": wps,
         "max_personagens": int(cfg.get("max_personagens") or 2),
         "max_ambientes": int(cfg.get("max_ambientes") or 6),
@@ -142,6 +152,7 @@ def narracao_completa(h: dict) -> str:
     return re.sub(r"\s+", " ", h.get("narracao", "")).strip()
 
 
+MAX_REFERENCIAS = 2  # imagens de referência escolhidas à mão por cena
 MAX_PESSOAS_CENA = 2  # com mais gente na mesma imagem o gerador mistura os rostos
 
 
@@ -229,6 +240,12 @@ def normalizar_cenas(h: dict) -> dict:
         c.pop("personagens", None)
         if c.get("ambiente") not in ids_a:
             c["ambiente"] = ""
+        validas = {f"personagem:{i}" for i in ids_p} | {f"ambiente:{i}" for i in ids_a}
+        refs = []
+        for r in c.get("referencias") or []:
+            if r in validas and r not in refs:
+                refs.append(r)
+        c["referencias"] = refs[:MAX_REFERENCIAS]
     if h.get("cenas"):
         h["narracao"] = narracao_completa(h)
         fs = frases(h["narracao"])
@@ -246,8 +263,8 @@ def checar_narrativa(h: dict, canal: dict) -> tuple[list[str], dict]:
     if not total:
         return ["a narração veio vazia"], metricas
     # Folga antes de mandar reescrever: errar por poucas palavras não vale uma reescrita inteira.
-    minimo = int(lim["palavras_min"] * (1 - FOLGA_PALAVRAS))
-    maximo = int(round(lim["palavras_max"] * (1 + FOLGA_PALAVRAS)))
+    minimo = int(lim["palavras_min"] * (1 - config.FOLGA_PALAVRAS))
+    maximo = int(round(lim["palavras_max"] * (1 + config.FOLGA_PALAVRAS)))
     if total < minimo:
         problemas.append(f"a narração tem {total} palavras; precisa de {lim['palavras_min']} a {lim['palavras_max']} "
                          f"(faltam {lim['palavras_min'] - total}; acrescente detalhes concretos no meio da história, "
@@ -271,7 +288,7 @@ def checar(h: dict, canal: dict) -> tuple[list[str], dict]:
     if len(cenas) < lim["cenas_min"] or len(cenas) > lim["cenas_max"]:
         problemas.append(f"a história tem {len(cenas)} cenas; precisa de {lim['cenas_min']} a {lim['cenas_max']}")
     for c, n in zip(cenas, metricas["palavras_por_cena"]):
-        if n > lim["palavras_por_cena"] + FOLGA_PALAVRAS_CENA:
+        if n > lim["palavras_por_cena"] + config.FOLGA_PALAVRAS_CENA:
             problemas.append(f"a cena {c['n']} tem {n} palavras (~{n / lim['wps']:.1f}s); o máximo é "
                              f"{lim['palavras_por_cena']} palavras ({lim['max_cena_s']:.0f}s)")
         if not c.get("prompt_imagem", "").strip():
@@ -416,7 +433,27 @@ Escrita que não soa como texto gerado por IA (padrões do humanizer-br; cada um
   no texto inteiro, e só quando mostra algo que o ouvinte não veria de outro jeito.
 - adjetivo vago de medo ("aterrorizante", "sinistro", "inexplicável", "arrepiante") no lugar do fato que assusta.
 - palavras que a IA usa muito mais que gente: {vocab}.
+- negação em par ("Não chamou meu nome. Não precisou.", "não teve mão, não teve força"): diga o que aconteceu.
 - varie o comprimento das frases, como alguém contando em voz alta."""
+    # Vem de uma história reescrita à mão: a versão da IA tinha "água de um poço que secou faz anos", morte por
+    # afogamento em pé e um final-charada ("Eu não tenho pregos novos"); a versão boa dizia o motivo, mostrava a
+    # família procurando e fechava amarrando tudo. As regras ficam genéricas para não puxar todo vídeo para poço e faca.
+    sentido = """
+Sentido antes de efeito:
+- Cada detalhe estranho precisa caber na lógica da história e servir a ela. Nada de imagem que soa bonita mas não
+  fecha (água escorrendo de um poço que já secou, alguém se afogar em pé). Se o ouvinte perguntaria "como assim?",
+  corte. O impossível é um só: a regra sobrenatural da história, e o resto obedece ao mundo real.
+- Diga o porquê das coisas com palavras simples: por que o narrador fez o que fez, por que achou que daria certo.
+- Mostre o efeito no mundo ao redor: quem percebe, quem reage, o que o narrador esconde dos outros.
+- O estranho nasce do que o narrador fez ou decidiu e se liga a isso por um elo concreto (um objeto, um lugar,
+  um gesto que já apareceu antes).
+- Tempo marcado como se fala ("ontem de manhã", "de madrugada"), sem lista de dias da semana.
+- Sentimento dito direto quando importa ("tenho certeza", "não sei se vou escapar"), sem metáfora.
+- O final amarra a história: o que foi aberto se resolve ou se explica, menos UMA ponta, que pode ficar aberta.
+  Essa ponta nasce do que já foi contado. Nada de mistério novo na última frase, nem final-charada que o ouvinte
+  precisa decifrar (um objeto que "não devia existir", uma frase solta que pede explicação).
+- Quem narra em 1ª pessoa não conta nada depois de morrer. Se morre, a voz dele para antes, e o desfecho pode vir
+  numa última frase de fato visto de fora."""
     return f"""Você é o roteirista do canal "{canal['nome']}". {canal['descricao']}
 
 Você escreve a narração de um vídeo curto: um texto corrido, contado de uma vez, que precisa funcionar só no
@@ -430,6 +467,7 @@ Estrutura da história: {estrutura}
 
 Tamanho (conferido por programa; fora dele a história volta): entre {lim['palavras_min']} e {lim['palavras_max']} palavras,
 cerca de {lim['palavras_min'] / lim['wps']:.0f} a {lim['palavras_max'] / lim['wps']:.0f} segundos de narração.
+{sentido}
 {estilo_texto}
 
 Campos:
@@ -550,8 +588,8 @@ def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
     anteriores: list[dict] = []
     melhor = ("", -1.0, None)
     for rodada in range(1, config.GANCHO_MAX_RODADAS + 1):
-        _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, EST_TEXTO) +
-                     _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
+        _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, config.EST_TEXTO) +
+                     _media_custo(projeto["id"], config.MODELO_JUIZ, config.EST_JEV))
         hist = ""
         if anteriores:
             hist = "\n\nGanchos anteriores e a nota que tiveram (0-10, corte " + f"{corte}" + "). Não repita; faça melhor:\n" + \
@@ -611,7 +649,7 @@ def _sem_gancho(h: dict, gancho: str) -> dict:
 def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | None = None) -> dict:
     """Escreve a história inteira do zero. fraquezas: onde as versões descartadas falharam no Jev (só o critério,
     não o texto), para esta sair diferente em vez de remendar a anterior."""
-    _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, EST_TEXTO))
+    _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, config.EST_TEXTO))
     fixo = projeto.get("gancho_fixo")
     pedido = (_pedido_continuacao(canal, gancho) if fixo else
               f"A narração começa exatamente com este gancho, não mude: \"{gancho}\"")
@@ -630,7 +668,7 @@ def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | Non
 
 
 def reescrever(projeto: dict, canal: dict, h: dict, problemas: list[str], avaliacao: dict | None) -> dict:
-    _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, EST_TEXTO))
+    _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, config.EST_TEXTO))
     itens = [f"- {p}" for p in problemas]
     gancho_livre = False
     if avaliacao:
@@ -669,7 +707,7 @@ def avaliar(projeto: dict, canal: dict, h: dict, perguntas: dict | None = None, 
     if projeto.get("gancho_fixo"):
         perguntas = {k: v for k, v in perguntas.items() if k != "gancho"}
     if etapa == "historia":
-        _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_JUIZ, EST_JEV))
+        _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_JUIZ, config.EST_JEV))
     state = texto_para_juiz(h, canal, projeto["assunto"])
     respostas, _ = clientes.decidir(state, perguntas_jev(perguntas), projeto_id=projeto["id"], etapa=etapa,
                                     contexto={"tipo": "historia", "historia": h})
@@ -718,7 +756,7 @@ def _dividir_longas(cenas: list[dict], trs: list[str], lim: dict) -> list[dict]:
             novas = []
             for de, ate in partes:
                 palavras = contar_palavras(" ".join(trs[de - 1:ate]))
-                if palavras > lim["palavras_por_cena"] + FOLGA_PALAVRAS_CENA and ate > de:
+                if palavras > lim["palavras_por_cena"] + config.FOLGA_PALAVRAS_CENA and ate > de:
                     meio = (de + ate) // 2
                     novas += [(de, meio), (meio + 1, ate)]
                 else:
@@ -745,7 +783,7 @@ def _juntar_cenas(grupos: list[dict], trs: list[str], lim: dict) -> list[dict]:
     do máximo de imagens, junta os pares vizinhos mais curtos até caber. A cena 1 (gancho) fica sozinha."""
     def palavras(g):
         return contar_palavras(" ".join(trs[g["de"] - 1:g["ate"]]))
-    cabe = lim["palavras_por_cena"] + FOLGA_PALAVRAS_CENA
+    cabe = lim["palavras_por_cena"] + config.FOLGA_PALAVRAS_CENA
     saida = []
     for g in grupos:
         if len(saida) > 1 and _parecidos(saida[-1], g) and palavras(saida[-1]) + palavras(g) <= cabe:

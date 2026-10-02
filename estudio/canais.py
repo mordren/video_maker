@@ -74,6 +74,9 @@ PERGUNTAS_UNIVERSAIS = {
                                "pergunta": "O personagem principal mantém aparência, idade e comportamento do começo ao fim?"},
     "coerencia": {"tipo": "noul", "corte": 0.85, "trava": False,
                   "pergunta": "A sequência de fatos é coerente, sem furos nem contradições?"},
+    "sem_enfeite": {"tipo": "noul", "corte": 0.85, "trava": False,
+                    "pergunta": "Todo detalhe estranho cabe na lógica da história e serve a ela, sem imagem que soa "
+                                "bonita mas não fecha (ex.: água escorrendo de um poço que já secou) e sem final-charada?"},
     "entendimento_audio": {"tipo": "noul", "corte": 0.80, "trava": False,
                            "pergunta": "Dá para entender tudo ouvindo uma vez só, sem pronome ambíguo?"},
     "prompts_batem": {"tipo": "noul", "corte": 0.85, "trava": False,
@@ -95,6 +98,10 @@ CONFIG_PADRAO = {
     "palavras_por_segundo": 2.75,
     "palavras_min": None,   # None = usa o do formato
     "palavras_max": None,
+    "duracao_min_s": None,  # segundos de narração; preenchido, vale mais que palavras_min/max
+    "duracao_max_s": None,
+    "imagens_min": None,    # None = usa o do formato
+    "imagens_max": None,
     "juiz": {"perguntas": {}},  # específicas do canal; as universais entram sempre
     "estilo": copy.deepcopy(ESTILOS["cinema"]),
     "voz": {"provedor": "qwen", "modelo": "qwen/qwen-audio-3.0-tts-flash", "nome": "loongjohn", "taxa": "+0%", "tom": "+0Hz",
@@ -129,13 +136,17 @@ TERROR_GARRAS = {
                  "maldições. Shorts de 1 minuto com final que vira a história.",
     "config": {
         "regras_escrita": [
-            "um personagem principal, no máximo dois ambientes; o ambiente e a época seguem o assunto pedido",
-            "vocabulário, objetos e cenário da época e do lugar do assunto (celular e semáforo na cidade, tocha e "
-            "taverna na Idade Média), sem trazer o clima de outro cenário",
-            "narração de quem conta a história em voz alta, frases corridas; só a fala final pode ser curta",
-            "nada de sequência de frases curtas de efeito (\"Passos. Lentos.\")",
-            "final com reviravolta que muda o sentido de algo mostrado antes",
-            "texto dentro da imagem só quando for essencial",
+            "Comece com algo que capture a atenção e crie motivo para ficar no vídeo: um mistério, uma pergunta, uma situação impossível, um conflito que o observador quer resolver.",
+            "Um narrador só, uma identidade só do começo ao fim; mesma voz, mesmo ponto de vista.",
+            "O narrador quer algo específico e toma uma decisão; o horror vem dessa decisão, não de observar coisas estranhas.",
+            "Cada frase causa a próxima; encadeia eventos em sequência lógica, sem pulos ou imagens desconexas.",
+            "Escolha uma regra sobrenatural (tempo voltando, duplo, possessão, maldição) e mantenha ela inteira até o fim.",
+            "Escolha um modo narrativo (confissão, relato encontrado, depoimento, testemunha) e mantenha o tom do começo ao fim.",
+            "Um personagem principal, no máximo dois ambientes; o ambiente e a época seguem o assunto pedido.",
+            "Vocabulário, objetos e cenário da época e do lugar: na cidade medieval use lanterna, não celular.",
+            "Frases corridas e naturais, como alguém contando; só o final pode ser curto se virar a história.",
+            "Final com reviravolta que muda o sentido de algo mostrado antes.",
+            "Texto escrito na imagem só quando for absolutamente essencial.",
         ],
         "estrutura": ["gancho", "desenvolvimento", "virada", "susto_final"],
         "max_personagens": 1,
@@ -176,6 +187,18 @@ MODOS_TERROR = [
      "(olhar, som, objeto, ausência), não do que se explica"},
 ]
 
+REGRA_NARRADOR = ("Um narrador só, uma identidade só do começo ao fim; mesma voz, mesmo ponto de vista. Se o narrador "
+                  "morre, a voz dele para antes, e só a última frase pode contar de fora o que se viu depois.")
+ESTRUTURA_GARRAS_NOVO = [
+    "Gancho: situação estranha ou detalhe fora do lugar que prende a atenção, sem explicação.",
+    "Desenvolvimento: criação de tensão com imagens sensoriais antes de qualquer revelação.",
+    "Complicação: o estranho ganha peso e aperta o narrador; tudo continua fazendo sentido dentro da história.",
+    "Reviravolta: detalhe plantado antes, sem destaque, muda o sentido de algo já mostrado.",
+    "Final: amarra a história; pode ficar aberto, mas a única ponta solta é uma que a própria história criou.",
+]
+PERGUNTA_FINAL = ("O final amarra a história e deixa no máximo uma ponta solta, nascida do que já foi contado, sem "
+                  "mistério novo nem frase-charada que o ouvinte precisa decifrar?")
+
 GARRAS_NOVO = {
     "nome": "Garras Novo",
     "idioma": "pt-BR",
@@ -184,65 +207,66 @@ GARRAS_NOVO = {
                  "aldeia medieval. Fantasmas, aparições, gente que não devia estar ali, assassinos, maldições. "
                  "Gancho imediato, tensão crescente e final perturbador, em um dos oito modos narrativos do canal.",
     "config": {
+        "palavras_min": 150,
+        "palavras_max": 170,
         "regras_escrita": [
-            "Cada vídeo segue UM modo narrativo do começo ao fim, sem misturar.",
-            "O assunto pode trazer preferências (medo a ativar, quem conta e como, tipo de final, tom, época, objeto "
-            "obrigatório ou proibido). Use o que vier. O que faltar, decida sem perguntar: medo de ser observado, "
-            "vítima em 1ª pessoa, final em corte seco.",
-            "Gancho na primeira frase: a própria situação estranha ou o detalhe impossível, sem explicar e sem "
-            "anunciar de onde o texto veio (documento, registro, bilhete).",
-            "Crie tensão antes de revelar qualquer coisa; imagens sensoriais (som, cheiro, luz, temperatura).",
-            "Uma reviravolta ou um detalhe impossível no terço final, plantado antes sem destaque.",
-            "Final ambíguo, incômodo ou macabro. Não explique tudo: o medo mora no que falta.",
-            "Vocabulário, objetos, profissões, lugares e costumes coerentes com a época, o lugar e o meio do assunto; "
-            "nenhuma palavra que pertença a outro tempo ou a outro ambiente.",
-            "Nada de clichê (\"era só um sonho\", espelho que mostra outra pessoa, criança que canta). Nada de gore "
-            "gratuito: prefira o terror psicológico e atmosférico.",
-            "Não repita a estrutura \"ouvi passos, vi uma figura, era algo no final\" sem que o tema peça.",
+            "Comece com algo que capture a atenção e crie motivo para ficar no vídeo: um mistério, uma pergunta, uma situação impossível, um conflito que o observador quer resolver.",
+            REGRA_NARRADOR,
+            "O narrador quer algo específico e toma uma decisão; o horror vem dessa decisão, não de observar coisas estranhas.",
+            "Cada frase causa a próxima; encadeia eventos em sequência lógica, sem pulos ou imagens desconexas.",
+            "Escolha uma regra sobrenatural (tempo voltando, duplo, possessão, maldição) e mantenha ela inteira até o fim.",
+            "Escolha um modo narrativo (confissão, relato encontrado, terror cotidiano, horror psicológico, sobrenatural, horror cósmico, final retroativo, terror silencioso) e mantenha o tom do começo ao fim.",
+            "Personagem principal mantém aparência, idade e comportamento do começo ao fim; nenhuma mudança inexplicada.",
+            "A sequência de fatos é coerente, sem furos, contradições ou saltos de lógica.",
+            "Dá para entender tudo ouvindo uma vez só: sem pronomes ambíguos, sem nomes repetidos em contextos diferentes, sem mudanças de perspectiva.",
+            "Vocabulário, objetos, profissões, lugares e costumes coerentes com a época, o lugar e o meio do assunto; nenhuma palavra que pertença a outro tempo ou a outro ambiente.",
+            "Nada de clichê (\"era só um sonho\", espelho que mostra outra pessoa, criança que canta). Nada de gore gratuito: prefira o terror psicológico e atmosférico.",
             "Frases de tamanhos variados, com ritmo crescente; a frase curta vale como golpe isolado, nunca em fileira.",
+            "Imagens sensoriais concretas (som, cheiro, luz, temperatura) em vez de adjetivos de medo (\"aterrorizante\", \"sinistro\").",
+            "Evita violência explícita, conteúdo sexual e qualquer menção a menores em perigo.",
             "Texto dentro da imagem só quando for essencial.",
+            "Não repita a estrutura \"ouvi passos, vi uma figura, era algo no final\" sem que o tema peça.",
         ],
         "modos_narrativos": MODOS_TERROR,
-        "estrutura": ["gancho", "contexto", "tensao", "reviravolta", "fecho"],
+        "estrutura": ESTRUTURA_GARRAS_NOVO,
         "max_personagens": 2,
         "max_ambientes": 4,
         "juiz": {"perguntas": {
-            "gancho": {"tipo": "score", "corte": 8, "trava": False,
-                       "pergunta": "Quem está rolando o feed para nos 3 primeiros segundos com esse gancho? Ele traz uma "
-                                   "situação estranha ou um detalhe impossível, sem explicar, em poucas palavras?"},
-            "modo_respeitado": {"tipo": "noul", "corte": 0.80, "trava": False,
-                                "pergunta": "A história segue um único modo narrativo (confissão, relato encontrado, terror "
-                                            "cotidiano, horror psicológico, sobrenatural, horror cósmico, final retroativo "
-                                            "ou terror silencioso) do começo ao fim, sem misturar?"},
+            "gancho": {"tipo": "score", "corte": 8, "trava": True,
+                       "pergunta": "Quem está rolando o feed para nos 3 primeiros segundos com esse gancho? Ele traz uma situação estranha ou um detalhe impossível, sem explicar, em poucas palavras?"},
+            "personagem_consistente": {"tipo": "noul", "corte": 0.85, "trava": True,
+                                       "pergunta": "O personagem principal mantém aparência, idade e comportamento do começo ao fim, sem mudanças inexplicadas?"},
+            "coerencia": {"tipo": "noul", "corte": 0.85, "trava": True,
+                          "pergunta": "A sequência de fatos é coerente, sem furos, contradições ou saltos de lógica?"},
+            "entendimento_audio": {"tipo": "noul", "corte": 0.85, "trava": True,
+                                   "pergunta": "Dá para entender tudo ouvindo uma vez só: sem pronomes ambíguos, sem nomes repetidos em contextos diferentes?"},
+            "seguranca": {"tipo": "noul", "corte": 0.90, "trava": True,
+                          "pergunta": "A história evita violência explícita, conteúdo sexual e qualquer menção a menores em perigo?"},
+            "modo_respeitado": {"tipo": "noul", "corte": 0.85, "trava": True,
+                                "pergunta": "A história segue um único modo narrativo do começo ao fim, sem misturar estilos ou perspectivas? Qual é o modo escolhido?"},
+            "regra_sobrenatural": {"tipo": "noul", "corte": 0.85, "trava": False,
+                                   "pergunta": "O que é sobrenatural ou impossível segue uma regra própria e consistente (o que a coisa pode e não pode fazer), sem mudar no meio?"},
             "medo_especifico": {"tipo": "score", "corte": 7, "trava": False,
-                                "pergunta": "A história ativa um medo específico e reconhecível (ser observado, perder o "
-                                            "controle, ser esquecido, estar errado sobre algo), e não só sustos soltos?"},
+                                "pergunta": "A história ativa um medo específico e reconhecível (ser observado, perder o controle, ser esquecido, estar errado sobre algo), e não só sustos soltos?"},
             "tensao_antes_da_revelacao": {"tipo": "score", "corte": 7, "trava": False,
-                                          "pergunta": "A tensão cresce antes de qualquer revelação, com imagens sensoriais "
-                                                      "concretas em vez de adjetivos de medo?"},
+                                          "pergunta": "A tensão cresce antes de qualquer revelação, com imagens sensoriais concretas em vez de adjetivos de medo?"},
             "reviravolta_plantada": {"tipo": "score", "corte": 7, "trava": False,
-                                     "pergunta": "A reviravolta ou o detalhe impossível tem uma pista plantada antes, sem "
-                                                 "destaque, e muda o sentido de algo já mostrado?"},
-            "final_incomodo": {"tipo": "score", "corte": 7, "trava": False,
-                               "pergunta": "O final é ambíguo, incômodo ou macabro e deixa algo sem explicar, em vez de "
-                                           "fechar tudo com uma explicação?"},
+                                     "pergunta": "A reviravolta ou o detalhe impossível tem uma pista plantada antes, sem destaque, e muda o sentido de algo já mostrado?"},
+            "final_incomodo": {"tipo": "score", "corte": 7, "trava": False, "pergunta": PERGUNTA_FINAL},
             "sem_cliche": {"tipo": "noul", "corte": 0.80, "trava": False,
-                           "pergunta": "A história evita clichês (era só um sonho, espelho com outra pessoa, criança "
-                                       "cantando, passos e figura no final) e gore gratuito?"},
-            "regra_sobrenatural": {"tipo": "noul", "corte": 0.80, "trava": False,
-                                   "pergunta": "O que é sobrenatural ou impossível segue uma regra própria e consistente "
-                                               "(o que a coisa pode e não pode fazer), sem mudar no meio?"},
+                           "pergunta": "A história evita clichês (era só um sonho, espelho com outra pessoa, criança cantando, passos e figura no final) e gore gratuito?"},
             "epoca_e_lugar": {"tipo": "noul", "corte": 0.85, "trava": False,
                               "pergunta": "Objetos, vocabulário e cenário combinam com a época e o lugar do assunto?"},
         }},
         "estilo": copy.deepcopy(ESTILOS["nanquim"]),
         "voz": {"provedor": "qwen", "modelo": "qwen/qwen-audio-3.0-tts-flash", "nome": "loongjohn", "taxa": "-4%", "tom": "+0Hz",
-                "instrucoes": "voz grave e contida de quem conta uma história de terror em voz baixa, ritmo lento, "
-                              "pausas antes das revelações, clima de suspense",
+                "instrucoes": "voz grave e contida de quem conta uma história de terror em voz baixa, ritmo lento, pausas antes das revelações, clima de suspense",
                 "instrucoes_tensao_alta": "mais tenso e baixo, quase sussurrando", "pausa_entre_cenas_s": 0.3},
         "musica": {"volume_solo_db": -6.0, "volume_sob_voz_db": -21.0, "intro_s": 1.5, "cauda_s": 3.0,
                    "rampa_s": 0.35, "humor": "suspense sombrio, drone grave, sem batida marcada"},
         "sugestoes_trilha": [],
+        "humanizer": True,
+        "orcamento_usd": 0.15,
     },
 }
 
@@ -330,7 +354,16 @@ _REGRAS_ANTIGAS = {
     "Gancho na primeira frase, de até 15 palavras: situação estranha ou detalhe impossível, sem explicar.": 2,
     "Vocabulário, objetos e cenário da época e do lugar do assunto (celular e semáforo na cidade, tocha e taverna na "
     "Idade Média), sem trazer o clima de outro cenário.": 6,
+    "Um narrador só, uma identidade só do começo ao fim; mesma voz, mesmo ponto de vista.": 1,
 }
+# Estrutura e pergunta do final da versão que pedia "deixa algo sem explicar" (gerava final-charada).
+_ESTRUTURA_ANTIGA = {
+    "Gancho: situação estranha ou detalhe impossível que prende a atenção, sem explicação.": 0,
+    "Complicação: o que é impossível ganha peso; a realidade se quebra.": 2,
+    "Final: ambíguo, incômodo ou macabro; deixa algo sem explicar, em vez de fechar tudo.": 4,
+}
+_PERGUNTA_FINAL_ANTIGA = ("O final é ambíguo, incômodo ou macabro e deixa algo sem explicar, em vez de fechar tudo com "
+                          "uma explicação?")
 
 
 def migrar_regras_garras_novo():
@@ -343,8 +376,14 @@ def migrar_regras_garras_novo():
     modos = cfg.get("modos_narrativos") or []
     atual = {m["nome"]: m["regra"] for m in MODOS_TERROR}
     modos_novos = [{**m, "regra": atual[m["nome"]]} if m.get("regra") == _MODO_RELATO_ANTIGO else m for m in modos]
-    if novas != regras or modos_novos != modos:
-        cfg["regras_escrita"], cfg["modos_narrativos"] = novas, modos_novos
+    estrutura = cfg.get("estrutura") or []
+    estrutura_nova = [ESTRUTURA_GARRAS_NOVO[_ESTRUTURA_ANTIGA[e]] if e in _ESTRUTURA_ANTIGA else e for e in estrutura]
+    final = ((cfg.get("juiz") or {}).get("perguntas") or {}).get("final_incomodo") or {}
+    mudou_final = final.get("pergunta") == _PERGUNTA_FINAL_ANTIGA
+    if mudou_final:
+        final["pergunta"] = PERGUNTA_FINAL
+    if novas != regras or modos_novos != modos or estrutura_nova != estrutura or mudou_final:
+        cfg["regras_escrita"], cfg["modos_narrativos"], cfg["estrutura"] = novas, modos_novos, estrutura_nova
         db.executar("UPDATE canais SET config_json = ? WHERE id = ?", (json.dumps(cfg, ensure_ascii=False), c["id"]))
 
 

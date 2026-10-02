@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from . import clientes, config, custos, db, historia
+from . import clientes, comfy, config, custos, db, historia
 
 VALIDADE_URL = timedelta(days=25)  # o media.pollinations.ai guarda por 30 dias
 
@@ -39,8 +39,9 @@ def _orientacao(canal) -> str:
 
 def _verificar_orcamento(projeto, canal, preco=None):
     teto = float(canal["config"].get("orcamento_usd") or 0.10)
-    custos.verificar(projeto["id"], None, preco if preco is not None else clientes._preco_imagem(config.MODELO_IMAGEM),
-                     teto, "Orçamento do vídeo")
+    if preco is None:
+        preco = 0.0 if clientes.usa_comfy() else clientes._preco_imagem(config.MODELO_IMAGEM)
+    custos.verificar(projeto["id"], None, preco, teto, "Orçamento do vídeo")
 
 
 def _salvar(dados: bytes, destino: Path):
@@ -78,6 +79,11 @@ def url_referencia(item: dict) -> str:
     db.executar("UPDATE biblioteca SET url = ?, url_em = ? WHERE id = ?", (url, db.agora(), item["id"]))
     item["url"], item["url_em"] = url, db.agora()
     return url
+
+
+def ref_envio(item: dict):
+    """O Comfy recebe o arquivo local da ficha/placa; a Pollinations, a URL pública."""
+    return config.BASE / item["arquivo"] if clientes.usa_comfy() else url_referencia(item)
 
 
 def _parecido(a: str, b: str) -> bool:
@@ -157,6 +163,18 @@ def _pasta_bib(canal, tipo, chave) -> Path:
     return config.BIBLIOTECA / canal["slug"] / ("personagens" if tipo == "personagem" else "ambientes") / chave
 
 
+def prompt_referencia(canal: dict, tipo: str, descricao: str) -> str:
+    if tipo == "personagem":
+        # Um retrato só. A antiga folha (frente, lado, costas e três closes) mostrava seis cópias da pessoa, e o
+        # gerador repetia gente na cena ou misturava os rostos quando havia duas referências.
+        miolo = [f"Portrait of one single person: {descricao}",
+                 "Three-quarter body, facing the camera, neutral expression, arms relaxed, full outfit visible",
+                 "Plain light grey background, even soft light, nothing else in the image, only this one person"]
+    else:
+        miolo = [f"Establishing shot of {descricao}", "Empty location, no people, no characters"]
+    return aplicar_estilo(canal, miolo)
+
+
 def _gerar_referencia(projeto: dict, canal: dict, tipo: str, obj: dict, idx: int) -> dict:
     """Ficha (personagem) ou placa (ambiente) nova, salva na biblioteca com a assinatura do estilo."""
     pid = projeto["id"]
@@ -170,17 +188,11 @@ def _gerar_referencia(projeto: dict, canal: dict, tipo: str, obj: dict, idx: int
     _verificar_orcamento(projeto, canal)
     fmt = config.FORMATOS.get(canal["formato"], config.FORMATOS["short"])
     if tipo == "personagem":
-        # Um retrato só. A antiga folha (frente, lado, costas e três closes) mostrava seis cópias da pessoa, e o
-        # gerador repetia gente na cena ou misturava os rostos quando havia duas referências.
-        miolo = [f"Portrait of one single person: {obj['descricao_fixa']}",
-                 "Three-quarter body, facing the camera, neutral expression, arms relaxed, full outfit visible",
-                 "Plain light grey background, even soft light, nothing else in the image, only this one person"]
         w, hh, seed, arquivo = fmt["ficha_largura"], fmt["ficha_altura"], projeto["seed_base"] + idx, "ficha"
     else:
-        miolo = [f"Establishing shot of {obj['descricao_fixa']}", "Empty location, no people, no characters"]
         w, hh = dims_cena(canal)
         seed, arquivo = projeto["seed_base"] + 500 + idx, "placa"
-    prompt = aplicar_estilo(canal, miolo)
+    prompt = prompt_referencia(canal, tipo, obj["descricao_fixa"])
     db.evento(pid, f"Gerando {rotulo.lower()} de {obj.get('nome') or obj['id']}...")
     dados, link, _ = clientes.gerar_imagem(prompt, w, hh, seed, projeto_id=pid, etapa=arquivo)
     destino = _pasta_bib(canal, tipo, chave) / f"{arquivo}.jpg"
@@ -212,32 +224,64 @@ def preparar_referencias(projeto: dict, canal: dict, h: dict) -> dict:
     return refs
 
 
-def montar_prompt(h: dict, c: dict, canal: dict, refs: dict) -> tuple[str, list[str]]:
-    """Ordem do prompt: estilo, orientação, lugar e luz, uma linha por pessoa no lugar dela, clima e destaque."""
-    miolo = [c["prompt_imagem"]]
-    urls = []
-    if c.get("ambiente"):
-        a = next((x for x in h.get("ambientes", []) if x["id"] == c["ambiente"]), None)
-        if a:
-            item = refs.get(("ambiente", a["id"]))
-            if item:
-                urls.append(url_referencia(item))
-                miolo.append(f"Setting: the same place as reference image {len(urls)} (same layout, objects and "
-                             f"materials, seen from this scene's angle): {a['descricao_fixa']}")
-            else:
-                miolo.append(f"Setting: {a['descricao_fixa']}")
+def chaves_referencia(c: dict) -> list[tuple[str, str]]:
+    """Referências escolhidas à mão para a cena, na ordem: [('personagem', id), ('ambiente', id)]."""
+    saida = []
+    for r in c.get("referencias") or []:
+        tipo, _, id_ = str(r).partition(":")
+        if tipo in ("personagem", "ambiente") and id_ and (tipo, id_) not in saida:
+            saida.append((tipo, id_))
+    return saida[:historia.MAX_REFERENCIAS]
+
+
+def montar_prompt(h: dict, c: dict, canal: dict, refs: dict) -> tuple[str, list]:
+    """Ordem do prompt: estilo, orientação, referências escolhidas (a primeira antes), lugar e luz, uma linha por
+    pessoa no lugar dela, clima e destaque. Sem escolha manual, as referências vêm do ambiente e das pessoas da cena."""
     fichas = {x["id"]: x for x in h.get("personagens", [])}
+    ambientes = {x["id"]: x for x in h.get("ambientes", [])}
+    manual = [k for k in chaves_referencia(c) if refs.get(k)]
+    urls = [ref_envio(refs[k]) for k in manual]
+    miolo = []
+    if manual:
+        # Cada referência é apresentada pelo número, na ordem escolhida, antes de qualquer outra coisa da cena.
+        for i, (tipo, id_) in enumerate(manual, 1):
+            obj = (fichas if tipo == "personagem" else ambientes).get(id_, {})
+            quem = "the person" if tipo == "personagem" else "the place"
+            miolo.append(f"Reference image {i} shows {quem}: {obj.get('descricao_fixa', id_)}")
+    miolo.append(c["prompt_imagem"])
+
+    def numero(chave):
+        """Número da referência desta chave no envio (None se não há imagem para ela)."""
+        item = refs.get(chave)
+        if not item:
+            return None
+        if manual:
+            return manual.index(chave) + 1 if chave in manual else None
+        urls.append(ref_envio(item))
+        return len(urls)
+
+    # Placa escolhida à mão manda no lugar da cena (é para isso que serve a escolha)
+    escolhido = next((id_ for tipo, id_ in manual if tipo == "ambiente"), None)
+    a = ambientes.get(escolhido or c.get("ambiente"))
+    if a:
+        n = numero(("ambiente", a["id"]))
+        if n:
+            miolo.append(f"Setting: the same place as reference image {n} (same layout, objects and "
+                         f"materials, seen from this scene's angle): {a['descricao_fixa']}")
+        else:
+            miolo.append(f"Setting: {a['descricao_fixa']}")
     pessoas = [p for p in historia.pessoas_cena(c) if p["id"] in fichas]
     if len(pessoas) > 1:
         miolo.append(f"Exactly {len(pessoas)} people in the image, each clearly distinct")
-    if any(refs.get(("personagem", p["id"])) for p in pessoas):
+    linhas, algum_retrato = [], False
+    for p in pessoas:
+        n = numero(("personagem", p["id"]))
+        algum_retrato = algum_retrato or bool(n)
+        linhas.append(historia.descrever_pessoa(fichas[p["id"]], p, n))
+    if algum_retrato:
         miolo.append("Portrait references are for identity only (face, hair, body, clothes); ignore their pose, "
                      "framing and plain background")
-    for p in pessoas:
-        item = refs.get(("personagem", p["id"]))
-        if item:
-            urls.append(url_referencia(item))
-        miolo.append(historia.descrever_pessoa(fichas[p["id"]], p, len(urls) if item else None))
+    miolo += linhas
     return aplicar_estilo(canal, miolo, c.get("destaque")), urls
 
 
@@ -271,6 +315,12 @@ def gerar_todas(projeto: dict, canal: dict, h: dict) -> dict:
     aviso = clientes.verificar_preco_imagem()
     if aviso:
         db.evento(projeto["id"], aviso, "aviso")
+    if config.motor_imagem() == "comfy" and not config.SIMULACAO:
+        if comfy.no_ar():
+            db.evento(projeto["id"], f"Imagens no ComfyUI ({config.comfy_url()}).")
+        else:
+            db.evento(projeto["id"], "ComfyUI fora do ar (Colab desligado ou COMFY_URL velha no .env); "
+                                     "as imagens vão para a Pollinations.", "aviso")
     refs = preparar_referencias(projeto, canal, h)
     feitas = {r["n"] for r in db.todos("SELECT n FROM cenas WHERE projeto_id = ? AND status = 'ok'", (projeto["id"],))}
     pendentes = [c for c in h["cenas"] if c["n"] not in feitas and not c.get("mesma_imagem_de")]
@@ -289,7 +339,7 @@ def gerar_todas(projeto: dict, canal: dict, h: dict) -> dict:
             erros.append((c["n"], str(e)))
             db.evento(projeto["id"], f"Cena {c['n']} falhou: {e}", "erro")
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=config.IMAGENS_SIMULTANEAS) as ex:
         list(ex.map(uma, pendentes))
     copiar_reaproveitadas(projeto, h)
     folha_contato(projeto, h)
@@ -327,11 +377,12 @@ def refazer(projeto: dict, canal: dict, h: dict, n: int) -> Path:
     versao = (atual["versao"] + 1) if atual else 0
     # Só usa a ficha/placa criada para ESTE projeto (bib_chave); nunca cai numa entrada antiga com o mesmo id.
     refs = {}
+    escolhidas = chaves_referencia(c)
     for tipo, lista in (("personagem", h.get("personagens", [])), ("ambiente", h.get("ambientes", []))):
         for obj in lista:
             if not obj.get("bib_chave"):
                 continue
-            if tipo == "ambiente" and obj["id"] not in historia.ambientes_recorrentes(h):
+            if tipo == "ambiente" and obj["id"] not in historia.ambientes_recorrentes(h)                     and (tipo, obj["id"]) not in escolhidas:
                 continue
             item = db.um("SELECT * FROM biblioteca WHERE canal_id = ? AND tipo = ? AND chave = ?",
                          (canal["id"], tipo, obj["bib_chave"]))
