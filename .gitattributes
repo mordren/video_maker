@@ -7,3 +7,6 @@
 # shebang (#!/usr/bin/env bash\r) e o parser do systemd.
 *.sh text eol=lf
 *.service text eol=lf
+
+# Comando e skills do ZeroClaw (TV box, Linux): copiados como estão para lá
+servidor/zeroclaw/** text eol=lf
