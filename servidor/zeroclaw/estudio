@@ -1,0 +1,660 @@
+#!/usr/bin/env python3
+"""Estúdio de vídeo (Cortador, Histórias e Music) pela API, para o agente do
+Telegram (ZeroClaw na TV box). Só a biblioteca padrão do Python.
+
+A primeira linha da saída é sempre "HTTP <código>" (0 = sem conexão); depois
+vem um resumo curto em texto. O endereço vem de ESTUDIO_URL ou do padrão abaixo.
+
+  estudio status                         o que está rodando agora (Cortador, Histórias, Music)
+  estudio custos                         gasto de hoje, 7 e 30 dias
+
+  estudio cortes canais                  canais de publicação (info, br_semfim...)
+  estudio cortes novo --url LINK --canal info [--visual PERFIL]
+  estudio cortes lista [--n 8]
+  estudio cortes ver TRABALHO            cortes do trabalho (TRABALHO pode ser "ultimo")
+  estudio cortes produzir TRABALHO CORTE [--formato dinamico|transparente|imagens] [--legenda new|old] [--canal NOME]
+  estudio cortes descartar|voltar TRABALHO CORTE
+  estudio cortes titulo TRABALHO CORTE "Título novo"
+  estudio cortes canal TRABALHO CORTE NOME
+  estudio cortes enviar TRABALHO CORTE --confirmado       PUBLICA (fila do Publicador)
+  estudio cortes cancelar|repetir TRABALHO
+  estudio cortes remover TRABALHO --confirmado
+
+  estudio historias canais
+  estudio historias nova --canal SLUG --assunto "texto" [--revisar]
+  estudio historias lista [--n 8]
+  estudio historias ver ID               (ID pode ser "ultima")
+  estudio historias texto ID
+  estudio historias eventos ID [--n 15]
+  estudio historias aprovar-historia|aprovar-imagens|refazer-historia|recomecar|refazer-imagens|continuar ID
+  estudio historias refazer-cena ID N [--prompt "descrição nova da imagem"]
+  estudio historias enviar ID --confirmado                PUBLICA (fila do Publicador)
+  estudio historias excluir ID --confirmado
+
+  estudio music estado
+  estudio music faixas
+  estudio music usar todas | "Faixa 1.mp3, Faixa 2.mp3"
+  estudio music ajustar chave=valor [chave=valor ...]     ex.: segundos_imagem=15 ordem=aleatoria texto.ligado=false
+  estudio music previa | renderizar [--nome NOME] | progresso | cancelar | saidas
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE = (os.environ.get("ESTUDIO_URL") or "http://192.168.31.133:8090").rstrip("/")
+EM_ANDAMENTO_HIST = {"na_fila", "escrevendo", "revisando_texto", "decupando", "gerando_imagens", "refazendo",
+                     "narrando", "montando"}
+STATUS_HIST = {
+    "na_fila": "na fila", "escrevendo": "escrevendo a história", "revisando_texto": "revisando o texto",
+    "decupando": "dividindo em cenas", "aguardando_historia": "esperando aprovar a história",
+    "gerando_imagens": "gerando imagens", "refazendo": "refazendo cena", "aguardando_imagens": "esperando aprovar as imagens",
+    "narrando": "narrando", "montando": "montando o vídeo", "pronto": "pronto", "erro": "erro",
+    "interrompido": "interrompido (use continuar)",
+}
+
+
+# ---------------------------------------------------------------- HTTP
+
+class Falha(Exception):
+    def __init__(self, status, texto):
+        super().__init__(texto)
+        self.status, self.texto = status, texto
+
+
+def chamar(metodo, caminho, corpo=None, tempo=40):
+    dados = json.dumps(corpo, ensure_ascii=False).encode("utf-8") if corpo is not None else None
+    req = urllib.request.Request(BASE + caminho, data=dados, method=metodo,
+                                 headers={"Accept": "application/json", "User-Agent": "zeroclaw-estudio/1.0"})
+    if dados is not None:
+        req.add_header("Content-Type", "application/json; charset=utf-8")
+    for tentativa in (1, 2):  # leitura repete uma vez em erro de rede ou 5xx; ação nunca (não duplica)
+        try:
+            with urllib.request.urlopen(req, timeout=tempo) as r:
+                bruto = r.read().decode("utf-8", "replace")
+                return r.status, (json.loads(bruto) if bruto.strip() else None)
+        except urllib.error.HTTPError as e:
+            bruto = e.read().decode("utf-8", "replace")
+            if e.code >= 500 and metodo == "GET" and tentativa == 1:
+                continue
+            try:
+                d = json.loads(bruto)
+                msg = d.get("erro") or d.get("detail") or bruto
+            except (ValueError, AttributeError):
+                msg = bruto[:400]
+            raise Falha(e.code, msg if isinstance(msg, str) else json.dumps(msg, ensure_ascii=False)[:400])
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if metodo == "GET" and tentativa == 1:
+                continue
+            raise Falha(0, "sem conexão com o Estúdio (%s): %s" % (BASE, getattr(e, "reason", e)))
+
+
+def get(caminho):
+    return chamar("GET", caminho)[1]
+
+
+def link(caminho):
+    return BASE + caminho if caminho else ""
+
+
+def usd(v):
+    return "US$ %.4f" % float(v or 0)
+
+
+def mmss(s):
+    s = int(round(float(s or 0)))
+    return "%d:%02d" % (s // 60, s % 60) if s < 3600 else "%d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60)
+
+
+def precisa_confirmar(a, o_que):
+    if not a.confirmado:
+        raise Falha(400, "%s precisa de --confirmado. Só use quando o João pedir isso com todas as letras." % o_que)
+
+
+# ---------------------------------------------------------------- geral
+
+def cmd_status(a):
+    st, e = chamar("GET", "/api/estado")
+    print("HTTP %s" % st)
+    trabs = e.get("trabalhos") or []
+    rodando = [t for t in trabs if t.get("status") in ("processando", "aguardando")]
+    prod = e.get("produzindo_agora")
+    print("Cortador: %s; %d trabalho(s) na fila ou rodando%s" % (
+        "produzindo o corte %s do trabalho %s" % (prod[1], prod[0]) if prod else "nenhum corte sendo produzido agora",
+        len(rodando), "" if not e.get("pouca_ram") else "; AVISO: " + e["pouca_ram"]))
+    for t in rodando[:5]:
+        print("  - %s [%s] %s %s" % (t["id"], t["status"], t.get("etapa") or "", (t.get("titulo_video") or "")[:60]))
+    print("Publicador: %s" % ("no ar" if e.get("publicador_ok") else "FORA DO AR"))
+    try:
+        proj = get("/api/projetos")
+        ativos = [p for p in proj if p["status"] in EM_ANDAMENTO_HIST]
+        esperando = [p for p in proj if p["status"] in ("aguardando_historia", "aguardando_imagens")]
+        print("Histórias: %d rodando, %d esperando aprovação" % (len(ativos), len(esperando)))
+        for p in (ativos + esperando)[:5]:
+            print("  - #%s %s: %s" % (p["id"], STATUS_HIST.get(p["status"], p["status"]), (p.get("titulo") or p["assunto"])[:60]))
+    except Falha as f:
+        print("Histórias: fora do ar (%s)" % f.texto[:120])
+    try:
+        g = get("/api/gerador/progresso")
+        print("Music: " + (_progresso_music(g) if g else "nada renderizando"))
+    except Falha as f:
+        print("Music: fora do ar (%s)" % f.texto[:120])
+    return 0
+
+
+def cmd_custos(a):
+    st, c = chamar("GET", "/api/estudio/custos")
+    print("HTTP %s" % st)
+    p = c.get("periodos") or {}
+    print("Cortador (estimado pelo Estúdio): hoje %s · 7 dias %s · 30 dias %s · total %s" % (
+        usd(p.get("hoje")), usd(p.get("7 dias")), usd(p.get("30 dias")), usd(p.get("total"))))
+    for conta in c.get("contas") or []:
+        if conta.get("erro"):
+            print("Conta %s (%s): erro %s" % (conta["servico"], "/".join(conta["usado_por"]), conta["erro"]))
+        elif conta["servico"] == "openrouter":
+            print("Conta OpenRouter (%s): hoje US$ %.2f · semana US$ %.2f · mês US$ %.2f%s" % (
+                "/".join(conta["usado_por"]), conta.get("usage_daily") or 0, conta.get("usage_weekly") or 0,
+                conta.get("usage_monthly") or 0,
+                " · resta US$ %.2f" % conta["limit_remaining"] if conta.get("limit_remaining") is not None else ""))
+        else:
+            saldos = ", ".join("%s %s" % (s.get("total_balance"), s.get("currency")) for s in conta.get("saldos") or [])
+            print("Conta DeepSeek (%s): saldo %s" % ("/".join(conta["usado_por"]), saldos or "?"))
+    try:
+        h = get("/api/custos")
+        print("Histórias (todas as chamadas): total %s" % usd(h.get("total")))
+    except Falha:
+        pass
+    return 0
+
+
+# ---------------------------------------------------------------- Cortador
+
+FORMATOS = ("dinamico", "transparente", "imagens")
+STATUS_CORTE = {"proposta": "proposta (ainda não produzido)", "produzindo": "produzindo", "refazendo": "refazendo",
+                "revisar": "PRONTO para revisar", "na_fila": "enviado ao Publicador", "descartado": "descartado"}
+
+
+def _youtube(url):
+    """Aceita link completo, youtu.be, shorts ou só o id; tira o que vem depois do id (&t=, &list=...)."""
+    url = url.strip().strip("<>\"'")
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})", url)
+    if m:
+        return "https://www.youtube.com/watch?v=" + m.group(1)
+    if re.fullmatch(r"[\w-]{11}", url):
+        return "https://www.youtube.com/watch?v=" + url
+    return url
+
+
+def _trabalho_id(tid):
+    if tid.lower() in ("ultimo", "último", "ultima", "última"):
+        lista = get("/api/trabalhos")["trabalhos"]
+        if not lista:
+            raise Falha(404, "não há trabalhos")
+        return lista[0]["id"]
+    return tid
+
+
+def cmd_cortes(a):
+    acao = a.acao
+    if acao == "canais":
+        st, d = chamar("GET", "/api/estudio/canais")
+        print("HTTP %s" % st)
+        for c in d["canais"]:
+            p = c.get("perfil") or {}
+            print("- %s: %s%s · visual %s · %s a %ss · formatos %s%s" % (
+                c["nome"], p.get("nome_exibicao") or c["nome"],
+                "" if c.get("conectado") else " (DESCONECTADO no Publicador)" if c.get("no_publicador") else " (fora do Publicador)",
+                c.get("visual") or "-", p.get("duracao_min_s", "?"), p.get("duracao_max_s", "?"),
+                ", ".join(p.get("formatos") or []) or "-", (" · " + p["nicho"]) if p.get("nicho") else ""))
+        print("Visuais: " + ", ".join(v["nome"] for v in d.get("visuais") or []))
+        return 0
+    if acao == "novo":
+        if not a.url or not a.canal:
+            raise Falha(400, "use: estudio cortes novo --url LINK --canal NOME")
+        corpo = {"url": _youtube(a.url), "canal": a.canal}
+        if a.visual:
+            corpo["perfil"] = a.visual
+        st, d = chamar("POST", "/api/trabalhos", corpo)
+        print("HTTP %s" % st)
+        print("Trabalho %s criado para %s (%s). A Fase 1 escolhe os trechos; veja com: estudio cortes ver %s" % (
+            d["id"], a.canal, corpo["url"], d["id"]))
+        return 0
+    if acao == "lista":
+        st, d = chamar("GET", "/api/trabalhos")
+        print("HTTP %s" % st)
+        for t in d["trabalhos"][:a.n]:
+            print("- %s [%s%s] %s · canal %s · propostas %d, prontos p/ revisar %d, produzindo %d, enviados %d" % (
+                t["id"], t["status"], (": " + t["etapa"]) if t.get("etapa") else "", (t.get("titulo_video") or "")[:55],
+                t.get("canal") or "-", t["propostas"], t["revisar"], t["produzindo"], t["na_fila"]))
+        return 0
+
+    tid = _trabalho_id(a.trabalho) if a.trabalho else None
+    if acao == "ver":
+        st, t = chamar("GET", "/api/trabalhos/%s" % urllib.parse.quote(tid))
+        print("HTTP %s" % st)
+        print("Trabalho %s [%s%s] %s · canal %s · visual %s" % (t["id"], t["status"], (": " + t["etapa"]) if t.get("etapa") else "",
+                                                               (t.get("titulo_video") or "")[:70], t.get("canal") or "-", t.get("perfil")))
+        if t.get("mensagem"):
+            print("Mensagem: " + t["mensagem"][:300])
+        mostrar = [c for c in t["cortes"] if a.todos or c.get("status") != "descartado"]
+        for c in mostrar:
+            linha = "- %s · %s · %ss · nota %s · %s" % (
+                c["id"], STATUS_CORTE.get(c.get("status"), c.get("status")), round(c.get("duracao") or 0),
+                "%.2f" % c["nota"] if c.get("nota") is not None else "-", c.get("titulo_publicacao") or c.get("gancho") or "")
+            extra = []
+            if c.get("formato") or c.get("formato_sugerido"):
+                extra.append("formato %s" % (c.get("formato") or ("sugerido " + c["formato_sugerido"])))
+            if c.get("canal"):
+                extra.append("canal %s" % c["canal"])
+            if c.get("mensagem"):
+                extra.append(c["mensagem"][:120])
+            print(linha[:220] + ("\n    " + " · ".join(extra) if extra else ""))
+            for k, rot in (("video", "vídeo"), ("previa", "prévia"), ("capa", "capa")):
+                if (c.get("links") or {}).get(k):
+                    print("    %s: %s" % (rot, link(c["links"][k])))
+        escondidos = len(t["cortes"]) - len(mostrar)
+        if escondidos:
+            print("(%d descartado(s) escondidos; --todos mostra)" % escondidos)
+        return 0
+    if acao in ("cancelar", "repetir", "remover"):
+        if acao == "remover":
+            precisa_confirmar(a, "Remover o trabalho (apaga os arquivos)")
+        st, _ = chamar("POST", "/api/trabalhos/%s/%s" % (urllib.parse.quote(tid), acao))
+        print("HTTP %s" % st)
+        print({"cancelar": "Cancelado.", "repetir": "De volta na fila.", "remover": "Removido."}[acao])
+        return 0
+
+    if not a.corte:
+        raise Falha(400, "informe o corte (ex.: bloco_006); veja os ids com: estudio cortes ver %s" % tid)
+    base = "/api/cortes/%s/%s" % (urllib.parse.quote(tid), urllib.parse.quote(a.corte))
+    if acao == "produzir":
+        corpo = {"formato": a.formato or "dinamico"}
+        if a.legenda:
+            corpo["legenda"] = a.legenda
+        if a.canal:
+            corpo["canal"] = a.canal
+        if a.visual:
+            corpo["perfil"] = a.visual
+        st, _ = chamar("POST", base + "/produzir", corpo)
+        print("HTTP %s" % st)
+        print("Corte %s foi para a produção (%s). Quando ficar pronto aparece como PRONTO em: estudio cortes ver %s" % (
+            a.corte, corpo["formato"], tid))
+        return 0
+    if acao in ("descartar", "voltar"):
+        st, _ = chamar("POST", base + "/" + acao, {})
+        print("HTTP %s" % st)
+        print("Descartado." if acao == "descartar" else "Voltou para a lista.")
+        return 0
+    if acao == "titulo":
+        if not a.valor:
+            raise Falha(400, "use: estudio cortes titulo TRABALHO CORTE \"Título novo\"")
+        st, _ = chamar("POST", base, {"titulo_publicacao": a.valor})
+        print("HTTP %s" % st)
+        print("Título trocado.")
+        return 0
+    if acao == "canal":
+        if not a.valor:
+            raise Falha(400, "use: estudio cortes canal TRABALHO CORTE NOME")
+        st, _ = chamar("POST", base, {"canal": a.valor})
+        print("HTTP %s" % st)
+        print("Canal trocado para %s." % a.valor)
+        return 0
+    if acao == "enviar":
+        precisa_confirmar(a, "Enviar para publicar")
+        st, d = chamar("POST", base + "/enviar", {}, tempo=660)
+        print("HTTP %s" % st)
+        print("Enviado para a fila do Publicador: %s" % d.get("arquivo"))
+        return 0
+    raise Falha(400, "ação desconhecida: " + acao)
+
+
+# ---------------------------------------------------------------- Histórias
+
+def _projeto_id(pid):
+    if str(pid).lower() in ("ultima", "última", "ultimo", "último"):
+        lista = get("/api/projetos")
+        if not lista:
+            raise Falha(404, "não há histórias")
+        return lista[0]["id"]
+    if not str(pid).lstrip("#").isdigit():
+        raise Falha(400, "id da história é um número (ex.: 12) ou \"ultima\"")
+    return int(str(pid).lstrip("#"))
+
+
+def _resumo_projeto(p):
+    print("#%s %s · %s · canal %s · custo %s" % (p["id"], (p.get("historia") or {}).get("titulo") or p["assunto"],
+                                              STATUS_HIST.get(p["status"], p["status"]), p["canal"]["nome"],
+                                              usd((p.get("custos") or {}).get("total"))))
+    print("Assunto: " + p["assunto"])
+    if p.get("modo"):
+        print("Modo narrativo: " + p["modo"])
+    if p.get("ressalva"):
+        print("ATENÇÃO, ressalva do juiz: " + p["ressalva"][:300])
+    if p.get("erro"):
+        print("Erro: " + p["erro"][:300])
+    cenas = p.get("cenas") or []
+    if cenas:
+        ok = sum(1 for c in cenas if c.get("status") == "ok")
+        print("Cenas com imagem: %d de %d" % (ok, len(cenas)))
+    arq = p.get("arquivos") or {}
+    for k, rot in (("video", "vídeo"), ("folha", "folha de contato (todas as imagens)"), ("narracao", "narração")):
+        if arq.get(k):
+            print("%s: %s" % (rot.capitalize(), link(arq[k])))
+    pub = p.get("publicador")
+    if pub:
+        print("Publicador: " + json.dumps(pub, ensure_ascii=False)[:200])
+    i = p["id"]
+    proximo = {"aguardando_historia": "estudio historias aprovar-historia %s (leia antes com: estudio historias texto %s)" % (i, i),
+               "aguardando_imagens": "estudio historias aprovar-imagens %s (ou refazer-cena %s N)" % (i, i),
+               "erro": "estudio historias continuar %s (ou recomecar %s)" % (i, i),
+               "interrompido": "estudio historias continuar %s" % i,
+               "pronto": "mostrar o vídeo ao João; publicar só se ele mandar (enviar %s --confirmado)" % i}.get(p["status"])
+    if proximo:
+        print("Próximo passo: " + proximo)
+
+
+def cmd_historias(a):
+    acao = a.acao
+    if acao == "canais":
+        st, d = chamar("GET", "/api/canais")
+        print("HTTP %s" % st)
+        for c in d:
+            print("- %s (slug %s, id %s): %s · formato %s · %s vídeo(s)%s" % (
+                c["nome"], c["slug"], c["id"], (c.get("descricao") or "")[:90], c.get("formato"), c.get("projetos", 0),
+                " · publica em " + c["config"]["publicador_canal"] if (c.get("config") or {}).get("publicador_canal") else ""))
+        return 0
+    if acao == "nova":
+        if not a.canal or not a.assunto:
+            raise Falha(400, "use: estudio historias nova --canal SLUG --assunto \"texto\"")
+        canal = int(a.canal) if a.canal.isdigit() else a.canal
+        st, d = chamar("POST", "/api/projetos", {"canal": canal, "assunto": a.assunto, "automatico": not a.revisar})
+        print("HTTP %s" % st)
+        print("História #%s criada (%s). Leva uns 5 a 10 minutos até o vídeo; acompanhe com: estudio historias ver %s" % (
+            d["id"], "vai parar para você aprovar a história e as imagens" if a.revisar else "automática até o vídeo pronto",
+            d["id"]))
+        return 0
+    if acao == "lista":
+        st, d = chamar("GET", "/api/projetos")
+        print("HTTP %s" % st)
+        for p in d[:a.n]:
+            print("- #%s %s · %s · %s · %s%s" % (p["id"], (p.get("titulo") or p["assunto"])[:60], p["canal"],
+                                                STATUS_HIST.get(p["status"], p["status"]), usd(p.get("custo")),
+                                                " · ressalva" if p.get("ressalva") else ""))
+        return 0
+
+    pid = _projeto_id(a.id)
+    if acao == "ver":
+        st, p = chamar("GET", "/api/projetos/%s" % pid)
+        print("HTTP %s" % st)
+        _resumo_projeto(p)
+        return 0
+    if acao == "texto":
+        st, p = chamar("GET", "/api/projetos/%s" % pid)
+        print("HTTP %s" % st)
+        h = p.get("historia") or {}
+        if not h:
+            print("A história ainda não foi escrita (%s)." % STATUS_HIST.get(p["status"], p["status"]))
+            return 0
+        print("Título: %s" % h.get("titulo", ""))
+        cenas = h.get("cenas") or []
+        if cenas:
+            for c in cenas:
+                print("[cena %s] %s" % (c.get("n"), c.get("narracao", "")))
+        else:
+            print(h.get("narracao", ""))
+        return 0
+    if acao == "eventos":
+        st, ev = chamar("GET", "/api/projetos/%s/eventos" % pid)
+        print("HTTP %s" % st)
+        for e in ev[-a.n:]:
+            print("%s %s%s" % ((e.get("criado_em") or "")[11:16], "[%s] " % e["nivel"] if e.get("nivel") not in (None, "info") else "",
+                               (e.get("msg") or "")[:240]))
+        return 0
+    if acao in ("aprovar-historia", "aprovar-imagens", "refazer-historia", "recomecar", "refazer-imagens", "continuar"):
+        st, _ = chamar("POST", "/api/projetos/%s/%s" % (pid, acao), {})
+        print("HTTP %s" % st)
+        print({"aprovar-historia": "História aprovada; gerando as imagens.",
+               "aprovar-imagens": "Imagens aprovadas; narrando e montando o vídeo.",
+               "refazer-historia": "Escrevendo a história de novo.",
+               "recomecar": "Recomeçando do zero (história, imagens e vídeo).",
+               "refazer-imagens": "Refazendo todas as imagens.",
+               "continuar": "Continuando de onde parou."}[acao])
+        return 0
+    if acao == "refazer-cena":
+        if not a.n_cena:
+            raise Falha(400, "use: estudio historias refazer-cena ID N [--prompt \"...\"]")
+        corpo = {"prompt_imagem": a.prompt} if a.prompt else {}
+        st, _ = chamar("POST", "/api/projetos/%s/cenas/%s/refazer" % (pid, a.n_cena), corpo)
+        print("HTTP %s" % st)
+        print("Cena %s sendo refeita. Depois aprove com: estudio historias aprovar-imagens %s" % (a.n_cena, pid))
+        return 0
+    if acao == "enviar":
+        precisa_confirmar(a, "Enviar para publicar")
+        st, d = chamar("POST", "/api/projetos/%s/publicador" % pid, {}, tempo=660)
+        print("HTTP %s" % st)
+        print("Enviado ao Publicador: " + json.dumps(d, ensure_ascii=False)[:300])
+        return 0
+    if acao == "excluir":
+        precisa_confirmar(a, "Excluir a história (apaga os arquivos)")
+        st, _ = chamar("DELETE", "/api/projetos/%s" % pid)
+        print("HTTP %s" % st)
+        print("Excluída.")
+        return 0
+    raise Falha(400, "ação desconhecida: " + acao)
+
+
+# ---------------------------------------------------------------- Music
+
+def _progresso_music(g):
+    if g["estado"] == "rodando":
+        return "%s %s: %d%% (%s), falta %s" % ("prévia" if g["tipo"] == "previa" else "vídeo", g.get("etapa") or "",
+                                             round(g["progresso"] * 100), mmss(g.get("decorrido")),
+                                             mmss(g["restante"]) if g.get("restante") is not None else "?")
+    txt = "último %s: %s" % ("prévia" if g["tipo"] == "previa" else "vídeo", g["estado"])
+    if g.get("erro"):
+        txt += " (%s)" % g["erro"][:200]
+    res = g.get("resultado") or {}
+    if res.get("video"):
+        txt += " (%s) · %s" % (mmss(res.get("duracao")), link(res["video"]))
+    for aviso in (g.get("avisos") or [])[:3]:
+        txt += "\n  aviso: " + str(aviso)[:160]
+    return txt
+
+
+def _valor(v):
+    low = v.strip().lower()
+    if low in ("true", "sim", "ligado", "on"):
+        return True
+    if low in ("false", "nao", "não", "desligado", "off"):
+        return False
+    if low in ("null", "none", "padrao", "padrão"):
+        return None
+    try:
+        return int(v) if re.fullmatch(r"-?\d+", v.strip()) else float(v.replace(",", ".")) if re.fullmatch(r"-?\d+[.,]\d+", v.strip()) else v
+    except ValueError:
+        return v
+
+
+def cmd_music(a):
+    acao = a.acao
+    if acao == "progresso":
+        st, g = chamar("GET", "/api/gerador/progresso")
+        print("HTTP %s" % st)
+        print(_progresso_music(g) if g else "Nada renderizando nem renderizado desde que o serviço subiu.")
+        return 0
+    if acao == "cancelar":
+        st, _ = chamar("POST", "/api/gerador/cancelar", {})
+        print("HTTP %s" % st)
+        print("Renderização cancelada.")
+        return 0
+
+    st, e = chamar("GET", "/api/gerador")
+    cfg, faixas = e["config"], [f["nome"] for f in e["faixas"]]
+    if acao == "estado":
+        print("HTTP %s" % st)
+        total = sum(f.get("duracao") or 0 for f in e["faixas"])
+        print("Faixas no vídeo: %d (%s) de %d na pasta · imagens: %d · clipes: %d" % (
+            len(faixas), mmss(total), len(e["na_pasta"]), len(e["imagens"]), len(e["clipes"])))
+        t = cfg.get("texto") or {}
+        print("Config: modo %s · ordem %s · %ss por imagem · transição %ss · crossfade %ss · ken_burns %s · ajuste %s · "
+              "vinheta %s · grao %s · chuva %s · texto %s (%s) · nome_saida %s%s" % (
+                  cfg["modo"], cfg["ordem"], cfg["segundos_imagem"], cfg["transicao_s"], cfg["crossfade_s"],
+                  cfg["ken_burns"], cfg["ajuste"], cfg["vinheta"], cfg["grao"], cfg["chuva"],
+                  "ligado" if t.get("ligado") else "desligado", t.get("posicao"), cfg["nome_saida"],
+                  " · clipe " + cfg["clipe"] if cfg["modo"] == "clipe" else ""))
+        print("Saída: %s · %s fps · codificador %s · volume alvo %s LUFS" % (
+            e.get("resolucao"), e.get("fps"), (e.get("codificador") or {}).get("rotulo", "?"), e.get("alvo_lufs")))
+        if e.get("trabalho"):
+            print("Agora: " + _progresso_music(e["trabalho"]))
+        if e.get("clipes") and cfg["modo"] == "clipe" or a.n_detalhe:
+            print("Clipes: " + ", ".join(c["nome"] for c in e["clipes"]))
+        return 0
+    if acao == "faixas":
+        print("HTTP %s" % st)
+        no_video = set(faixas)
+        for i, f in enumerate(e["faixas"], 1):
+            print("%d. %s (%s)" % (i, f["nome"], mmss(f.get("duracao"))))
+        fora = [f for f in e["na_pasta"] if f["nome"] not in no_video]
+        if fora:
+            print("Na pasta mas fora do vídeo: " + ", ".join(f["nome"] for f in fora))
+        return 0
+    if acao == "saidas":
+        print("HTTP %s" % st)
+        if not e["saidas"]:
+            print("Nenhum vídeo renderizado ainda.")
+        for s in e["saidas"][:a.n]:
+            print("- %s · %.0f MB · %s · %s" % (s["nome"], s["tamanho"] / 1e6, s["data"].replace("T", " "), link(s["url"])))
+        return 0
+    if acao == "usar":
+        alvo = (a.valores or [""])[0] if len(a.valores or []) == 1 else ", ".join(a.valores or [])
+        if alvo.strip().lower() in ("todas", "tudo", "todas as faixas"):
+            nomes = [f["nome"] for f in e["na_pasta"]]
+        else:
+            pedidas = [x.strip() for x in alvo.split(",") if x.strip()]
+            por_nome = {f["nome"].lower(): f["nome"] for f in e["na_pasta"]}
+            por_titulo = {(f.get("titulo") or "").lower(): f["nome"] for f in e["na_pasta"]}
+            nomes, faltam = [], []
+            for x in pedidas:
+                n = por_nome.get(x.lower()) or por_titulo.get(x.lower())
+                (nomes if n else faltam).append(n or x)
+            if faltam:
+                raise Falha(400, "faixa(s) não encontrada(s): %s. Veja os nomes com: estudio music faixas" % ", ".join(faltam))
+        if not nomes:
+            raise Falha(400, "nenhuma faixa escolhida")
+        st, _ = chamar("PUT", "/api/gerador/config", {"config": cfg, "faixas": nomes})
+        print("HTTP %s" % st)
+        print("O vídeo vai usar %d faixa(s), nesta ordem: %s" % (len(nomes), ", ".join(nomes)))
+        return 0
+    if acao == "ajustar":
+        if not a.valores:
+            raise Falha(400, "use: estudio music ajustar chave=valor (ex.: segundos_imagem=15)")
+        novo = json.loads(json.dumps(cfg))
+        for par in a.valores:
+            chave, sep, v = par.partition("=")
+            if not sep:
+                raise Falha(400, "use chave=valor: %r" % par)
+            partes = chave.strip().split(".")
+            alvo = novo
+            for p in partes[:-1]:
+                alvo = alvo.setdefault(p, {})
+            if partes[-1] not in alvo and partes[0] != "texto":
+                raise Falha(400, "chave desconhecida: %s. Válidas: %s, texto.ligado/posicao/tamanho/cor" % (
+                    chave, ", ".join(k for k in cfg if k not in ("pastas", "texto"))))
+            alvo[partes[-1]] = _valor(v)
+        st, _ = chamar("PUT", "/api/gerador/config", {"config": novo, "faixas": faixas})
+        depois = get("/api/gerador")["config"]
+        print("HTTP %s" % st)
+        for par in a.valores:
+            chave = par.partition("=")[0].strip()
+            v = depois
+            for p in chave.split("."):
+                v = (v or {}).get(p) if isinstance(v, dict) else None
+            print("%s = %s" % (chave, json.dumps(v, ensure_ascii=False)))
+        return 0
+    if acao in ("previa", "renderizar"):
+        if a.nome:
+            cfg = dict(cfg, nome_saida=a.nome)
+        st, g = chamar("POST", "/api/gerador/" + acao, {"config": cfg, "faixas": faixas})
+        print("HTTP %s" % st)
+        print("%s começou (%d faixas). Acompanhe com: estudio music progresso" % (
+            "Prévia" if acao == "previa" else "Vídeo final '%s'" % cfg["nome_saida"], len(faixas)))
+        return 0
+    raise Falha(400, "ação desconhecida: " + acao)
+
+
+# ---------------------------------------------------------------- argumentos
+
+class Argumentos(argparse.ArgumentParser):
+    """Erro de uso também na saída normal, no mesmo formato (o agente não lê a saída de erro)."""
+
+    def error(self, message):
+        print("HTTP 400\nErro de uso: %s\n" % message)
+        self.print_usage(sys.stdout)
+        sys.exit(2)
+
+
+def main():
+    p = Argumentos(prog="estudio", description="Estúdio de vídeo pela API (Cortador, Histórias, Music)")
+    sub = p.add_subparsers(dest="area", required=True)
+    sub.add_parser("status")
+    sub.add_parser("custos")
+
+    c = sub.add_parser("cortes")
+    c.add_argument("acao", choices=["canais", "novo", "lista", "ver", "produzir", "descartar", "voltar", "titulo", "canal",
+                                    "enviar", "cancelar", "repetir", "remover"])
+    c.add_argument("trabalho", nargs="?")
+    c.add_argument("corte", nargs="?")
+    c.add_argument("valor", nargs="?")
+    c.add_argument("--url")
+    c.add_argument("--canal")
+    c.add_argument("--visual")
+    c.add_argument("--formato", choices=FORMATOS)
+    c.add_argument("--legenda", choices=["new", "old"])
+    c.add_argument("--n", type=int, default=8)
+    c.add_argument("--todos", action="store_true")
+    c.add_argument("--confirmado", action="store_true")
+
+    h = sub.add_parser("historias")
+    h.add_argument("acao", choices=["canais", "nova", "lista", "ver", "texto", "eventos", "aprovar-historia",
+                                    "aprovar-imagens", "refazer-historia", "recomecar", "refazer-imagens", "continuar",
+                                    "refazer-cena", "enviar", "excluir"])
+    h.add_argument("id", nargs="?")
+    h.add_argument("n_cena", nargs="?")
+    h.add_argument("--canal")
+    h.add_argument("--assunto")
+    h.add_argument("--revisar", action="store_true")
+    h.add_argument("--prompt")
+    h.add_argument("--n", type=int, default=8)
+    h.add_argument("--confirmado", action="store_true")
+
+    m = sub.add_parser("music")
+    m.add_argument("acao", choices=["estado", "faixas", "usar", "ajustar", "previa", "renderizar", "progresso",
+                                    "cancelar", "saidas"])
+    m.add_argument("valores", nargs="*")
+    m.add_argument("--nome")
+    m.add_argument("--n", type=int, default=8)
+    m.add_argument("--detalhe", dest="n_detalhe", action="store_true")
+
+    a = p.parse_args()
+    if a.area == "cortes" and a.acao in ("ver", "produzir", "descartar", "voltar", "titulo", "canal", "enviar",
+                                          "cancelar", "repetir", "remover") and not a.trabalho:
+        print("HTTP 400\nErro: informe o trabalho (ex.: 20261002-020750-1f02 ou ultimo)")
+        return 1
+    if a.area == "historias" and a.acao not in ("canais", "nova", "lista") and not a.id:
+        print("HTTP 400\nErro: informe o id da história (número ou ultima)")
+        return 1
+    try:
+        return {"status": cmd_status, "custos": cmd_custos, "cortes": cmd_cortes, "historias": cmd_historias,
+                "music": cmd_music}[a.area](a)
+    except Falha as f:
+        print("HTTP %s" % f.status)
+        print("Erro: " + f.texto)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
