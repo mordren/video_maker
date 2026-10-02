@@ -1,0 +1,142 @@
+{
+ "1": {
+  "class_type": "UnetLoaderGGUF",
+  "inputs": {
+   "unet_name": "flux1-kontext-dev-Q4_K_M.gguf"
+  }
+ },
+ "2": {
+  "class_type": "DualCLIPLoader",
+  "inputs": {
+   "clip_name1": "clip_l.safetensors",
+   "clip_name2": "t5xxl_fp8_e4m3fn.safetensors",
+   "type": "flux"
+  }
+ },
+ "3": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ae.safetensors"
+  }
+ },
+ "4": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "example.png"
+  }
+ },
+ "5": {
+  "class_type": "FluxKontextImageScale",
+  "inputs": {
+   "image": [
+    "4",
+    0
+   ]
+  }
+ },
+ "6": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "5",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "7": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "Same woman, same hallway, same lighting. Change only: the woman is now turned around facing the camera with a wide unnatural smile. Keep her hair and clothes identical.",
+   "clip": [
+    "2",
+    0
+   ]
+  }
+ },
+ "8": {
+  "class_type": "ReferenceLatent",
+  "inputs": {
+   "conditioning": [
+    "7",
+    0
+   ],
+   "latent": [
+    "6",
+    0
+   ]
+  }
+ },
+ "9": {
+  "class_type": "FluxGuidance",
+  "inputs": {
+   "conditioning": [
+    "8",
+    0
+   ],
+   "guidance": 2.5
+  }
+ },
+ "10": {
+  "class_type": "ConditioningZeroOut",
+  "inputs": {
+   "conditioning": [
+    "7",
+    0
+   ]
+  }
+ },
+ "11": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": [
+    "1",
+    0
+   ],
+   "seed": 42,
+   "steps": 20,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "9",
+    0
+   ],
+   "negative": [
+    "10",
+    0
+   ],
+   "latent_image": [
+    "6",
+    0
+   ],
+   "denoise": 1.0
+  }
+ },
+ "12": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "11",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "13": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "12",
+    0
+   ],
+   "filename_prefix": "kontext"
+  }
+ }
+}

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "estudio",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["main.py", "servidor", "--porta", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "estudio-simulacao",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["main.py", "--simulacao", "--raiz", "C:/Users/joaor/AppData/Local/Temp/est_sim", "servidor", "--porta", "8010"],
+      "port": 8010
+    }
+  ]
+}
