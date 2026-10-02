@@ -4,7 +4,8 @@ no banco e em disco, então dá para parar, revisar e retomar.
 Estados:  na_fila -> escrevendo -> revisando_texto -> aguardando_historia (parada 1)
           -> gerando_imagens -> aguardando_imagens (parada 2) -> narrando -> montando -> pronto
           erro | interrompido (servidor reiniciou no meio) -> "continuar" retoma da etapa certa.
-No modo automático as paradas são puladas (a história REPROVADA na segurança sempre para).
+No modo automático as paradas são puladas. A história reprovada numa pergunta com trava (segurança etc.) recomeça
+com outra vibe até RECOMECOS_TRAVA vezes; se ainda assim reprovar, para na revisão.
 """
 import json
 import queue
@@ -213,7 +214,18 @@ def etapa_historia(pid: int):
     p, canal = _contexto(pid)
     db.atualizar("projetos", pid, status="escrevendo")
     db.executar("DELETE FROM cenas WHERE projeto_id = ?", (pid,))
-    res = historia.laco(p, canal)
+    # Reprovada na trava (segurança ou outra pergunta que trava) não serve: recomeça do gancho com outra vibe.
+    reprovadas: list[dict] = []
+    total = config.RECOMECOS_TRAVA + 1
+    while True:
+        res = historia.laco(p, canal, reprovadas)
+        falhas = historia.falhas_trava(res["avaliacao"])
+        if not falhas or len(reprovadas) + 1 >= total:
+            break
+        reprovadas.append({"modo": p.get("modo"), "gancho": res.get("gancho") or res["historia"].get("gancho", ""),
+                           "falhas": falhas})
+        db.evento(pid, f"Reprovada na trava ({', '.join(falhas)}): recomeçando com outra vibe "
+                       f"({len(reprovadas) + 1}/{total}).", "aviso")
     h, aval, ressalva = res["historia"], res["avaliacao"], res["ressalva"]
     db.evento(pid, f"História {'aprovada' if not ressalva else 'aprovada com ressalva: ' + ressalva} "
                    f"(versão {res['versao']}, nota {aval['nota_geral'] if aval else '-'})")

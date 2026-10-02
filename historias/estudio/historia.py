@@ -560,9 +560,13 @@ def dica_modo(projeto: dict, canal: dict) -> str:
     return f"\n\nModo narrativo deste vídeo: {m['nome']} ({m['regra']}). Siga-o do começo ao fim." if m else ""
 
 
-def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None, historico: str = "") -> list[dict]:
-    """Pedido dos 5 ganchos (e do modo narrativo). Separado para a tela do canal mostrar o prompt exato."""
+def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None, historico: str = "",
+                     evitar_modos: tuple = ()) -> list[dict]:
+    """Pedido dos 5 ganchos (e do modo narrativo). Separado para a tela do canal mostrar o prompt exato.
+    evitar_modos: modos de tentativas reprovadas na trava; saem da lista enquanto sobrar algum."""
     modos = canal["config"].get("modos_narrativos") or []
+    evitar = {x.lower() for x in evitar_modos}
+    modos = [m for m in modos if m["nome"].lower() not in evitar] or modos
     bloco_modo, campo_modo = "", "\"modo\": \"\""
     if modos:
         bloco_modo = ("\n\nPrimeiro escolha o modo narrativo que melhor serve ao assunto"
@@ -578,23 +582,37 @@ def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None, histo
     ]
 
 
-def escolher_gancho(projeto: dict, canal: dict) -> tuple[str, float, list]:
+def _pedido_outra_vibe(reprovadas: list[dict]) -> str:
+    """Tentativas inteiras reprovadas na trava: a próxima começa de outro jeito, não remenda a anterior."""
+    if not reprovadas:
+        return ""
+    linhas = [f"- {'modo ' + r['modo'] + ', ' if r.get('modo') else ''}gancho \"{r['gancho']}\" "
+              f"(reprovada em: {'; '.join(r['falhas'].values()) or 'trava do juiz'})" for r in reprovadas]
+    return ("\n\nEste assunto já foi escrito e a história foi reprovada pelo juiz. Recomece com outra vibe: outro modo "
+            "narrativo, outro ponto de vista, outro tom e outra situação de abertura, sem reaproveitar estes começos, "
+            "e cuide do que reprovou:\n" + "\n".join(linhas))
+
+
+def escolher_gancho(projeto: dict, canal: dict, reprovadas: list[dict] | None = None) -> tuple[str, float, list]:
     """5 ganchos por rodada (com o modo narrativo), notas do Jev, até passar do corte ou acabar as rodadas.
-    O melhor fica fixo e define o modo da história."""
+    O melhor fica fixo e define o modo da história. reprovadas: tentativas anteriores que falharam na trava."""
     perguntas = canais.perguntas_do_canal(canal["config"])
     base = perguntas["gancho"]
     corte = base["corte"]
+    reprovadas = reprovadas or []
     ultimo = _ultimo_modo(projeto)
+    evitar = tuple(r["modo"] for r in reprovadas if r.get("modo"))
+    vibe = _pedido_outra_vibe(reprovadas)
     anteriores: list[dict] = []
     melhor = ("", -1.0, None)
     for rodada in range(1, config.GANCHO_MAX_RODADAS + 1):
         _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, config.EST_TEXTO) +
                      _media_custo(projeto["id"], config.MODELO_JUIZ, config.EST_JEV))
-        hist = ""
+        hist = vibe
         if anteriores:
-            hist = "\n\nGanchos anteriores e a nota que tiveram (0-10, corte " + f"{corte}" + "). Não repita; faça melhor:\n" + \
-                   "\n".join(f"- ({a['nota']:.1f}) {a['texto']}" for a in anteriores)
-        msgs = mensagens_gancho(projeto["assunto"], canal, ultimo, hist)
+            hist += "\n\nGanchos anteriores e a nota que tiveram (0-10, corte " + f"{corte}" + "). Não repita; faça melhor:\n" + \
+                    "\n".join(f"- ({a['nota']:.1f}) {a['texto']}" for a in anteriores)
+        msgs = mensagens_gancho(projeto["assunto"], canal, ultimo, hist, evitar)
         resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="historia",
                                 temperatura=1.0, max_tokens=1200, contexto={"assunto": projeto["assunto"]})
         ganchos = [g.strip() for g in resp.get("ganchos", []) if g.strip()][:5]
@@ -974,8 +992,14 @@ def salvar_versao(projeto: dict, h: dict, origem: str, checagem: dict, avaliacao
     return n
 
 
-def laco(projeto: dict, canal: dict) -> dict:
-    """Roda o laço sobre o texto corrido. Devolve {'historia', 'avaliacao', 'ressalva', 'versao'}."""
+def falhas_trava(aval: dict | None) -> dict[str, str]:
+    """Perguntas com trava que falharam: {chave: pergunta}."""
+    return {k: v["pergunta"] for k, v in ((aval or {}).get("perguntas") or {}).items() if v["trava"] and not v["passou"]}
+
+
+def laco(projeto: dict, canal: dict, reprovadas: list[dict] | None = None) -> dict:
+    """Roda o laço sobre o texto corrido. Devolve {'historia', 'avaliacao', 'ressalva', 'versao', 'gancho'}.
+    reprovadas: tentativas anteriores reprovadas na trava ({modo, gancho, falhas}); esta começa com outra vibe."""
     pid = projeto["id"]
     projeto["_base_laco"] = custos.total(pid, "historia")
     projeto["_teto_laco"] = teto_laco(canal)
@@ -984,11 +1008,13 @@ def laco(projeto: dict, canal: dict) -> dict:
                        f"no teto de US$ {projeto['_teto_laco']:.3f} desta execução.")
     ressalva = None
     melhor = None  # (chave de comparação, historia, avaliacao, versao, problemas)
-    fraquezas: dict[str, str] = {}
+    # O que reprovou nas tentativas anteriores já entra como ponto de atenção da primeira escrita.
+    fraquezas: dict[str, str] = {k: q for r in (reprovadas or []) for k, q in r["falhas"].items()}
     n = config.LACO_MAX_HISTORIAS
+    gancho = None
     try:
         # O gancho escolhido pelo Jev fica fixo; cada tentativa escreve o resto do zero.
-        gancho, _nota_g, _ = escolher_gancho(projeto, canal)
+        gancho, _nota_g, _ = escolher_gancho(projeto, canal, reprovadas)
         projeto["gancho_fixo"] = gancho
         for tentativa in range(1, n + 1):
             h = escrever(projeto, canal, gancho, list(fraquezas.values()))
@@ -1007,7 +1033,7 @@ def laco(projeto: dict, canal: dict) -> dict:
             if melhor is None or chave > melhor[0]:
                 melhor = (chave, h, aval, v, problemas)
             if aval["passou"] and not problemas:
-                return {"historia": h, "avaliacao": aval, "ressalva": None, "versao": v}
+                return {"historia": h, "avaliacao": aval, "ressalva": None, "versao": v, "gancho": gancho}
             for k in aval["falhas"]:
                 q = aval["perguntas"][k]
                 fraquezas[k] = q["pergunta"]
@@ -1019,10 +1045,11 @@ def laco(projeto: dict, canal: dict) -> dict:
     if melhor:
         _, h, aval, v, problemas = melhor
         if aval["trava_falhou"]:
-            ressalva = f"REPROVADA na pergunta de segurança. {ressalva or ''}".strip()
+            ressalva = f"REPROVADA na trava ({', '.join(falhas_trava(aval))}). {ressalva or ''}".strip()
         elif problemas:
             ressalva = f"{ressalva}; fora do tamanho: {'; '.join(problemas)}"
-        return {"historia": h, "avaliacao": aval, "ressalva": ressalva or "não passou em todas as notas", "versao": v}
+        return {"historia": h, "avaliacao": aval, "ressalva": ressalva or "não passou em todas as notas", "versao": v,
+                "gancho": gancho}
     raise clientes.ErroAPI(ressalva or "o laço terminou sem nenhuma versão")
 
 

@@ -66,7 +66,7 @@ LEGENDAS = {
 EFEITOS_MOVIMENTO = ["zoom_in", "zoom_out", "pan", "tremor"]
 EFEITOS_SOBREPOSICAO = ["flash", "cintilar_luz", "vinheta_pulso"]
 
-# Perguntas que valem para qualquer canal. O juiz trava a história se "seguranca" falhar.
+# Perguntas que valem para qualquer canal. Pergunta com trava que falha reprova a história (recomeça com outra vibe).
 PERGUNTAS_UNIVERSAIS = {
     "gancho": {"tipo": "score", "corte": 8, "trava": False,
                "pergunta": "Quem está rolando o feed para nos 3 primeiros segundos com esse gancho (a narração da cena 1)?"},
@@ -286,11 +286,25 @@ def mesclar(base: dict, extra: dict) -> dict:
     return out
 
 
+def corte_na_escala(q: dict) -> dict:
+    """noul é probabilidade (0 a 1) e score é nota (0 a 10). Um corte na escala do outro tipo (ex.: noul com corte 7)
+    nunca passaria, e com trava reprovaria toda história: 7 vira 0,7 e 0,8 vira 8."""
+    try:
+        corte = float(q.get("corte"))
+    except (TypeError, ValueError):
+        return q
+    if q.get("tipo") == "noul" and corte > 1:
+        q["corte"] = round(min(corte, 10) / 10, 3)
+    elif q.get("tipo") == "score" and 0 < corte <= 1:
+        q["corte"] = round(corte * 10, 2)
+    return q
+
+
 def perguntas_do_canal(cfg: dict) -> dict:
     """Universais + específicas. Uma específica com a mesma chave sobrepõe a universal (ex.: corte do gancho)."""
     perguntas = copy.deepcopy(PERGUNTAS_UNIVERSAIS)
     for k, v in (cfg.get("juiz", {}).get("perguntas") or {}).items():
-        perguntas[k] = mesclar(perguntas.get(k, {}), v)
+        perguntas[k] = corte_na_escala(mesclar(perguntas.get(k, {}), v))
     return perguntas
 
 
@@ -299,6 +313,8 @@ def obter(canal_id: int) -> dict | None:
     if not c:
         return None
     c["config"] = mesclar(CONFIG_PADRAO, db.carregar_json(c.pop("config_json"), {}))
+    for q in ((c["config"].get("juiz") or {}).get("perguntas") or {}).values():
+        corte_na_escala(q)
     c["trilhas"] = db.todos("SELECT * FROM trilhas WHERE canal_id = ? ORDER BY id", (canal_id,))
     return c
 
@@ -320,6 +336,8 @@ def salvar(dados: dict, canal_id: int | None = None) -> int:
     # A lista de perguntas é substituída por inteiro (a mesclagem manteria perguntas apagadas na tela).
     if "juiz" in (dados.get("config") or {}):
         cfg["juiz"]["perguntas"] = dados["config"]["juiz"].get("perguntas") or {}
+    for q in (cfg["juiz"].get("perguntas") or {}).values():
+        corte_na_escala(q)
     valores = (nome, dados.get("idioma") or "pt-BR", dados.get("descricao") or "",
                dados.get("formato") or "short", json.dumps(cfg, ensure_ascii=False))
     if canal_id:

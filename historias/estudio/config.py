@@ -97,6 +97,8 @@ PRECO_TTS_POR_CARACTERE = 0.000015    # qwen-audio-3.0-tts-flash (conferido: 96 
 LACO_TETO_USD = float(os.getenv("LACO_TETO_USD", "0.01"))
 # Histórias inteiras escritas do zero (com o mesmo gancho) até uma passar no Jev; fica a de melhor nota.
 LACO_MAX_HISTORIAS = int(os.getenv("LACO_MAX_HISTORIAS", "4"))
+# Reprovada numa pergunta com trava (segurança etc.): quantas vezes recomeçar do gancho com outra vibe antes de parar.
+RECOMECOS_TRAVA = int(os.getenv("RECOMECOS_TRAVA", "3"))
 GANCHO_MAX_RODADAS = 3
 FOLGA_PALAVRAS = 0.05      # tolerância no total de palavras, antes de mandar reescrever (0,05 = 5% para mais ou menos)
 FOLGA_PALAVRAS_CENA = 2    # palavras a mais por cena

@@ -230,6 +230,10 @@ def _montar() -> list[Grupo]:
                       _env("LACO_MAX_HISTORIAS", "Histórias por vídeo", "inteiro", 4,
                            "Histórias inteiras escritas do zero (mesmo gancho) até uma passar no Jev; fica a de melhor nota.",
                            attr="LACO_MAX_HISTORIAS", minimo=1, maximo=10, passo=1),
+                      _env("RECOMECOS_TRAVA", "Recomeços se reprovar na trava", "inteiro", 3,
+                           "Reprovada na segurança (ou noutra pergunta com trava): recomeça do gancho com outra vibe "
+                           "(outro modo narrativo e outro tom) até esse número de vezes; depois para na revisão.",
+                           attr="RECOMECOS_TRAVA", minimo=0, maximo=10, passo=1),
                       _json("GANCHO_MAX_RODADAS", "Rodadas de ganchos", "inteiro",
                             "Cada rodada pede 5 ganchos; se o melhor não passa, vem outra rodada vendo os anteriores.",
                             minimo=1, maximo=8, passo=1),

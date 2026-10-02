@@ -166,7 +166,7 @@ async function telaProjeto(id) {
     <div class="fix row" id="acoes"></div>
   </div>
   <div class="steps">${etapas.map((e, i) => `<span class="${i < idx ? 'done' : i === idx ? 'cur' : ''}">${e[1]}</span>`).join('')}</div>
-  ${p.ressalva ? `<div class="panel ${p.ressalva.startsWith('REPROVADA') ? 'bad' : 'alert'}"><b>Aprovada com ressalva:</b> ${esc(p.ressalva)}. Veja as notas em Avaliações e decida se segue.</div>` : ''}
+  ${p.ressalva ? `<div class="panel ${p.ressalva.startsWith('REPROVADA') ? 'bad' : 'alert'}"><b>${p.ressalva.startsWith('REPROVADA') ? 'Reprovada no juiz' : 'Aprovada com ressalva'}:</b> ${esc(p.ressalva)}. Veja as notas em Avaliações e decida se segue.</div>` : ''}
   ${p.erro ? `<div class="panel bad"><b>Erro:</b> ${esc(p.erro)}</div>` : ''}
   <div class="layout">
     <div>
@@ -838,6 +838,8 @@ async function telaCanal(id) {
     <td style="width:90px"><select data-p="tipo"><option ${q.tipo === 'score' ? 'selected' : ''}>score</option><option ${q.tipo === 'noul' ? 'selected' : ''}>noul</option></select></td>
     <td><textarea data-p="pergunta" rows="1" style="min-height:36px;resize:none;overflow:hidden">${esc(q.pergunta)}</textarea><label class="inline"><input type="checkbox" data-p="trava" ${q.trava ? 'checked' : ''}> trava (falhou = reprova)</label></td>
     <td style="width:80px"><input type="number" step="0.01" data-p="corte" value="${q.corte}"></td><td><button class="small" data-delp>×</button></td></tr>`;
+  // score é nota de 0 a 10 e noul é probabilidade de 0 a 1: um corte 7 num noul nunca passaria (e com trava reprova tudo).
+  const cortePorTipo = (tipo, c) => tipo === 'noul' && c > 1 ? Math.min(c, 10) / 10 : tipo === 'score' && c > 0 && c <= 1 ? Math.round(c * 100) / 10 : c;
   const carregarVozes = async () => {
     const prov = $('#cProv').value;
     $$('[data-qwen]').forEach(e => e.style.display = prov === 'qwen' ? '' : 'none');
@@ -853,8 +855,8 @@ async function telaCanal(id) {
     const perguntas = {};
     $$('#cPerg tr').slice(1).forEach(tr => {
       const g = k => $(`[data-p=${k}]`, tr);
-      const chave = g('chave').value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
-      if (chave && g('pergunta').value.trim()) perguntas[chave] = {tipo: g('tipo').value, pergunta: g('pergunta').value.trim(), corte: +g('corte').value, trava: g('trava').checked};
+      const chave = g('chave').value.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9_]+/g, '_');
+      if (chave && g('pergunta').value.trim()) perguntas[chave] = {tipo: g('tipo').value, pergunta: g('pergunta').value.trim(), corte: cortePorTipo(g('tipo').value, +g('corte').value), trava: g('trava').checked};
     });
     const pt = {}, ex = {};
     $$('[data-mov]').forEach(s => pt[s.dataset.mov] = s.value);
@@ -911,7 +913,10 @@ async function telaCanal(id) {
     carregarVozes().catch(e => toast('Não consegui listar as vozes: ' + e.message, true));
     $('#cProv').onchange = $('#cModeloVoz').onchange = () => carregarVozes();
     $('#cAddP').onclick = () => { $('#cPerg').insertAdjacentHTML('beforeend', linhaPergunta('', {tipo: 'score', pergunta: '', corte: 7})); ligarDel(); ligarListas(); };
-    const ligarDel = () => $$('[data-delp]').forEach(b => b.onclick = () => b.closest('tr').remove());
+    const ligarDel = () => {
+      $$('[data-delp]').forEach(b => b.onclick = () => b.closest('tr').remove());
+      $$('#cPerg [data-p=tipo]').forEach(s => s.onchange = () => { const c = $('[data-p=corte]', s.closest('tr')); c.value = cortePorTipo(s.value, +c.value); });
+    };
     ligarDel();
     $('#cEstiloPreset').onchange = e => { const s = presets.estilos[e.target.value]; if (s) { $('#cEstiloNome').value = s.nome; $('#cEstiloPrefixo').value = s.prefixo || ''; $('#cEstiloSufixo').value = s.sufixo; recorteEstilo = s.recorte || 0; } };
     $('#cLegPreset').onchange = e => {
