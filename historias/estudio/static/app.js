@@ -59,6 +59,7 @@ async function rota() {
   const NAV = {'': 'projetos', projeto: 'projetos', canal: 'canais', 'canal-pub': 'canais', ...(UNIFICADO ? {desempenho: 'projetos'} : {})};
   $$('nav a').forEach(a => a.classList.toggle('on', a.dataset.nav === (NAV[(seg || '').split('?')[0]] || seg)));
   if (UNIFICADO) {
+    window.scrollTo(0, 0);   // a outra aba podia estar rolada até o fim
     const cortador = seg === 'cortador';
     $('#cortador').hidden = !cortador;
     app.hidden = cortador;
@@ -992,7 +993,7 @@ function blocoCustosCortador(k, h) {
     ${totalHist != null ? quadro('Histórias total', totalHist) : ''}
   </div>
   <div class="panel"><h3 style="margin-top:0">Gasto real das contas</h3>
-    <table><tr><th>Chave</th><th>Usada por</th><th>Hoje</th><th>7 dias</th><th>Mês</th><th>Total</th></tr>${contas || '<tr><td colspan="6" class="small">Nenhuma chave configurada.</td></tr>'}</table>
+    <table><tr><th>Chave</th><th>Usada por</th><th>Hoje (UTC)</th><th>Esta semana</th><th>Este mês</th><th>Total</th></tr>${contas || '<tr><td colspan="6" class="small">Nenhuma chave configurada.</td></tr>'}</table>
     <p class="small">Direto da conta (OpenRouter /key e saldo do DeepSeek): inclui o que foi gasto com a mesma chave fora do Estúdio. Atualiza a cada 5 min.</p></div>
   <div class="grid2">
     <div class="panel"><h3 style="margin-top:0">Cortador por modelo</h3>
