@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+dados/
+projetos/
+biblioteca/
+trilhas/
+testes_efeitos/
+.claude/hooks/jev_router.log
+testes_comfy/
+musicas/
+imagens/
+saida/
+videos/
+.codex/hooks/jev_router.log
+docs/*.mp4

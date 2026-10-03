@@ -160,6 +160,81 @@ def _dismiss_new_feature_popup(page) -> None:
         pass
 
 
+def _fechar_pedido_de_checagem(page, espera_ms: int = 3000) -> bool:
+    """Fecha a janela "Turn on automatic content checks?" que o TikTok passou a
+    abrir ao clicar em Post (vista em 30/09/2026): ela fica por cima do botão,
+    o clique não chega, e a lib cai num plano B (`.TUXButton--primary`) que
+    não existe mais nessa tela — "Cannot read properties of null".
+
+    Clica em **Cancel**, não em "Turn on": ligar a checagem muda uma
+    configuração da conta, e isso é decisão do dono (dá para ligar em
+    Perfil > Configurações). Devolve se a janela estava na tela."""
+    dialogo = page.locator('[role="dialog"]').filter(
+        has_text=re.compile(r"automatic content checks|checagens? autom", re.IGNORECASE))
+    try:
+        dialogo.first.wait_for(state="visible", timeout=espera_ms)
+    except Exception:
+        return False
+    for nome in (r"^\s*Cancel\s*$", r"^\s*Cancelar\s*$"):
+        try:
+            dialogo.first.get_by_role("button", name=re.compile(nome, re.IGNORECASE)).click(timeout=3000)
+            break
+        except Exception:
+            continue
+    else:
+        try:
+            dialogo.first.locator(".common-modal-close").click(timeout=3000)
+        except Exception:
+            page.keyboard.press("Escape")
+    try:
+        dialogo.first.wait_for(state="hidden", timeout=5000)
+    except Exception:
+        pass
+    return True
+
+
+def _postar(page) -> None:
+    """Substitui o `_post_video` da lib (tiktok-uploader 1.2.0): espera o botão
+    Post liberar, clica, e trata a janela de checagem automática — depois de
+    fechá-la, clica em Post de novo se o envio ainda não tiver saído."""
+    import time
+
+    from tiktok_uploader.upload import config
+
+    botao = page.locator(f"xpath={config.selectors.upload.post}")
+    confirmacao = page.locator(f"xpath={config.selectors.upload.post_confirmation}")
+    for _ in range(int(config.uploading_wait / 2)):
+        try:
+            if botao.get_attribute("data-disabled", timeout=2000) == "false":
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+
+    for _tentativa in range(3):
+        _dismiss_new_feature_popup(page)
+        _fechar_pedido_de_checagem(page, espera_ms=500)
+        botao.scroll_into_view_if_needed()
+        botao.click(timeout=15_000)
+        if not _fechar_pedido_de_checagem(page):
+            break
+        # Fechou a janela: o clique pode ter sido engolido por ela. Se o envio
+        # já saiu, a confirmação aparece; se não, clica em Post de novo.
+        try:
+            confirmacao.wait_for(state="attached", timeout=6000)
+            return
+        except Exception:
+            continue
+
+    try:
+        agora = page.locator(f"xpath={config.selectors.upload.post_now}")
+        if agora.is_visible(timeout=5000):
+            agora.click()
+    except Exception:
+        pass
+    confirmacao.wait_for(state="attached", timeout=config.explicit_wait * 1000)
+
+
 ARGUMENTOS_DO_NAVEGADOR = [
     # O Chromium resolve DNS por conta própria, sem passar pelo sistema. Num
     # servidor onde esse resolvedor interno não funciona, ele mostra a tela de
@@ -234,6 +309,10 @@ def _preparar_biblioteca() -> None:
     # completa quase nada dispensava o aviso antes do clique final.
     # São funções internas da lib: se uma sumir numa versão nova, é melhor
     # seguir sem o contorno dela do que derrubar o envio inteiro.
+    # O passo de postar é nosso (_postar): a janela de checagem automática que
+    # o TikTok passou a abrir quebrava o da lib.
+    if getattr(_lib, "_post_video", None) is not None:
+        _lib._post_video = _postar
     for nome in ("_set_interactivity", "_set_description", "_set_schedule_video",
                  "_set_visibility", "_post_video"):
         passo = getattr(_lib, nome, None)

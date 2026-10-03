@@ -1,0 +1,87 @@
+{
+ "1": {
+  "class_type": "UnetLoaderGGUF",
+  "_meta": {"title": "Modelo: FLUX.1 Kontext dev (GGUF Q4_K_M)"},
+  "inputs": {"unet_name": "flux1-kontext-dev-Q4_K_M.gguf"}
+ },
+ "2": {
+  "class_type": "DualCLIPLoader",
+  "_meta": {"title": "Encoders de texto: CLIP-L + T5-XXL fp8"},
+  "inputs": {"clip_name1": "clip_l.safetensors", "clip_name2": "t5xxl_fp8_e4m3fn.safetensors", "type": "flux"}
+ },
+ "3": {
+  "class_type": "VAELoader",
+  "_meta": {"title": "VAE do Flux"},
+  "inputs": {"vae_name": "ae.safetensors"}
+ },
+ "4": {
+  "class_type": "CLIPTextEncode",
+  "_meta": {"title": "PROMPT (o estúdio troca este texto)"},
+  "inputs": {
+   "clip": ["2", 0],
+   "text": "1950s pulp horror comic book panel, bold black inks, halftone dots. Medium shot from a low angle at night in an abandoned stone well yard, loose wooden boards on the well, cold moonlight from the left. A man in his forties with short dark hair and stubble, in a stained gray t-shirt, stands beside the well and leans over it, both hands gripping a loose board, eyes wide. The man keeps the exact face, hairstyle and clothes from his reference portrait, now in this new pose, lit by the scene's light."
+  }
+ },
+ "5": {
+  "class_type": "LoadImage",
+  "_meta": {"title": "REFERÊNCIA (o estúdio recria um bloco destes por imagem)"},
+  "inputs": {"image": "example.png"}
+ },
+ "6": {
+  "class_type": "ImageScaleToTotalPixels",
+  "_meta": {"title": "Tamanho da referência (COMFY_MEGAPIXELS_REF)"},
+  "inputs": {"image": ["5", 0], "upscale_method": "lanczos", "megapixels": 0.4, "resolution_steps": 1}
+ },
+ "7": {
+  "class_type": "VAEEncode",
+  "inputs": {"pixels": ["6", 0], "vae": ["3", 0]}
+ },
+ "8": {
+  "class_type": "ReferenceLatent",
+  "_meta": {"title": "Usar a referência (encadeia uma por imagem)"},
+  "inputs": {"conditioning": ["4", 0], "latent": ["7", 0]}
+ },
+ "9": {
+  "class_type": "FluxKontextMultiReferenceLatentMethod",
+  "_meta": {"title": "Multi-referência: offset (padrão do Kontext; index para testar)"},
+  "inputs": {"conditioning": ["8", 0], "reference_latents_method": "offset"}
+ },
+ "10": {
+  "class_type": "FluxGuidance",
+  "_meta": {"title": "Guidance 2.5 (valor oficial do Kontext dev)"},
+  "inputs": {"conditioning": ["9", 0], "guidance": 2.5}
+ },
+ "11": {
+  "class_type": "ConditioningZeroOut",
+  "_meta": {"title": "Negativo vazio (cfg 1: o Flux não usa negativo)"},
+  "inputs": {"conditioning": ["4", 0]}
+ },
+ "12": {
+  "class_type": "EmptySD3LatentImage",
+  "_meta": {"title": "Tamanho da saída (o estúdio põe o da cena)"},
+  "inputs": {"width": 752, "height": 1328, "batch_size": 1}
+ },
+ "13": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": ["1", 0],
+   "positive": ["10", 0],
+   "negative": ["11", 0],
+   "latent_image": ["12", 0],
+   "seed": 42,
+   "steps": 20,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "denoise": 1.0
+  }
+ },
+ "14": {
+  "class_type": "VAEDecode",
+  "inputs": {"samples": ["13", 0], "vae": ["3", 0]}
+ },
+ "15": {
+  "class_type": "SaveImage",
+  "inputs": {"images": ["14", 0], "filename_prefix": "kontext"}
+ }
+}

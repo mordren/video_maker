@@ -1,0 +1,164 @@
+{
+ "1": {
+  "class_type": "UnetLoaderGGUF",
+  "inputs": {
+   "unet_name": "qwen-image-edit-2511-Q3_K_M.gguf"
+  }
+ },
+ "2": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+   "type": "qwen_image"
+  }
+ },
+ "3": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "qwen_image_vae.safetensors"
+  }
+ },
+ "4": {
+  "class_type": "LoraLoaderModelOnly",
+  "inputs": {
+   "model": [
+    "1",
+    0
+   ],
+   "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+   "strength_model": 1.0
+  }
+ },
+ "5": {
+  "class_type": "ModelSamplingAuraFlow",
+  "inputs": {
+   "model": [
+    "4",
+    0
+   ],
+   "shift": 3.0
+  }
+ },
+ "6": {
+  "class_type": "CFGNorm",
+  "inputs": {
+   "model": [
+    "5",
+    0
+   ],
+   "strength": 1.0
+  }
+ },
+ "10": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "example.png"
+  }
+ },
+ "11": {
+  "class_type": "ImageScaleToTotalPixels",
+  "inputs": {
+   "image": [
+    "10",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "megapixels": 1.0,
+   "resolution_steps": 1
+  }
+ },
+ "20": {
+  "class_type": "TextEncodeQwenImageEditPlus",
+  "inputs": {
+   "clip": [
+    "2",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ],
+   "image1": [
+    "11",
+    0
+   ],
+   "prompt": "The same woman from picture 1, same face, same hair and same clothes, now standing in a dark narrow hallway at night, looking back over her shoulder with fear, holding a flashlight. Vertical composition, cinematic low light."
+  }
+ },
+ "21": {
+  "class_type": "TextEncodeQwenImageEditPlus",
+  "inputs": {
+   "clip": [
+    "2",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ],
+   "image1": [
+    "11",
+    0
+   ],
+   "prompt": ""
+  }
+ },
+ "22": {
+  "class_type": "EmptySD3LatentImage",
+  "inputs": {
+   "width": 720,
+   "height": 1280,
+   "batch_size": 1
+  }
+ },
+ "23": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": [
+    "6",
+    0
+   ],
+   "seed": 7,
+   "steps": 4,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "20",
+    0
+   ],
+   "negative": [
+    "21",
+    0
+   ],
+   "latent_image": [
+    "22",
+    0
+   ],
+   "denoise": 1.0
+  }
+ },
+ "24": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "23",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "25": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "24",
+    0
+   ],
+   "filename_prefix": "teste_qwen_cena"
+  }
+ }
+}

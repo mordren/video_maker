@@ -28,6 +28,7 @@ for pasta in (RAIZ, RAIZ / "fase1"):
         sys.path.insert(0, str(pasta))
 
 import ai_srt  # noqa: E402
+import audio_qa  # noqa: E402
 import censor  # noqa: E402
 import crop_dinamico  # noqa: E402
 import falantes  # noqa: E402
@@ -243,7 +244,8 @@ def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: st
                      perfil: Perfil, censura: list[str], trilha: Path | None, pasta: Path,
                      colagem: bool = False, legenda: str = "new", palavras: list[dict] | None = None,
                      fim_gancho: float = 0.0) -> dict:
-    """Queima tudo no 9:16. Devolve {"capa": Path|None, "silenciados": n, "trocadas": n}.
+    """Queima tudo no 9:16. Devolve {"capa": Path|None, "silenciados": n, "trocadas": n,
+    "audio": relatório do audio_qa.qa}.
 
     `colagem`: True quando o clipe já chegou no formato "imagens" (foto em
     cima, vídeo embaixo) — muda onde a legenda e o GC ficam (ver as
@@ -320,7 +322,12 @@ def renderizar_final(vertical: Path, destino: Path, srt: Path | None, titulo: st
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg falhou no acabamento: {r.stderr[-800:]}")
-    return {"capa": capa, "silenciados": len(silenciar), "trocadas": trocadas}
+    # Volume do arquivo final (a trilha e o AAC mexem no que a Fase 2 deixou
+    # em -14): mede e, se saiu da faixa, refaz só o áudio (audio_qa.py).
+    audio = audio_qa.qa(destino, fala=vertical if trilha_entrada is not None else None, cfg=cfg)
+    if audio:
+        log.info("   %s", audio_qa.linha_log(audio))
+    return {"capa": capa, "silenciados": len(silenciar), "trocadas": trocadas, "audio": audio}
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +482,12 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
     info = renderizar_final(vertical, final, srt, titulo, subtitulo, perfil,
                             palavras_censuradas(ia["sensiveis"]), trilha, pasta, colagem=colagem,
                             legenda=legenda, palavras=palavras, fim_gancho=fim_gancho)
+    # Ritmo no vertical, antes de apagá-lo: sem a legenda queimada, o karaokê
+    # não conta como mudança de tela (ritmo.py).
+    import ritmo
+    rit = ritmo.relatorio(vertical, duracao_de(vertical), palavras or [], fim_gancho,
+                          ritmo.ler_trocas_fotos(pasta) if colagem else None, ai_srt.load_config())
+    log.info("   %s", ritmo.linha_log(rit))
     if not ja_vertical:
         vertical.unlink(missing_ok=True)
     return {
@@ -492,4 +505,6 @@ def finalizar_corte(clipe: Path, pasta: Path, perfil: Perfil, cfg_crop: dict, co
         "texto": " ".join(p["word"] for p in palavras)[:600],
         "creditos_imagens": creditos,
         "formato_reserva": reserva if formato == "imagens" else None,
+        "audio": info["audio"],
+        "ritmo": rit,
     }

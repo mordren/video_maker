@@ -8,7 +8,7 @@ probabilidades calibradas.
 
 Uma única chamada `decide()` roda várias perguntas em paralelo sobre o mesmo
 `state` sem custo extra de latência (é assim que a API foi desenhada) — por
-isso `qualificar()` faz viral + ritmo + ajuste de limites numa chamada só, em
+isso `qualificar()` faz viral + ritmo + abertura + ajuste de limites numa chamada só, em
 vez de três.
 """
 
@@ -46,7 +46,7 @@ class JEV:
     # Etapa 4 (qualificação dos candidatos que vieram da segmentação por LLM) ----
     def qualificar(self, segmentos: list[dict], n_opcoes: int,
                   gancho: str = "", motivo_editor: str = "") -> dict:
-        """Score viral, ritmo e (se precisar) um ajuste fino dos limites — tudo numa chamada.
+        """Score viral, ritmo, abertura e (se precisar) um ajuste fino dos limites — tudo numa chamada.
 
         Os candidatos já vêm da segmentação semântica (DeepSeek), então já
         devem começar/terminar perto do lugar certo; isto é só um afinamento
@@ -95,6 +95,22 @@ class JEV:
                 "criteria": {"true": "Ritmo firme o tempo todo",
                              "false": "Tem partes arrastadas, repetitivas ou enrolação"},
             },
+            "abertura": {
+                "type": "noul",
+                "instructions": ("Imagine alguém rolando o feed de shorts, sem contexto nenhum. "
+                                 "As primeiras frases deste trecho (os primeiros 5 a 10 segundos) "
+                                 "fazem essa pessoa parar para assistir?"),
+                "criteria": {"true": ("Começa com pergunta direta, confronto, acusação, frase de "
+                                      "efeito ou afirmação forte"),
+                             "false": ("Começa com preâmbulo, cumprimento, explicação técnica ou "
+                                       "abstrata, ou respondendo a algo que não aparece")},
+            },
+            "tipo_abertura": {
+                "type": "choice",
+                "instructions": ("Como começa este trecho (as primeiras frases, os primeiros 5 a 10 "
+                                 "segundos)? Escolha o tipo que melhor descreve a abertura."),
+                "criteria": TIPOS_ABERTURA,
+            },
             "precisa_melhora": {
                 "type": "noul",
                 "instructions": ("Este trecho precisa de ajuste fino nos limites (cortar um "
@@ -119,6 +135,8 @@ class JEV:
         return {
             "score_viral": float(a["viral"]["score"]) + 1.0,
             "ritmo": float(a["ritmo"]["noul"]),
+            "abertura": float(a["abertura"]["noul"]),
+            "tipo_abertura": _tipo_abertura(a.get("tipo_abertura", {}).get("choice")),
             "precisa_melhora": float(a["precisa_melhora"]["noul"]),
             "inicio_idx": _idx(a["inicio"]["choice"], 0),
             "fim_idx": _idx(a["fim"]["choice"], n - 1),
@@ -209,6 +227,30 @@ class JEV:
             formato = "dinamico"
         return {"formato_sugerido": formato}
 
+    # Corte inicial do vídeo longo (estudio/video_longo.py) -----------------
+    def melhor_previa(self, candidatos: list[dict], tema: str = "", comentario: str = "") -> dict:
+        """Escolhe, entre janelas de ~15 s do trecho longo, a melhor parte para
+        servir de prévia (o que aparece na proposta antes de produzir os
+        15-20 min): tem que prender e se entender sozinha."""
+        opts = {f"c{i}": _resumo(c["texto"], 320) for i, c in enumerate(candidatos)}
+        state = {"tema_do_video": tema or "(nenhum)", "motivo_do_editor": comentario or "(nenhum)",
+                 "candidatos": opts}
+        a = self.decide(state, {
+            "melhor": {
+                "type": "choice",
+                "instructions": (
+                    "Um vídeo longo de 15-20 minutos vai ganhar uma prévia de ~15 segundos, "
+                    "sem legenda, para quem escolhe se vale produzi-lo. Escolha o candidato "
+                    "que mostra a MELHOR PARTE do vídeo: a fala mais forte (confronto, "
+                    "revelação, tirada, afirmação marcante) e que se entende sozinha, sem o "
+                    "resto do contexto. Evite cumprimento, preâmbulo, leitura de comentário "
+                    "ou frase que começa respondendo a algo que não aparece."),
+                "criteria": opts,
+            },
+        })
+        idx = _idx(a["melhor"]["choice"], 0)
+        return {"indice": idx, **candidatos[idx]}
+
     def tem_contexto(self, texto: str, gancho_do_editor: str = "", motivo_editor: str = "") -> dict:
         """Confere, depois de escolhido, se o texto ISOLADO do gancho (transcrito
         de novo só a partir do áudio recortado, sem o resto do bloco) ainda
@@ -240,6 +282,27 @@ class JEV:
 def _resumo(texto: str, limite: int = 140) -> str:
     texto = " ".join(texto.split())
     return texto if len(texto) <= limite else texto[:limite - 1] + "…"
+
+
+# Tipo da abertura (pergunta "tipo_abertura" do qualificar). Os três primeiros
+# são os que os dados do info mostraram segurando mais, e monólogo técnico e
+# abstrato os que perdem mais (EDICAO_CANAL.md §1 — pista de só 10 vídeos; o
+# tipo fica gravado para a aba Desempenho conferir). Não entra na nota final.
+TIPOS_ABERTURA = {
+    "pergunta_jornalista": "Abre com uma pergunta direta (de jornalista, entrevistador ou a quem assiste)",
+    "confronto": "Abre com tensão, acusação, embate ou alguém sendo rebatido",
+    "urgente": "Abre com notícia quente: 'urgente', 'acabou de acontecer', 'agora'",
+    "frase_de_efeito": "Abre com uma afirmação forte ou frase de efeito que se sustenta sozinha",
+    "monologo_tecnico": "Abre explicando algo técnico, dado ou processo, sem tensão",
+    "abstrato": "Abre com contexto genérico, preâmbulo ou cumprimento",
+    "nenhum": "Não dá para dizer como abre, ou começa respondendo algo que não aparece",
+}
+
+
+def _tipo_abertura(choice) -> str:
+    """A chave de TIPOS_ABERTURA que o JEV devolveu ("" se veio outra coisa)."""
+    c = str(choice or "").strip()
+    return c if c in TIPOS_ABERTURA else ""
 
 
 def _idx(choice, padrao: int) -> int:

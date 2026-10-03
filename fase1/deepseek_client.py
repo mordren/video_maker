@@ -74,7 +74,13 @@ def post(path: str, payload: dict, timeout: float, tentativas: int) -> dict:
         req = urllib.request.Request(BASE_URL + path, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                resposta = json.loads(resp.read().decode("utf-8"))
+            try:
+                import custos_api
+                custos_api.registrar_deepseek(payload, resposta)
+            except ImportError:
+                pass
+            return resposta
         except urllib.error.HTTPError as exc:
             detalhe = exc.read().decode("utf-8", errors="replace")[:500]
             ultimo = f"HTTP {exc.code}: {detalhe}"

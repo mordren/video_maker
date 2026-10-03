@@ -68,6 +68,7 @@ LOG_PATH = DATA_DIR / "publicador.log"
 # dados, não junto do programa (que é instalado em /opt e pode ser substituído).
 os.environ.setdefault("VIDEOMAKER_DIR", str(DATA_DIR))
 
+import desempenho  # noqa: E402  (aba Desempenho: métricas pela API, só leitura)
 import tiktok_upload  # noqa: E402  (idem; opcional — só pesa se algum canal usar)
 import youtube_browser_upload  # noqa: E402  (precisa do VIDEOMAKER_DIR já definido)
 
@@ -76,13 +77,32 @@ import youtube_browser_upload  # noqa: E402  (precisa do VIDEOMAKER_DIR já defi
 # credenciais de SMTP ficam fora do código de propósito — veja o LEIA-ME
 # (EnvironmentFile aponta para <DATA_DIR>/publicador.env, um arquivo que a
 # instalação nunca sobrescreve).
+#
+# O serviço do Arch (.133) nasceu sem o EnvironmentFile, e de 28 a 30/09 nenhum
+# aviso saiu (a falha do TikTok de 30/09 não mandou e-mail). Por isso o arquivo
+# também é lido daqui — o que já estiver no ambiente vale mais.
+def _carregar_env_de_email(arquivo: Path) -> None:
+    try:
+        linhas = arquivo.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+    for linha in linhas:
+        linha = linha.strip()
+        if not linha or linha.startswith("#") or "=" not in linha:
+            continue
+        chave, valor = linha.split("=", 1)
+        if chave.strip().startswith("PUBLICADOR_EMAIL_"):
+            os.environ.setdefault(chave.strip(), valor.strip().strip('"').strip("'"))
+
+
+_carregar_env_de_email(DATA_DIR / "publicador.env")
 EMAIL_PARA = os.environ.get("PUBLICADOR_EMAIL_PARA", "").strip()
 EMAIL_SMTP_HOST = os.environ.get("PUBLICADOR_EMAIL_SMTP_HOST", "smtp.gmail.com").strip()
 EMAIL_SMTP_PORT = int(os.environ.get("PUBLICADOR_EMAIL_SMTP_PORT") or 587)
 EMAIL_SMTP_USER = os.environ.get("PUBLICADOR_EMAIL_SMTP_USER", "").strip()
 EMAIL_SMTP_SENHA = os.environ.get("PUBLICADOR_EMAIL_SMTP_SENHA", "")
 EMAIL_DE = os.environ.get("PUBLICADOR_EMAIL_DE", "").strip() or EMAIL_SMTP_USER
-URL_PUBLICADOR = os.environ.get("PUBLICADOR_URL", "http://192.168.31.130:8080").strip()
+URL_PUBLICADOR = os.environ.get("PUBLICADOR_URL", "http://192.168.31.133:8080").strip()   # o .130 (Debian) foi desligado
 
 EXTENSOES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 TAMANHO_MAXIMO = 12 * 1024 * 1024 * 1024        # 12 GB por requisição
@@ -91,6 +111,7 @@ ESPERA_SEM_REDE = 5                             # minutos até tentar de novo se
 MAX_TENTATIVAS_REDE = 12                        # ~3h insistindo antes de desistir
 ESPERA_APOS_RECUSA = 30                         # minutos até tentar de novo após recusa
 MAX_TENTATIVAS_RECUSA = 5                       # 30, 60, 90… ~7h antes de desistir
+TIKTOK_DURACAO_MAXIMA = 120                     # s; acima disso (o vídeo longo do Estúdio) não vai pro TikTok
 
 # Quedas de rede no servidor (DNS fora do ar, link caído, Wi-Fi oscilando) não
 # são culpa do vídeo: o envio é refeito sozinho em vez de marcar "falhou" e
@@ -439,8 +460,11 @@ def _escolher_proximo(fila: dict, config: dict) -> dict | None:
     acima na lista.
     """
     conectados = {c["nome"] for c in canais() if c["conectado"]}
+    # Com a janela de autorização do Desempenho aberta, o perfil do navegador
+    # desse canal está em uso — o envio dele espera a janela fechar.
     prontos = [item for item in _pendentes(fila)
-               if item.get("canal") in conectados and _canal_liberado(fila, item["canal"])]
+               if item.get("canal") in conectados and _canal_liberado(fila, item["canal"])
+               and not desempenho.login_em_andamento(item["canal"])]
     if not prontos:
         return None
     por_canal: dict[str, list[dict]] = {}
@@ -529,6 +553,17 @@ def _legenda_tiktok(titulo: str, cfg_canal: dict) -> str:
     return f"{titulo}\n\n{legenda}" if legenda else titulo
 
 
+def _duracao_video(caminho: Path) -> float | None:
+    """Duração em segundos (ffprobe); None se não der para medir."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=nw=1:nk=1", str(caminho)],
+                           capture_output=True, text=True, timeout=30, check=True)
+        return float(r.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def _talvez_publicar_no_tiktok(
         item_id: str, item: dict, cfg_canal: dict, caminho: Path, titulo: str) -> None:
     """Publica o mesmo vídeo no TikTok, depois de o YouTube já ter dado certo.
@@ -554,6 +589,17 @@ def _talvez_publicar_no_tiktok(
     # falha costuma acontecer *depois* de o arquivo já ter subido, e a segunda
     # tentativa publicaria o mesmo vídeo de novo.
     if not conta or item.get("tiktok_status"):
+        return
+    # Vídeo longo (15-20 min, 16:9): no TikTok quase ninguém assiste até o fim
+    # e o envio de centenas de MB pela página deles é arriscado — decisão do
+    # usuário em 30/09/2026: nada acima de 2 min vai pra lá.
+    duracao = _duracao_video(caminho)
+    if duracao is not None and duracao > TIKTOK_DURACAO_MAXIMA:
+        registrar(f"TikTok: “{titulo}” tem {duracao / 60:.1f} min (limite {TIKTOK_DURACAO_MAXIMA // 60} min) — "
+                  "fica só no YouTube.")
+        _atualizar_item(item_id, tiktok_status="pulado",
+                        tiktok_mensagem=f"Vídeo de {duracao / 60:.1f} min: acima de "
+                                        f"{TIKTOK_DURACAO_MAXIMA // 60} min não vai pro TikTok.")
         return
     if not tiktok_upload.is_authorized(conta):
         registrar(f"⚠️ TikTok: conta '{conta}' sem cookies importados, pulando “{titulo}”.")
@@ -626,6 +672,11 @@ def _enviar_item(item_id: str) -> None:
 
         def progresso(mensagem: str) -> None:
             registrar(f"   {titulo}: {mensagem}")
+            # Daqui em diante o vídeo já pode estar no ar: se o serviço cair
+            # antes de registrar o fim, ao subir ele NÃO volta para a fila
+            # (voltar = publicar duplicado — aconteceu em 29/09/2026).
+            if mensagem.startswith("Cliquei no botão de publicar"):
+                _atualizar_item(item_id, publicar_clicado=True)
 
         try:
             # headless=False: o serviço roda sob Xvfb (display virtual — veja
@@ -678,6 +729,7 @@ def _enviar_item(item_id: str) -> None:
         registrar(f"✅ Publicado “{titulo}”: {url}")
         _atualizar_item(item_id, status="enviado", url=url, mensagem="", tentativas=0,
                         enviado_em=datetime.now().isoformat(timespec="seconds"))
+        _anotar_publicado(item["arquivo"], titulo, canal)
         proximo = datetime.now() + _sortear_intervalo(_config_do_canal(carregar_config(), canal))
         _marcar_proximo(canal, proximo)
         if any(i.get("canal") == canal for i in _pendentes(carregar_fila())):
@@ -713,6 +765,7 @@ def _iniciar_envio(item_id: str) -> bool:
             return False
         item["status"] = "enviando"
         item["mensagem"] = ""
+        item["publicar_clicado"] = False                 # vale só para esta tentativa
         salvar_fila(fila)
         _ENVIANDO = item_id
     threading.Thread(target=_enviar_item, args=(item_id,), daemon=True).start()
@@ -783,8 +836,17 @@ def estado():
 
 @app.post("/api/videos")
 def subir_videos():
-    """Recebe os arquivos do navegador, grava no HD e põe no fim da lista."""
+    """Recebe os arquivos (do navegador ou de uma chamada de API), grava no
+    HD e põe no fim da lista.
+
+    'titulo' é opcional e só vale quando esta chamada manda **um** arquivo só
+    — com vários, não haveria como saber qual título é de qual, então nesse
+    caso cada um sai com o nome do próprio arquivo (editável depois pela tela
+    ou com POST /api/itens/<id> {"titulo": "..."}, usando o id devolvido aqui
+    em 'itens').
+    """
     canal = (request.form.get("canal") or canal_padrao()).strip()
+    titulo_pedido = (request.form.get("titulo") or "").strip()[:100]
     arquivos = [a for a in request.files.getlist("arquivos") if a and a.filename]
     if not arquivos:
         return jsonify({"erro": "Nenhum arquivo escolhido."}), 400
@@ -802,13 +864,15 @@ def subir_videos():
         enviado.save(VIDEOS_DIR / nome)
         adicionados.append(nome)
 
+    titulo_unico = titulo_pedido if (titulo_pedido and len(adicionados) == 1) else ""
+    itens_novos = []
     with _TRAVA:
         fila = carregar_fila()
         for nome in adicionados:
-            fila["itens"].append({
+            item = {
                 "id": _novo_id(),
                 "arquivo": nome,
-                "titulo": Path(nome).stem,
+                "titulo": titulo_unico or Path(nome).stem,
                 "canal": canal,
                 "status": "aguardando",
                 "mensagem": "",
@@ -817,11 +881,13 @@ def subir_videos():
                 "tentativas": 0,
                 "tiktok_status": "",
                 "tiktok_mensagem": "",
-            })
+            }
+            fila["itens"].append(item)
+            itens_novos.append({"id": item["id"], "arquivo": nome, "titulo": item["titulo"]})
         salvar_fila(fila)
     for nome in adicionados:
         registrar(f"➕ {nome} entrou na fila (canal {canal or 'nenhum'}).")
-    resposta = {"adicionados": adicionados}
+    resposta = {"adicionados": adicionados, "itens": itens_novos}
     if recusados:
         resposta["erro"] = "Formato não aceito: " + ", ".join(recusados)
     return jsonify(resposta)
@@ -1120,6 +1186,204 @@ def youtube_login_status(conta: str):
     return jsonify(youtube_browser_upload.login_status(conta) or {"estado": "nenhum"})
 
 
+# ──────────────────────────────────────────────────────────────────
+#  Desempenho (métricas dos canais pela API do YouTube, só leitura)
+# ──────────────────────────────────────────────────────────────────
+
+_PADRAO_YOUTUBE_ID = re.compile(r"(?:v=|/shorts/|youtu\.be/|/video/)([A-Za-z0-9_-]{11})")
+PUBLICADOS_PATH = DATA_DIR / "publicados.jsonl"
+NOTAS_JEV_PATH = DATA_DIR / "notas_jev.json"
+ESTUDIO_URL = os.environ.get("PUBLICADOR_ESTUDIO_URL", "http://127.0.0.1:8090").strip()
+_NOTAS_CACHE: dict = {"quando": 0.0}
+
+
+def _anotar_publicado(arquivo: str, titulo: str, canal: str) -> None:
+    """Registro permanente de cada envio (arquivo → título final no YouTube).
+
+    A fila perde isso no "Limpar publicados", e o título pode ter sido editado
+    na fila — sem este registro, a nota do corte (que o Estúdio conhece pelo
+    nome do arquivo) não acharia mais o vídeo no YouTube.
+    """
+    try:
+        with PUBLICADOS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"arquivo": arquivo, "titulo": titulo, "canal": canal,
+                                "enviado_em": datetime.now().isoformat(timespec="seconds")},
+                               ensure_ascii=False) + "\n")
+    except OSError as erro:
+        registrar(f"⚠️ Não deu para anotar o envio em {PUBLICADOS_PATH.name}: {erro}")
+
+
+def _publicados() -> list[dict]:
+    try:
+        linhas = PUBLICADOS_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    registros = []
+    for linha in linhas:
+        try:
+            registros.append(json.loads(linha))
+        except ValueError:
+            continue
+    return registros
+
+
+def _notas_jev() -> list[dict]:
+    """Notas do JEV dos cortes que vieram do Estúdio (no máximo a cada 5 min).
+
+    Guarda uma cópia em notas_jev.json e só acrescenta: trabalho removido no
+    Estúdio ou log girado lá não apagam a nota de um vídeo já publicado.
+    """
+    import urllib.request
+
+    guardadas = _ler_json(NOTAS_JEV_PATH, {"cortes": {}}).get("cortes") or {}
+    if time.monotonic() - _NOTAS_CACHE["quando"] > 300:
+        _NOTAS_CACHE["quando"] = time.monotonic()
+        try:
+            with urllib.request.urlopen(ESTUDIO_URL + "/api/notas", timeout=5) as resposta:
+                novas = json.loads(resposta.read().decode("utf-8")).get("cortes") or []
+            mudou = False
+            for nota in novas:
+                chave = f"{nota.get('trabalho')}/{nota.get('corte')}"
+                anterior = guardadas.get(chave) or {}
+                # Uma nota completa (do trabalho) nunca é trocada pela resumida do log.
+                if nota.get("fonte") == "log" and anterior.get("fonte") == "trabalho":
+                    continue
+                if anterior != nota:
+                    guardadas[chave] = nota
+                    mudou = True
+            if mudou:
+                _gravar_json(NOTAS_JEV_PATH, {"cortes": guardadas})
+        except Exception as erro:                        # noqa: BLE001
+            _NOTAS_CACHE["erro"] = f"Estúdio fora do ar? ({erro})"
+        else:
+            _NOTAS_CACHE.pop("erro", None)
+    return list(guardadas.values())
+
+
+def _ids_publicados() -> set[str]:
+    """IDs dos vídeos que saíram por esta fila (a tela marca quais foram)."""
+    ids = set()
+    for item in carregar_fila()["itens"]:
+        achado = _PADRAO_YOUTUBE_ID.search(item.get("url") or "")
+        if achado:
+            ids.add(achado.group(1))
+    return ids
+
+
+def _atualizar_desempenho(canal: str) -> None:
+    try:
+        dados = desempenho.atualizar(canal, _ids_publicados())
+        registrar(f"📊 Desempenho de {canal} atualizado ({len(dados['videos'])} vídeos).")
+    except desempenho.ErroDesempenho as erro:
+        if "Já está atualizando" not in str(erro):
+            desempenho.marcar_falha(canal, str(erro))
+            registrar(f"⚠️ Desempenho de {canal}: {erro}")
+    except Exception as erro:                            # noqa: BLE001
+        desempenho.marcar_falha(canal, f"{type(erro).__name__}: {erro}"[:500])
+        registrar(f"⚠️ Desempenho de {canal}: {erro}")
+
+
+def _laco_de_desempenho() -> None:
+    """Relê as métricas de cada canal conectado a cada 6 horas, sozinho."""
+    time.sleep(60)                                       # deixa o serviço subir antes
+    while True:
+        for canal in [c["nome"] for c in canais()]:
+            try:
+                if desempenho.precisa_atualizar(canal):
+                    _atualizar_desempenho(canal)
+            except Exception as erro:                    # noqa: BLE001
+                registrar(f"⚠️ Erro no laço do desempenho: {erro}")
+        time.sleep(15 * 60)
+
+
+def _canal_valido(canal: str) -> bool:
+    return canal in {c["nome"] for c in canais()}
+
+
+@app.get("/api/desempenho")
+def desempenho_resumo():
+    return jsonify({"canais": [desempenho.resumo(c["nome"]) for c in canais()],
+                    "clientes": desempenho.clientes(),
+                    "pasta_dados": str(DATA_DIR)})
+
+
+@app.get("/api/desempenho/<canal>")
+def desempenho_do_canal(canal: str):
+    if not _canal_valido(canal):
+        return jsonify({"erro": "Canal desconhecido."}), 404
+    dados = desempenho.dados(canal)
+    if dados and dados.get("videos"):
+        desempenho.anexar_notas(dados["videos"], _notas_jev(), _publicados())
+    return jsonify({"resumo": desempenho.resumo(canal), "dados": dados})
+
+
+@app.get("/api/desempenho/notas")
+def desempenho_notas():
+    """Um ponto por vídeo com nota do JEV, de todos os canais — para o
+    cruzamento nota × desempenho da tela (a conta de correlação é feita lá)."""
+    notas, publicados = _notas_jev(), _publicados()
+    pontos = []
+    for c in canais():
+        dados = desempenho.dados(c["nome"]) or {}
+        videos = dados.get("videos") or []
+        desempenho.anexar_notas(videos, notas, publicados)
+        pontos += [desempenho.ponto_de_nota(c["nome"], v) for v in videos if v.get("jev")]
+    return jsonify({"pontos": pontos, "cortes_com_nota": len(notas),
+                    "aviso": _NOTAS_CACHE.get("erro")})
+
+
+@app.post("/api/desempenho/<canal>/conectar")
+def desempenho_conectar(canal: str):
+    """Abre a tela de autorização do Google num Chromium na sessão RDP ativa."""
+    if not _canal_valido(canal):
+        return jsonify({"erro": "Canal desconhecido."}), 404
+    cliente = str((request.get_json(silent=True) or {}).get("cliente") or "").strip()
+    if cliente not in desempenho.clientes():
+        return jsonify({"erro": "Escolha qual client_secret usar (nenhum encontrado na "
+                                 f"pasta {DATA_DIR}?)."}), 400
+    if desempenho.login_em_andamento(canal):
+        return jsonify({"erro": "Já tem uma janela de autorização aberta para este canal."}), 400
+    with _TRAVA:
+        enviando = next((i for i in carregar_fila()["itens"] if i["id"] == _ENVIANDO), None)
+    if enviando and enviando.get("canal") == canal:
+        return jsonify({"erro": "Este canal está enviando um vídeo agora (o navegador dele "
+                                 "está em uso). Tente de novo quando o envio terminar."}), 400
+    sessao = _display_rdp_ativo()
+    if sessao is None:
+        return jsonify({"erro": "Nenhuma sessão de área de trabalho remota (RDP) ativa "
+                                 "agora — conecte por RDP no servidor primeiro e tente de novo."}), 400
+    display, xauth = sessao
+    script = Path(desempenho.__file__).resolve()
+    env = {**os.environ, "DISPLAY": display, "XAUTHORITY": str(xauth)}
+    # Grava "abrindo" já aqui, antes do processo subir: o laço de envio
+    # enxerga na hora que o perfil deste canal vai ficar ocupado.
+    desempenho.gravar_status_login(canal, "abrindo", "Abrindo o navegador na tela remota…")
+    subprocess.Popen([sys.executable, str(script), "--login", canal, cliente],
+                     env=env, cwd=str(script.parent), start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    registrar(f"📊 Autorização de leitura do canal '{canal}' iniciada (tela remota, display {display}).")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/desempenho/<canal>/atualizar")
+def desempenho_atualizar(canal: str):
+    if not _canal_valido(canal):
+        return jsonify({"erro": "Canal desconhecido."}), 404
+    if not desempenho.conectado(canal):
+        return jsonify({"erro": "Canal não conectado à API ainda."}), 400
+    if desempenho.atualizando(canal):
+        return jsonify({"erro": "Já está atualizando este canal."}), 400
+    threading.Thread(target=_atualizar_desempenho, args=(canal,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/desempenho/<canal>/desconectar")
+def desempenho_desconectar(canal: str):
+    desempenho.desconectar(canal)
+    registrar(f"📊 Canal '{canal}' desconectado da leitura de métricas.")
+    return jsonify({"ok": True})
+
+
 @app.errorhandler(413)
 def arquivo_grande_demais(_erro):
     return jsonify({"erro": "Arquivo maior que o limite de 12 GB por envio."}), 413
@@ -1136,14 +1400,29 @@ with _TRAVA:
     _fila_ao_subir = carregar_fila()
     _orfaos = [i for i in _fila_ao_subir["itens"] if i.get("status") == "enviando"]
     for _item in _orfaos:
-        _item["status"] = "aguardando"
-        _item["mensagem"] = "O envio foi interrompido (o serviço reiniciou); vai ser enviado de novo."
+        if _item.get("publicar_clicado"):
+            # Caiu depois do clique em publicar: o vídeo quase certamente já
+            # está no ar. Reenviar publicaria duplicado; o TikTok é que ficou.
+            _item["status"] = "enviado"
+            _item["enviado_em"] = datetime.now().isoformat(timespec="seconds")
+            _item["mensagem"] = ("O serviço caiu logo depois de clicar em publicar — confira no "
+                                 "Studio. Não foi reenviado para não duplicar"
+                                 + (" (o TikTok não saiu)." if not _item.get("tiktok_status") else "."))
+        else:
+            _item["status"] = "aguardando"
+            _item["mensagem"] = "O envio foi interrompido (o serviço reiniciou); vai ser enviado de novo."
     if _orfaos:
         salvar_fila(_fila_ao_subir)
 for _item in _orfaos:
-    registrar(f"↩️ “{_item.get('titulo') or _item['arquivo']}” estava sendo enviado quando o "
-              "serviço caiu — voltou para a fila.")
+    if _item["status"] == "enviado":
+        _anotar_publicado(_item["arquivo"], _item.get("titulo") or "", _item.get("canal") or "")
+        registrar(f"⚠️ “{_item.get('titulo') or _item['arquivo']}” caiu logo depois de clicar em "
+                  "publicar — marcado como publicado (confira no Studio), sem reenviar.")
+    else:
+        registrar(f"↩️ “{_item.get('titulo') or _item['arquivo']}” estava sendo enviado quando o "
+                  "serviço caiu — voltou para a fila.")
 threading.Thread(target=_laco_de_envio, daemon=True, name="fila").start()
+threading.Thread(target=_laco_de_desempenho, daemon=True, name="desempenho").start()
 
 registrar("🟢 Publicador iniciado.")
 # Sinal indireto de queda: se a máquina/serviço tiver caído, este é o

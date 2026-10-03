@@ -3,7 +3,7 @@
     python pipeline.py <video.mp4> [--workspace pasta] [--ate-etapa N]
 
 Etapas: 1 áudio · 2 transcrição (SRT ou Whisper) · 3 segmentação (DeepSeek aponta
-os blocos candidatos, por conteúdo) · 4 JEV qualifica (viral + ritmo + ajuste
+os blocos candidatos, por conteúdo) · 4 JEV qualifica (viral + ritmo + abertura + ajuste
 fino de limites, numa chamada) · 5 consolidação · 6 LLM revisão fina ·
 7 ranqueamento · 8 blocos_finais.json.
 
@@ -119,10 +119,10 @@ def em_paralelo(arquivo: Path, itens: list[dict], fn, paralelo: int) -> dict:
 
 
 def ajusta_limites(bloco: dict, segs: list[dict], inicio: float, fim: float,
-                   etapa_nome: str, motivo: str, minimo: float) -> bool:
+                   etapa_nome: str, motivo: str, minimo: float, maximo: float) -> bool:
     """Aplica novos limites ao bloco, recalculando texto e palavras pela transcrição."""
     novo = sg.monta_bloco(segs, inicio, fim)
-    if not novo or novo["duracao"] < minimo:
+    if not novo or not minimo <= novo["duracao"] <= maximo:
         log.info("   %s: ajuste %s ignorado (bloco ficaria com %.1fs)", bloco["id"], etapa_nome,
                  novo["duracao"] if novo else 0)
         return False
@@ -145,6 +145,13 @@ def deduplica(blocos: list[dict], limite: float) -> list[dict]:
     return sorted(mantidos, key=lambda b: b["inicio"])
 
 
+def nota_duracao(duracao: float, pesos: dict) -> float:
+    """1 até `duracao_ideal`, cai em linha reta até 0 em `duracao_zero` (o público
+    do Shorts assiste ~30-35s; ver o comentário de `ranking` no config.yaml)."""
+    ideal, zero = pesos["duracao_ideal"], pesos["duracao_zero"]
+    return max(0.0, min(1.0, (zero - duracao) / (zero - ideal)))
+
+
 def nota_llm(analise: dict | None) -> float:
     """coerente + coeso + sem problemas, de 0 a 1. Sem análise (falha da API) vale 0.5."""
     if not analise:
@@ -158,7 +165,7 @@ def nota_llm(analise: dict | None) -> float:
 
 def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
     cseg, cj, cl, cb = cfg["segmentacao"], cfg["jev"], cfg["llm"], cfg["bloco"]
-    minimo = cb["duracao_minima"]
+    minimo, maximo = cb["duracao_minima"], cb["duracao_maxima"]
 
     # 1 ─ áudio
     with etapa(1, "extrair áudio"):
@@ -207,10 +214,17 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
             candidatos = segmentar(segs, segmentador, cseg["contexto_seg"])
             gravar_json(cpath, candidatos)
         blocos: list[dict] = []
-        descartados = 0
+        descartados = encurtados = 0
         for i, c in enumerate(candidatos, 1):
             bloco = sg.monta_bloco(segs, c["inicio"], c["fim"])
-            if not bloco or not (cb["duracao_minima"] <= bloco["duracao"] <= cb["duracao_maxima"]):
+            if bloco and bloco["duracao"] > maximo:
+                # Longo demais: fica o começo (o prompt pede que o corte já
+                # abra no gancho) até o último segmento que ainda cabe.
+                dentro = [s for s in sg.trecho(segs, bloco["inicio"], bloco["fim"])
+                          if s["end"] - bloco["inicio"] <= maximo]
+                bloco = sg.monta_bloco(segs, bloco["inicio"], dentro[-1]["end"]) if dentro else None
+                encurtados += bool(bloco)
+            if not bloco or not (minimo <= bloco["duracao"] <= maximo):
                 descartados += 1
                 continue
             bloco["id"] = f"cand_{i:03d}"
@@ -219,8 +233,9 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
             bloco["pedaco_origem"] = c.get("pedaco")
             blocos.append(bloco)
         gravar_json(ws / "blocos_candidatos.json", blocos)
-        log.info("   %d candidatos brutos · %d fora da faixa de duração (%.0f-%.0fs) · %d seguem",
-                 len(candidatos), descartados, cb["duracao_minima"], cb["duracao_maxima"], len(blocos))
+        log.info("   %d candidatos brutos · %d encurtados pelo fim · %d fora da faixa de duração "
+                 "(%.0f-%.0fs) · %d seguem", len(candidatos), encurtados, descartados,
+                 minimo, maximo, len(blocos))
     if ate_etapa <= 3:
         return 0
     if not blocos:
@@ -236,7 +251,7 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
         return 2
     jev = JEV(cj)
 
-    # 4 ─ JEV: qualifica cada candidato (viral + ritmo + ajuste fino, numa chamada)
+    # 4 ─ JEV: qualifica cada candidato (viral + ritmo + abertura + ajuste fino, numa chamada)
     with etapa(4, "JEV — qualifica os candidatos"):
         def pergunta4(b):
             return jev.qualificar(sg.trecho(segs, b["inicio"], b["fim"]), cj["opcoes_limite"],
@@ -251,6 +266,8 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
                 continue
             b["score_viral"] = round(r["score_viral"], 2)
             b["qualidade_interna"] = round(r["ritmo"], 4)
+            b["abertura"] = round(r.get("abertura", 0.5), 4)  # cache antigo não tem
+            b["tipo_abertura"] = r.get("tipo_abertura", "")          # idem
             b["precisa_melhora"], b["motivo_melhora"] = False, None
             dentro = sg.trecho(segs, b["inicio"], b["fim"])
             ini, fim = r["inicio_idx"], r["fim_idx"]
@@ -261,7 +278,7 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
                 b["precisa_melhora"] = True
                 b["motivo_melhora"] = f"{motivo} (JEV {r['precisa_melhora']:.2f})"
                 ajustados += ajusta_limites(b, segs, dentro[ini]["start"], dentro[fim]["end"],
-                                            "jev", motivo, minimo)
+                                            "jev", motivo, minimo, maximo)
             pontuados.append(b)
         log.info("   %d candidatos · %d qualificados · %d com ajuste fino de limites",
                  len(blocos), len(pontuados), ajustados)
@@ -302,7 +319,7 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
             teto = depois[-1]["end"] if depois else b["fim"]
             ini, fim = max(piso, sug["inicio"]), min(teto, sug["fim"])
             if fim > ini:
-                ajustados += ajusta_limites(b, segs, ini, fim, "llm", sug["motivo"], minimo)
+                ajustados += ajusta_limites(b, segs, ini, fim, "llm", sug["motivo"], minimo, maximo)
         blocos = deduplica(blocos, cfg["consolidacao"]["sobreposicao_maxima"])
         gravar_json(ws / "blocos_llm.json", blocos)
         log.info("   %d analisados · %d com limites ajustados · %d após nova deduplicação",
@@ -313,7 +330,10 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
         pesos = cfg["ranking"]
         for b in blocos:
             b["nota_llm"] = round(nota_llm(b.get("analise_llm")), 4)
+            b["nota_duracao"] = round(nota_duracao(b["duracao"], pesos), 4)
             b["nota_final"] = round(pesos["peso_viral"] * (b["score_viral"] - 1) / 4
+                                    + pesos["peso_abertura"] * b["abertura"]
+                                    + pesos["peso_duracao"] * b["nota_duracao"]
                                     + pesos["peso_ritmo"] * b["qualidade_interna"]
                                     + pesos["peso_llm"] * b["nota_llm"], 4)
         blocos.sort(key=lambda b: b["nota_final"], reverse=True)
@@ -323,7 +343,8 @@ def rodar(video: Path, ws: Path, cfg: dict, ate_etapa: int) -> int:
     # 8 ─ JSON final
     with etapa(8, "salvar blocos_finais.json"):
         campos = ["id", "rank", "inicio", "fim", "duracao", "texto", "palavras", "fonte_transcricao",
-                  "gancho", "comentario", "score_viral", "qualidade_interna", "precisa_melhora",
+                  "gancho", "comentario", "score_viral", "qualidade_interna", "abertura", "tipo_abertura", "nota_duracao",
+                  "precisa_melhora",
                   "motivo_melhora", "analise_llm", "nota_llm", "nota_final", "origem",
                   "pedaco_origem", "ajustes", "erros"]
         finais = []

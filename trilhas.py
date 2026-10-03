@@ -90,10 +90,15 @@ def mix_chain(speech_label: str, music_input: int, out_label: str = "aout",
     fades = "afade=t=in:d=1.5"
     if duration > 4:
         fades += f",afade=t=out:st={duration - 3:.2f}:d=3"
+    # A fala entra em dois lugares (chave do ducking e a mistura), então passa
+    # por um asplit: um rótulo de filtro como o "[sp]" da censura só pode ser
+    # consumido uma vez, e reusá-lo fazia o FFmpeg misturar o áudio ORIGINAL —
+    # o palavrão silenciado voltava a tocar sempre que o corte tinha trilha.
     return (
+        f"[{speech_label}]asplit=2[fala_chave][fala_mix];"
         f"[{music_input}:a]loudnorm=I={lufs}:TP=-9:LRA=11,volume={MUSIC_VOLUME_BOOST},{fades}[bg];"
-        f"[bg][{speech_label}]sidechaincompress="
+        f"[bg][fala_chave]sidechaincompress="
         f"threshold=0.03:ratio=8:attack=15:release=350[duck];"
-        f"[{speech_label}][duck]amix=inputs=2:duration=first:normalize=0[premix];"
+        f"[fala_mix][duck]amix=inputs=2:duration=first:normalize=0[premix];"
         f"[premix]alimiter=limit=0.95[{out_label}]"
     )

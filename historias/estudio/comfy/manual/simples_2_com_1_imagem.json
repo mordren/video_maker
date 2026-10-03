@@ -1,0 +1,178 @@
+{
+ "1": {
+  "class_type": "UnetLoaderGGUF",
+  "inputs": {
+   "unet_name": "flux1-kontext-dev-Q4_K_M.gguf"
+  }
+ },
+ "2": {
+  "class_type": "DualCLIPLoader",
+  "inputs": {
+   "clip_name1": "clip_l.safetensors",
+   "clip_name2": "t5xxl_fp8_e4m3fn.safetensors",
+   "type": "flux"
+  }
+ },
+ "3": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ae.safetensors"
+  }
+ },
+ "10": {
+  "class_type": "CLIPTextEncode",
+  "_meta": {
+   "title": "PROMPT - escreva aqui"
+  },
+  "inputs": {
+   "clip": [
+    "2",
+    0
+   ],
+   "text": "Same person and same place as the reference images. Change only: she is now running down the hallway, looking back in fear."
+  }
+ },
+ "20": {
+  "class_type": "LoadImage",
+  "_meta": {
+   "title": "IMAGEM 1 - escolha ou suba a imagem"
+  },
+  "inputs": {
+   "image": "example.png"
+  }
+ },
+ "21": {
+  "class_type": "ImageScaleToTotalPixels",
+  "_meta": {
+   "title": "Tamanho da imagem 1 (MP)"
+  },
+  "inputs": {
+   "image": [
+    "20",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "megapixels": 0.6,
+   "resolution_steps": 1
+  }
+ },
+ "22": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "21",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "23": {
+  "class_type": "ReferenceLatent",
+  "_meta": {
+   "title": "USAR IMAGEM 1"
+  },
+  "inputs": {
+   "conditioning": [
+    "10",
+    0
+   ],
+   "latent": [
+    "22",
+    0
+   ]
+  }
+ },
+ "50": {
+  "class_type": "FluxGuidance",
+  "inputs": {
+   "conditioning": [
+    "23",
+    0
+   ],
+   "guidance": 2.5
+  }
+ },
+ "51": {
+  "class_type": "CLIPTextEncode",
+  "_meta": {
+   "title": "NEGATIVO - só funciona com cfg acima de 1 no Gerar"
+  },
+  "inputs": {
+   "clip": [
+    "2",
+    0
+   ],
+   "text": "text, letters, words, title, logo, caption, speech bubble, watermark, signature, border, frame, paper margin"
+  }
+ },
+ "52": {
+  "class_type": "EmptySD3LatentImage",
+  "_meta": {
+   "title": "Tamanho da imagem (576x1024 = vertical leve)"
+  },
+  "inputs": {
+   "width": 576,
+   "height": 1024,
+   "batch_size": 1
+  }
+ },
+ "53": {
+  "class_type": "KSampler",
+  "_meta": {
+   "title": "Gerar (seed FIXA; cfg 1 = sem negativo, cfg 2 = usa o negativo e fica 2x mais lento)"
+  },
+  "inputs": {
+   "model": [
+    "1",
+    0
+   ],
+   "seed": 42,
+   "steps": 20,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "50",
+    0
+   ],
+   "negative": [
+    "51",
+    0
+   ],
+   "latent_image": [
+    "52",
+    0
+   ],
+   "denoise": 1.0
+  }
+ },
+ "54": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "53",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  }
+ },
+ "55": {
+  "class_type": "SaveImage",
+  "_meta": {
+   "title": "RESULTADO"
+  },
+  "inputs": {
+   "images": [
+    "54",
+    0
+   ],
+   "filename_prefix": "manual_ref"
+  }
+ }
+}

@@ -51,6 +51,14 @@ _ESPERA = 60_000
 # o envio ou as checagens ainda em andamento.
 _ESPERA_ENVIO = 60 * 60_000        # 1 hora
 _ESPERA_VERIFICACAO = 60 * 60_000  # 1 hora
+# ...mas a verificação que o próprio YouTube já deu como atrasada (a contagem
+# "N minutos restantes" acabou e ficou "Em verificação…", com o rodapé
+# "As verificações estão demorando mais que o esperado") desiste bem antes:
+# visto em 29/09/2026 parada assim por mais de 20 min, com a fila de TODOS os
+# canais esperando atrás dela. Desistir devolve o vídeo ao fim da fila (o
+# Publicador reenvia mais tarde) — nunca publica com a verificação pendente.
+_ESPERA_VERIFICACAO_ATRASADA = 15 * 60_000  # 15 minutos
+_AVISO_DE_VIDA_MS = 5 * 60_000              # log a cada 5 min enquanto nada muda
 
 FALHA_PNG = "youtube_browser_falha.png"
 FALHA_HTML = "youtube_browser_falha.html"
@@ -560,6 +568,8 @@ def _aguardar_verificacoes_concluidas(page, teto_ms: int, log=None) -> None:
     """
     inicio = time.monotonic()
     ultimo = None
+    ultimo_log = inicio
+    atrasada_desde = None
     while (time.monotonic() - inicio) * 1000 < teto_ms:
         _checar_processamento(page)
         linhas = page.locator(_LINHA_VERIFICACAO)
@@ -588,11 +598,32 @@ def _aguardar_verificacoes_concluidas(page, teto_ms: int, log=None) -> None:
                 _emit(log, f"Verificações concluídas: {prontas}/{total} linha(s) com check.")
                 return
             status = f"{prontas}/{total} concluídas — pendente: {' | '.join(pendentes) or '?'}"
+            # Atrasada = a contagem ("N minutos restantes") acabou e virou
+            # "Em verificação…", ou o rodapé do Studio avisando. (No começo a
+            # linha também aparece sem contagem por alguns segundos, mas sem
+            # o "Em verificação" — isso não conta.)
+            em_verificacao = any("em verifica" in p.lower() or "checking…" in p.lower() for p in pendentes)
+            sem_contagem = not any("restante" in p.lower() or "remaining" in p.lower() for p in pendentes)
+            if (em_verificacao and sem_contagem) or _verificacao_atrasada(page):
+                atrasada_desde = atrasada_desde or time.monotonic()
+                if (time.monotonic() - atrasada_desde) * 1000 >= _ESPERA_VERIFICACAO_ATRASADA:
+                    raise YoutubeBrowserUploadError(
+                        "A verificação de direitos autorais do YouTube travou em \"Em verificação…\" "
+                        f"por {_ESPERA_VERIFICACAO_ATRASADA // 60_000} min (o Studio avisou que está "
+                        "demorando mais que o esperado). Desisti para não segurar a fila; o rascunho "
+                        "fica como privado no canal.")
+            else:
+                atrasada_desde = None
         else:
             status = "aguardando a etapa de verificação montar na tela"
+        agora = time.monotonic()
         if status != ultimo:
             _emit(log, f"Verificando: {status}")
-            ultimo = status
+            ultimo, ultimo_log = status, agora
+        elif (agora - ultimo_log) * 1000 >= _AVISO_DE_VIDA_MS:
+            espera = f"; atrasada há {int((agora - atrasada_desde) // 60)} min" if atrasada_desde else ""
+            _emit(log, f"Ainda verificando (há {int((agora - inicio) // 60)} min{espera}): {status}")
+            ultimo_log = agora
         page.wait_for_timeout(4000)
     raise YoutubeBrowserUploadError(
         "As verificações do YouTube (direitos autorais / diretrizes da "
@@ -610,6 +641,18 @@ _PERCENTUAL = re.compile(r"\d+\s*%")
 _PROCESSAMENTO_FALHOU = re.compile(
     r"Processamento interrompido|Não foi possível processar|Processing abandoned|"
     r"couldn.t process|could not process", re.IGNORECASE)
+
+
+_VERIFICACAO_ATRASADA = re.compile(
+    r"demorando mais que o esperado|taking longer than expected", re.IGNORECASE)
+
+
+def _verificacao_atrasada(page) -> bool:
+    """O rodapé do diálogo diz que as verificações estão atrasadas?"""
+    try:
+        return page.get_by_text(_VERIFICACAO_ATRASADA).first.is_visible()
+    except Exception:
+        return False
 
 
 def _checar_processamento(page) -> None:

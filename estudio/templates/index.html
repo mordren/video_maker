@@ -3,81 +3,107 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Estúdio de cortes</title>
+<title>Estúdio</title>
+<!-- Base visual = a do Estúdio de Histórias (historias/estudio/static); o Cortador tem o seu, só dentro de #cortador. -->
+<link rel="stylesheet" href="/static/style.css">
 <style>
-  :root {
-    --fundo: #16181d; --caixa: #1e2128; --linha: #2b2f38;
-    --texto: #e7e9ee; --fraco: #9aa1ad; --destaque: #4f8cff;
+  header h1 span { color: var(--acc); }
+  nav { flex-wrap: wrap; }
+  nav a[data-nav="cortador"].on { color: #fff; background: #25324d; }
+  #aviso-historias { margin: 10px 20px 0; }
+
+  /* ── Cortador (o Estúdio de cortes de antes, igual, só que dentro da aba) ── */
+  #cortador {
+    --fundo: var(--bg); --caixa: var(--panel); --linha: var(--line);
+    --texto: var(--txt); --fraco: var(--dim); --destaque: #4f8cff;
     --ok: #37c871; --erro: #ff6b6b; --aviso: #ffc95c;
+    max-width: 1180px; margin: 0 auto; padding: 18px 16px 60px;
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; color: var(--texto);
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 24px 16px 60px; background: var(--fundo); color: var(--texto);
-    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
-  }
-  main { max-width: 1180px; margin: 0 auto; }
-  h1 { font-size: 22px; margin: 0; }
-  h2 { font-size: 16px; margin: 0 0 12px; }
-  .fraco { color: var(--fraco); }
-  section {
+  #cortador h2 { font-size: 16px; margin: 0 0 12px; }
+  #cortador h2.titulo-aba { font-size: 20px; margin: 0; }
+  #cortador .fraco { color: var(--fraco); }
+  #cortador section {
     background: var(--caixa); border: 1px solid var(--linha); border-radius: 10px;
     padding: 16px; margin-top: 16px;
   }
-  button {
+  #cortador button {
     background: #2a2f3a; color: var(--texto); border: 1px solid var(--linha);
-    border-radius: 7px; padding: 7px 12px; font-size: 14px; cursor: pointer;
+    border-radius: 7px; padding: 7px 12px; font-size: 14px; cursor: pointer; white-space: normal;
   }
-  button:hover { border-color: var(--destaque); }
-  button.principal { background: var(--destaque); border-color: var(--destaque); color: #fff; font-weight: 600; }
-  button.perigo { color: #ffb4b4; }
-  button.mini { padding: 3px 8px; font-size: 13px; }
-  button:disabled { opacity: .45; cursor: default; }
-  input, select {
+  #cortador button:hover { border-color: var(--destaque); }
+  #cortador button.principal { background: var(--destaque); border-color: var(--destaque); color: #fff; font-weight: 600; }
+  #cortador button.perigo { color: #ffb4b4; }
+  #cortador button.mini { padding: 3px 8px; font-size: 13px; }
+  #cortador button:disabled { opacity: .45; cursor: default; }
+  #cortador input, #cortador select {
     background: #14161b; color: var(--texto); border: 1px solid var(--linha);
     border-radius: 7px; padding: 7px 9px; font: inherit; width: 100%;
   }
-  label { display: block; font-size: 13px; color: var(--fraco); margin-bottom: 4px; }
-  a { color: var(--destaque); }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--linha); vertical-align: middle; }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--fraco); }
-  .topo { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; }
-  .acoes { display: flex; flex-wrap: wrap; gap: 6px; }
-  .grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-  .abas { display: flex; gap: 6px; margin-bottom: 12px; }
-  .abas button.ativa { border-color: var(--destaque); color: #fff; background: #25324d; }
-  .ou { align-self: end; padding-bottom: 8px; text-align: center; color: var(--fraco); }
-  .pilula { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--linha); white-space: nowrap; }
-  .aguardando { color: var(--fraco); }
-  .processando { color: var(--aviso); border-color: var(--aviso); }
-  .pronto, .na_fila { color: var(--ok); border-color: var(--ok); }
-  .erro, .cancelado { color: var(--erro); border-color: var(--erro); }
-  .descartado { color: var(--fraco); }
-  progress { width: 100%; height: 8px; margin-top: 10px; }
-  .recado { margin-top: 10px; font-size: 14px; min-height: 20px; }
-  .recado.erro { color: var(--erro); } .recado.ok { color: var(--ok); }
+  #cortador label { display: block; font-size: 13px; color: var(--fraco); margin: 0 0 4px; text-transform: none; letter-spacing: 0; }
+  #cortador a { color: var(--destaque); }
+  #cortador table { width: 100%; border-collapse: collapse; }
+  #cortador th, #cortador td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--linha); vertical-align: middle; }
+  #cortador th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--fraco); font-weight: 600; }
+  #cortador video { max-height: none; border-radius: 6px; }
+  #cortador .topo { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; }
+  #cortador .acoes { display: flex; flex-wrap: wrap; gap: 6px; }
+  #cortador .grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  #cortador .abas { display: flex; gap: 6px; margin-bottom: 12px; }
+  #cortador .abas button.ativa { border-color: var(--destaque); color: #fff; background: #25324d; }
+  #cortador .ou { align-self: end; padding-bottom: 8px; text-align: center; color: var(--fraco); }
+  #cortador .pilula { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; border: 1px solid var(--linha); white-space: nowrap; }
+  #cortador .aguardando { color: var(--fraco); }
+  #cortador .processando { color: var(--aviso); border-color: var(--aviso); }
+  #cortador .pronto, #cortador .na_fila { color: var(--ok); border-color: var(--ok); }
+  #cortador .erro, #cortador .cancelado { color: var(--erro); border-color: var(--erro); }
+  #cortador .descartado { color: var(--fraco); }
+  #cortador progress { width: 100%; height: 8px; margin-top: 10px; }
+  #cortador .recado { margin-top: 10px; font-size: 14px; min-height: 20px; }
+  #cortador .recado.erro { color: var(--erro); } #cortador .recado.ok { color: var(--ok); }
   #aviso-ram { background: #3a2a10; border: 1px solid #e0a030; color: #ffe2a8; border-radius: 8px; padding: 10px 14px; margin-top: 10px; font-weight: 600; }
   #aviso-conexao { background: #3a1f1f; border: 1px solid var(--erro); color: #ffd3d3; border-radius: 8px; padding: 10px 14px; margin-top: 10px; }
-  .cortes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
-  .corte { border: 1px solid var(--linha); border-radius: 10px; padding: 10px; background: #191c22; display: flex; flex-direction: column; gap: 8px; }
-  .corte video { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 6px; }
-  .propostas { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
-  .propostas .corte video { aspect-ratio: 16/9; }
-  .corte.escolhido { border-color: var(--aviso); }
-  .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
-  .corte .meta b { color: var(--texto); font-weight: 600; }
-  pre#log { margin: 10px 0 0; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--fraco); white-space: pre-wrap; background: #14161b; border-radius: 8px; padding: 10px; }
-  td.etapa { font-size: 13px; color: var(--fraco); }
-  @media (max-width: 600px) { .esconde-celular { display: none; } }
+  #cortador .cortes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  #cortador .corte { border: 1px solid var(--linha); border-radius: 10px; padding: 10px; background: #191c22; display: flex; flex-direction: column; gap: 8px; }
+  #cortador .corte video { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 6px; }
+  #cortador .propostas { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  #cortador .propostas .corte video { aspect-ratio: 16/9; }
+  #cortador .corte.escolhido { border-color: var(--aviso); }
+  #cortador .corte.longo { border-color: #3d6bb3; }
+  #cortador .cortes .corte.longo { grid-column: span 2; }
+  #cortador .cortes .corte.longo video { aspect-ratio: 16/9; }
+  #cortador .pilula-longo { display: inline-block; background: #1f3558; color: #cfe0ff; border-radius: 999px; padding: 1px 9px; font-weight: 600; }
+  @media (max-width: 600px) { #cortador .cortes .corte.longo { grid-column: auto; } }
+  #cortador .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
+  #cortador .corte .meta b { color: var(--texto); font-weight: 600; }
+  #cortador textarea { min-height: 0; }
+  #cortador pre#log { margin: 10px 0 0; max-height: 320px; overflow: auto; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--fraco); white-space: pre-wrap; background: #14161b; border-radius: 8px; padding: 10px; }
+  #cortador td.etapa { font-size: 13px; color: var(--fraco); }
+  #cortador #dica-canal { font-size: 12.5px; margin-top: 5px; line-height: 1.4; }
+  @media (max-width: 600px) { #cortador .esconde-celular { display: none; } }
 </style>
 </head>
 <body>
-<main>
+<header>
+  <h1>Estúdio <span>de vídeos</span></h1>
+  <nav>
+    <a href="#/cortador" data-nav="cortador">Cortador</a>
+    <a href="#/" data-nav="projetos">Histórias</a>
+    <a href="#/gerador" data-nav="gerador">Music</a>
+    <a href="#/canais" data-nav="canais">Canais</a>
+    <a href="#/custos" data-nav="custos">Custos</a>
+    <a href="#/teste-comfy" data-nav="teste-comfy">Teste Comfy</a>
+    <a href="#/configuracoes" data-nav="configuracoes">Configurações</a>
+  </nav>
+  <div id="sistema" class="small"></div>
+</header>
+
+<div id="cortador" hidden>
   <div class="topo">
-    <h1>🎬 Estúdio de cortes</h1>
+    <h2 class="titulo-aba">✂ Cortador</h2>
     <span class="fraco">Publicação: <a id="link-publicador" href="#" target="_blank" rel="noopener">abrir o Publicador ↗</a></span>
   </div>
-  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16, transparente ou fotos do assunto, legenda, GC, trilha → revisão → fila de publicação.</p>
+  <p class="fraco" style="margin:4px 0 0">Link ou vídeo → melhores trechos (JEV) → corte com abertura cinza → <b>propostas em 16:9</b> → você escolhe quais produzir e o formato → crop 9:16, transparente ou fotos do assunto, legenda, GC, trilha → revisão → fila de publicação. Quando a live tem um assunto que sustenta 15–20 min, também sai uma proposta de <b>📺 vídeo longo</b> (16:9 com a moldura do canal).</p>
   <div id="aviso-conexao" hidden></div>
   <div id="aviso-ram" hidden></div>
 
@@ -112,6 +138,7 @@
       <div>
         <label for="canal">Canal (para onde vai depois da revisão)</label>
         <select id="canal"></select>
+        <div id="dica-canal" class="fraco"></div>
       </div>
       <div>
         <label for="perfil">Visual (logo, cores, marca d'água)</label>
@@ -162,11 +189,20 @@
     </div>
     <pre id="log"></pre>
   </section>
-</main>
+</div>
+
+<main id="app" hidden><div class="spin"></div></main>
+<div id="toast"></div>
 
 <script>
+// A página única: o app do Estúdio de Histórias (static/app.js) cuida das rotas
+// e chama window.cortador.ativar()/desativar() quando a aba Cortador abre/fecha.
+window.ESTUDIO_UNIFICADO = true;
+</script>
+<script>
+(() => {
 const $ = (id) => document.getElementById(id);
-let estado = null, modo = "auto", assinaturaCortes = "", assinaturaPropostas = "";
+let estado = null, modo = "auto", assinaturaCortes = "", assinaturaPropostas = "", timer = null;
 
 function escapar(t) {
   return String(t ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -206,7 +242,22 @@ function perfilDoCanal(canal, reserva) {
   return p && estado.perfis.includes(p) ? p : reserva;
 }
 
-$("canal").onchange = () => { $("perfil").value = perfilDoCanal($("canal").value, $("perfil").value); };
+// Perfil do canal (aba Canais): legenda padrão dele e o resumo ao escolher o canal.
+const perfilCanal = canal => (estado?.canais_perfil || {})[canal] || null;
+const legendaDoCanal = canal => (perfilCanal(canal) || {}).legenda_padrao || estado?.legenda_padrao || "new";
+
+function dicaCanal() {
+  const nome = $("canal").value, p = perfilCanal(nome);
+  if (!nome) { $("dica-canal").innerHTML = ""; return; }
+  if (!p) {
+    $("dica-canal").innerHTML = `Sem perfil ainda — <a href="#/canal-pub/${encodeURIComponent(nome)}">criar em Canais</a>.`;
+    return;
+  }
+  const partes = [p.nicho, `${p.duracao_min_s}–${p.duracao_max_s} s`, p.tom].filter(Boolean).map(escapar);
+  $("dica-canal").innerHTML = `${escapar(p.nome_exibicao || nome)}: ${partes.join(" · ")} · <a href="#/canal-pub/${encodeURIComponent(nome)}">perfil</a>`;
+}
+
+$("canal").onchange = () => { $("perfil").value = perfilDoCanal($("canal").value, $("perfil").value); dicaCanal(); };
 
 $("video").onchange = () => { $("campo-legenda").hidden = !$("video").files[0]; };
 
@@ -289,9 +340,24 @@ function desenharCortes() {
     const opcoesRefazer = Object.keys(FORMATOS)
       .map(f => `<option value="${f}" ${f === c.formato ? "selected" : ""} ${semCrop(f) ? "disabled" : ""}>${FORMATOS[f]}${semCrop(f) ? " (desligado: pouca RAM)" : ""}</option>`).join("");
     const legendaAtual = c.estilo_legenda || "old";
+    if (c.tipo === "longo") {
+      // título: o campo aceita qualquer texto, e as sugestões da IA aparecem ao clicar
+      const lista = `lt-${t.id}-${c.id}`;
+      return `<div class="corte longo" data-t="${t.id}" data-c="${c.id}">
+        <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
+        <div class="meta"><span class="pilula-longo">📺 vídeo longo · ${mmss(c.duracao || 0)}</span> · ${c.remocoes || 0} pedaço(s) tirados · ${c.silencios_cortados || 0} silêncio(s) &gt; 4 s${etiquetaAudio(c.audio)}<br>${escapar(c.tema || "")} · de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
+        <div><label>Título no YouTube <span class="fraco">(clique para ver as ${(c.titulos || []).length} sugestões)</span></label><input class="titulo" maxlength="100" list="${lista}" value="${escapar(c.titulo_publicacao || "")}"><datalist id="${lista}">${(c.titulos || []).map(x => `<option value="${escapar(x)}">`).join("")}</datalist></div>
+        <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
+        <div class="acoes">
+          <button class="principal enviar">📤 Enviar para a fila</button>
+          <button class="perigo descartar">descartar</button>
+          <a class="fraco" style="align-self:center;font-size:13px" href="${base + encodeURIComponent(c.arquivo)}" download>baixar</a>
+        </div>
+      </div>`;
+    }
     return `<div class="corte" data-t="${t.id}" data-c="${c.id}">
       <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
-      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato} · legenda ${legendaAtual}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${creditos}</div>
+      <div class="meta"><b>${escapar(c.titulo || "")}</b> ${escapar(c.subtitulo || "")}<br>${extras} · ${formato} · legenda ${legendaAtual}${etiquetaAudio(c.audio)}<br>de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}${detalheRitmo(c.ritmo)}${creditos}</div>
       <div><label>Título no YouTube</label><input class="titulo" maxlength="100" value="${escapar(c.titulo_publicacao || "")}"></div>
       <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
       <div class="acoes">
@@ -306,11 +372,61 @@ function desenharCortes() {
   }).join("");
 }
 
+// Volume do corte pronto (audio_qa.py): ok, corrigido sozinho, ou alerta que sobrou.
+function etiquetaAudio(a) {
+  if (!a || !a.antes) return a && a.erro ? ` · <span title="${escapar(a.erro)}">🔊 ?</span>` : "";
+  const m = a.depois || a.antes;
+  const medida = `${m.i.toFixed(1)} LUFS · pico ${m.tp.toFixed(1)} dBTP · LRA ${m.lra.toFixed(0)}`;
+  const antes = a.corrigido ? `antes: ${a.antes.i.toFixed(1)} LUFS · pico ${a.antes.tp.toFixed(1)} dBTP\n` : "";
+  const dica = escapar(antes + medida + (a.alertas.length ? "\n" + a.alertas.join("\n") : ""));
+  const rotulo = a.alertas.length ? "⚠️ áudio" : a.corrigido ? "🔊 corrigido" : "🔊 ok";
+  const cor = a.alertas.length ? "var(--aviso)" : "var(--ok)";
+  return ` · <span title="${dica}" style="color:${cor};cursor:help">${rotulo}</span>`;
+}
+
+// Ritmo (ritmo.py): tela parada > 7 s é alerta; mudança colada e fala
+// arrastada são informação (colada quase sempre é a edição do vídeo de origem).
+function detalheRitmo(r) {
+  if (!r || r.erro || r.mudancas == null) return "";
+  const s = x => `${x.de.toFixed(1)}s → ${x.ate.toFixed(1)}s (${x.dur.toFixed(1)} s)`;
+  const itens = [
+    ...r.parados.map(x => `⚠️ tela parada ${s(x)}`),
+    ...r.arrastados.map(x => `🐢 fala arrastada ${s(x)}, ${x.pps} palavra/s — “${escapar(x.texto)}”`),
+    ...(r.colados.length ? [`${r.colados.length} mudança(s) a menos de 2,5 s da anterior: ${r.colados.map(x => x.de.toFixed(1) + "s").join(", ")}`] : []),
+  ];
+  const cabeca = `🎬 ${r.mudancas} mudança(s) visual(is) em ${Math.round(r.duracao)} s`
+    + (r.parados.length ? ` · <span style="color:var(--aviso)">⚠️ ${r.parados.length} trecho(s) parado(s)</span>` : " ✅")
+    + (r.arrastados.length ? ` · 🐢 ${r.arrastados.length}` : "");
+  return itens.length
+    ? `<details style="margin-top:4px"><summary class="fraco" style="cursor:pointer">${cabeca}</summary><div class="fraco" style="font-size:12px">${itens.join("<br>")}</div></details>`
+    : `<br><span class="fraco">${cabeca}</span>`;
+}
+
+// Como o corte abre, pelo JEV (Fase 1). Verde: os tipos que seguraram mais no
+// info; amarelo: os que perderam mais (EDICAO_CANAL.md §1, pista de 10 vídeos).
+const ABERTURAS = {pergunta_jornalista: ["pergunta", true], confronto: ["confronto", true], urgente: ["urgente", true],
+                   frase_de_efeito: ["frase de efeito", null], monologo_tecnico: ["monólogo técnico", false],
+                   abstrato: ["abstrato", false], nenhum: ["sem gancho", false]};
+function etiquetaAbertura(tipo) {
+  const a = ABERTURAS[tipo];
+  if (!a) return "";
+  const cor = a[1] === true ? "var(--ok)" : a[1] === false ? "var(--aviso)" : "inherit";
+  return `<span style="color:${cor}" title="como o corte abre (JEV)">🎣 ${a[0]}</span>`;
+}
+
 const semCrop = f => f === "dinamico" && !!(estado && estado.pouca_ram);
 const FORMATOS = {dinamico: "crop que segue quem fala", transparente: "transparente", imagens: "fotos do assunto + corte"};
 const LEGENDAS = {new: "legenda new (glow + karaokê)", old: "legenda old (amarela)"};
 const opcoesLegenda = atual => Object.keys(LEGENDAS).map(l =>
   `<option value="${l}" ${l === (atual || "new") ? "selected" : ""}>${LEGENDAS[l]}</option>`).join("");
+
+// Duração fora do perfil do canal: só um aviso na proposta (quem decide é você).
+function avisoDuracao(c, canal) {
+  const p = perfilCanal(canal);
+  if (!p || !c.duracao || c.tipo === "longo") return "";
+  if (c.duracao > p.duracao_max_s + 10) return ` · <span style="color:var(--aviso)" title="perfil do canal: ${p.duracao_min_s}–${p.duracao_max_s} s">⏱ acima do perfil</span>`;
+  return "";
+}
 
 function desenharPropostas() {
   const lista = [];
@@ -325,18 +441,21 @@ function desenharPropostas() {
   $("propostas").innerHTML = lista.map(([t, c]) => {
     const produzindo = c.status === "produzindo";
     const rodando = agora[0] === t.id && agora[1] === c.id;
-    const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : ""].filter(Boolean).join(" · ");
+    if (c.tipo === "longo") return cardLongo(t, c, produzindo, rodando);
+    const canal = c.canal || t.canal;
+    const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.nota != null ? `nota ${escapar(c.nota)}` : "",
+                    etiquetaAbertura(c.tipo_abertura)].filter(Boolean).join(" · ") + avisoDuracao(c, canal);
     const sugerido = FORMATOS[c.formato_sugerido] ? c.formato_sugerido : "dinamico";
     // pouca RAM: o crop fica desligado — a pré-seleção vai para o transparente
     const escolhido = semCrop(sugerido) ? "transparente" : sugerido;
     const opcoesFormato = Object.keys(FORMATOS).map(f =>
       `<option value="${f}" ${escolhido === f ? "selected" : ""} ${semCrop(f) ? "disabled" : ""}>${sugerido === f ? "🤖 " : ""}${FORMATOS[f]}${semCrop(f) ? " (desligado: pouca RAM)" : ""}</option>`).join("");
-    const perfilAtual = c.perfil || perfilDoCanal(c.canal || t.canal, t.perfil);
+    const perfilAtual = c.perfil || perfilDoCanal(canal, t.perfil);
     const opcoesPerfil = estado.perfis.map(p => `<option ${p === perfilAtual ? "selected" : ""}>${escapar(p)}</option>`).join("");
     const acoes = produzindo
       ? `<span class="fraco">${rodando ? "⚙️ produzindo agora" : "⏳ na fila de produção"} (${FORMATOS[c.formato_pedido] || ""})</span>
          ${rodando ? "" : `<button class="mini cancelar">cancelar</button>`}`
-      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">${opcoesFormato}</select>         <select class="legenda" style="width:auto" title="estilo da legenda">${opcoesLegenda("new")}</select>         <select class="perfil" style="width:auto" title="visual (logo, cores da tarja, marca d'água) deste corte">${opcoesPerfil}</select>
+      : `<select class="formato" style="width:auto" title="🤖 sugestão do JEV: ${FORMATOS[sugerido]} — troque se achar melhor outro">${opcoesFormato}</select>         <select class="legenda" style="width:auto" title="estilo da legenda (padrão do canal: ${legendaDoCanal(canal)})">${opcoesLegenda(legendaDoCanal(canal))}</select>         <select class="perfil" style="width:auto" title="visual (logo, cores da tarja, marca d'água) deste corte">${opcoesPerfil}</select>
          <button class="principal produzir">✂ Produzir</button>
          <button class="perigo descartar">descartar</button>`;
     return `<div class="corte ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
@@ -347,14 +466,40 @@ function desenharPropostas() {
   }).join("");
 }
 
+// Vídeo longo (fase1/trechos_longos.py): a prévia é um corte de ~15 s com a
+// melhor parte (JEV), sem legenda; a lista diz o que vai sair (no tempo do
+// trecho de 15-20 min), além do silêncio > 4 s.
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function cardLongo(t, c, produzindo, rodando) {
+  const rem = c.remover || [];
+  const saem = rem.length
+    ? `<details style="margin-top:4px"><summary class="fraco" style="cursor:pointer">✂ ${rem.length} pedaço(s) saem (${Math.round(rem.reduce((s, r) => s + r.fim - r.inicio, 0) / 60)} min) + silêncio &gt; 4 s</summary><div class="fraco" style="font-size:12px">${rem.map(r => `${mmss(r.inicio - c.inicio)}–${mmss(r.fim - c.inicio)} ${escapar(r.motivo)}`).join("<br>")}</div></details>`
+    : `<br><span class="fraco">sai só o silêncio &gt; 4 s</span>`;
+  const titulos = (c.titulos || []).length
+    ? `<details style="margin-top:4px"><summary class="fraco" style="cursor:pointer">📝 ${c.titulos.length} títulos sugeridos</summary><div class="fraco" style="font-size:12px">${c.titulos.map(x => `• ${escapar(x)} <span style="opacity:.6">(${x.length})</span>`).join("<br>")}${c.motivo_titulo ? `<br><i>${escapar(c.motivo_titulo)}</i>` : ""}</div></details>` : "";
+  const perfilAtual = c.perfil || perfilDoCanal(c.canal || t.canal, t.perfil);
+  const opcoesPerfil = estado.perfis.map(p => `<option ${p === perfilAtual ? "selected" : ""}>${escapar(p)}</option>`).join("");
+  const acoes = produzindo
+    ? `<span class="fraco">${rodando ? "⚙️ produzindo agora (~7 min)" : "⏳ na fila de produção"} (vídeo longo)</span>
+       ${rodando ? "" : `<button class="mini cancelar">cancelar</button>`}`
+    : `<select class="perfil" style="width:auto" title="moldura (logo e cores) deste vídeo">${opcoesPerfil}</select>
+       <button class="principal produzir">✂ Produzir vídeo longo</button>
+       <button class="perigo descartar">descartar</button>`;
+  return `<div class="corte longo ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
+    <video controls preload="metadata" src="/previa/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}"></video>
+    <div class="meta"><span class="pilula-longo">📺 vídeo longo · ~${Math.round((c.duracao || 0) / 60)} min</span><br><b>${escapar(c.titulo_publicacao || c.tema || c.id)}</b><br>${escapar(c.tema || "")} · de: ${escapar(t.titulo_video || "")}${c.comentario ? `<br>${escapar(c.comentario)}` : ""}${c.previa_inicio != null ? `<br><span class="fraco">▶ prévia: a melhor parte (~${Math.round(c.previa_fim - c.previa_inicio)} s, ${mmss(c.previa_inicio - c.inicio)} do trecho)</span>` : ""}${saem}${titulos}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
+    <div class="acoes">${acoes}</div>
+  </div>`;
+}
+
 $("propostas").addEventListener("click", async (e) => {
   const card = e.target.closest(".corte"); if (!card) return;
   const url = `/api/cortes/${card.dataset.t}/${card.dataset.c}`;
   try {
     if (e.target.classList.contains("produzir")) {
       e.target.disabled = true;
-      await api(url + "/produzir", {formato: card.querySelector(".formato").value, legenda: card.querySelector(".legenda").value,
-                                    perfil: card.querySelector(".perfil").value});
+      const campo = sel => (card.querySelector(sel) || {}).value;
+      await api(url + "/produzir", {formato: campo(".formato"), legenda: campo(".legenda"), perfil: campo(".perfil")});
     } else if (e.target.classList.contains("descartar")) {
       await api(url + "/descartar");
     } else if (e.target.classList.contains("cancelar")) {
@@ -420,17 +565,24 @@ async function atualizar() {
     $("aviso-conexao").textContent = "O Publicador não respondeu — dá para produzir e revisar, mas enviar para a fila e a lista de canais dependem dele.";
     $("aviso-ram").hidden = !estado.pouca_ram;
     $("aviso-ram").textContent = estado.pouca_ram ? "⚠️ " + estado.pouca_ram : "";
-    $("link-publicador").href = `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
+    $("link-publicador").href = estado.publicador_link || `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
     preencherSelect($("canal"), estado.canais, "", estado.canais.length ? "" : "(Publicador sem canais)");
     preencherSelect($("perfil"), estado.perfis, estado.perfil_padrao || estado.perfis[0]);
+    dicaCanal();
     desenharTrabalhos(); desenharPropostas(); desenharCortes();
     carregarLog();
   } catch (e) {
     $("aviso-conexao").hidden = false; $("aviso-conexao").textContent = "Sem conexão com o Estúdio — tentando de novo…";
   }
 }
-atualizar();
-setInterval(atualizar, 4000);
+
+// Só atualiza enquanto a aba está aberta (o app de Histórias liga e desliga).
+window.cortador = {
+  ativar() { if (!timer) { assinaturaCortes = assinaturaPropostas = ""; atualizar(); timer = setInterval(atualizar, 4000); } },
+  desativar() { clearInterval(timer); timer = null; },
+};
+})();
 </script>
+<script src="/static/app.js"></script>
 </body>
 </html>
