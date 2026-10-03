@@ -45,6 +45,25 @@ SIMULACAO = os.getenv("ESTUDIO_SIMULACAO", "0") == "1"
 
 MODELO_TEXTO = os.getenv("MODELO_TEXTO", "deepseek/deepseek-v4.1-flash")
 MODELO_JUIZ = os.getenv("MODELO_JUIZ", "typesafe/jev-1.13")
+# Tarefas de texto que rodam com o raciocínio (thinking) do DeepSeek ligado, separadas por vírgula. Vazio = nenhuma;
+# "todas" liga em tudo. Tarefas: biblia, ganchos, narrativa, reescrita, decupagem, prompts_cena, humanizer, sugestao_canal.
+RACIOCINIO_TAREFAS = {t.strip() for t in os.getenv("RACIOCINIO_TAREFAS", "biblia,narrativa,reescrita").lower().split(",") if t.strip()}
+# Provedor do texto: "openrouter" (usa MODELO_TEXTO) ou "deepseek" (API oficial: deepseek-chat, ou deepseek-reasoner nas
+# tarefas com raciocínio). Juiz (Jev) e narração seguem no OpenRouter; a imagem tem o motor próprio.
+PROVEDOR_TEXTO = os.getenv("PROVEDOR_TEXTO", "openrouter").strip().lower()
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+PRECO_DEEPSEEK_ENTRADA = 0.28e-6         # US$ por token, entrada sem cache
+PRECO_DEEPSEEK_ENTRADA_CACHE = 0.028e-6  # entrada que veio do cache
+PRECO_DEEPSEEK_SAIDA = 0.42e-6           # saída, já contando os tokens de raciocínio
+ROTULO_DEEPSEEK = "deepseek (oficial)"   # o que a tabela de custos mostra como modelo
+
+
+def modelo_texto() -> str:
+    """O modelo como aparece em Custos e no relatório: o do OpenRouter, ou o rótulo da API oficial."""
+    return ROTULO_DEEPSEEK if PROVEDOR_TEXTO == "deepseek" else MODELO_TEXTO
+
+
 MODELO_IMAGEM = os.getenv("MODELO_IMAGEM", "black-forest-labs/flux.2-klein-4b")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"

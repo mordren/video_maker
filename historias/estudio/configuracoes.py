@@ -135,6 +135,10 @@ def _aplicar_ffmpeg(cfg, _valor):
         ger._codificador = None   # o teste do NVENC é refeito com o FFmpeg novo
 
 
+def _aplicar_raciocinio(cfg, valor):
+    cfg.RACIOCINIO_TAREFAS = {t.strip() for t in str(valor).lower().split(",") if t.strip()}
+
+
 def _aplicar_humanizer(cfg, valor):
     cfg.HUMANIZER_SKILL = Path(valor)
 
@@ -197,7 +201,10 @@ def _montar() -> list[Grupo]:
     chaves = Grupo("acesso", "Chaves e acesso",
                    "As chaves ficam no arquivo .env deste computador, que o Git ignora. Nada aqui sai inteiro pela API.",
                    [_env("OPENROUTER_API_KEY", "Chave do OpenRouter", "segredo", "",
-                         "Texto (DeepSeek), juiz (Jev) e narração (Qwen TTS).", attr="OPENROUTER_API_KEY"),
+                         "Juiz (Jev), narração (Qwen TTS) e o texto quando o provedor é o OpenRouter.",
+                         attr="OPENROUTER_API_KEY"),
+                    _env("DEEPSEEK_API_KEY", "Chave do DeepSeek (oficial)", "segredo", "",
+                         "Texto, quando o provedor de texto é a API oficial do DeepSeek.", attr="DEEPSEEK_API_KEY"),
                     _env("POLLINATIONS_API_KEY", "Chave do Pollinations", "segredo", "",
                          "Imagens. Use uma chave só para o programa, com limite de gasto no painel do Pollinations.",
                          attr="POLLINATIONS_API_KEY"),
@@ -208,9 +215,19 @@ def _montar() -> list[Grupo]:
 
     modelos = Grupo("modelos", "Modelos de IA",
                     "Os modelos de cada etapa e como o estúdio fala com o OpenRouter.",
-                    [_env("MODELO_TEXTO", "Modelo de texto", "texto", "deepseek/deepseek-v4.1-flash",
-                          "Escreve ganchos, histórias, cenas e a revisão do humanizer.", attr="MODELO_TEXTO",
+                    [_env("PROVEDOR_TEXTO", "Provedor do texto", "escolha", "openrouter",
+                          "Quem escreve ganchos, histórias, cenas e a revisão. DeepSeek oficial usa deepseek-chat (ou "
+                          "deepseek-reasoner nas etapas com raciocínio) e cobra direto da conta do DeepSeek; OpenRouter "
+                          "usa o modelo abaixo.", attr="PROVEDOR_TEXTO",
+                          opcoes=[("openrouter", "OpenRouter (modelo abaixo)"), ("deepseek", "DeepSeek oficial")]),
+                     _env("MODELO_TEXTO", "Modelo de texto (OpenRouter)", "texto", "deepseek/deepseek-v4.1-flash",
+                          "Só vale quando o provedor do texto é o OpenRouter.", attr="MODELO_TEXTO",
                           validar=_v_modelo),
+                     _env("RACIOCINIO_TAREFAS", "Etapas com raciocínio (thinking)", "texto", "biblia,narrativa,reescrita",
+                          "Etapas do texto que pensam antes de responder, separadas por vírgula; nenhuma = desligado, "
+                          "todas = todas as etapas. Etapas: biblia, ganchos, narrativa, reescrita, decupagem, prompts_cena, humanizer, "
+                          "sugestao_canal. Mais lento e com mais tokens de saída.", attr="RACIOCINIO_TAREFAS",
+                          aplicar=_aplicar_raciocinio),
                      _env("MODELO_JUIZ", "Modelo do juiz", "texto", "typesafe/jev-1.13",
                           "Avalia ganchos e histórias pelas perguntas do canal.", attr="MODELO_JUIZ", validar=_v_modelo),
                      _env("MODELO_IMAGEM", "Modelo de imagem (Pollinations)", "texto", "black-forest-labs/flux.2-klein-4b",
