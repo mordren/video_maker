@@ -407,6 +407,20 @@ def bloco_biblioteca(biblioteca: list[dict]) -> str:
             "\n".join(f"- {b['tipo']} {b['chave']}: {b['descricao_fixa']}" for b in biblioteca))
 
 
+def instrucao_final(canal: dict) -> str:
+    """Como a narração termina, no campo "narracao" do prompt de escrita. O CTA falado do canal (config "cta", por
+    exemplo "Siga para mais histórias.") vira instrução para o próprio roteirista escrever o convite na voz da
+    história; antes o programa colava esse texto no fim da fala. Sem CTA no canal, não há instrução de convite."""
+    cta = re.sub(r"\s+", " ", canal["config"].get("cta") or "").strip()
+    if not cta:
+        return "Termine na última frase da história, sem convite para seguir, curtir ou se inscrever."
+    return (f"Depois da última frase da história, feche a narração com um convite curto e natural, na mesma voz de "
+            f"quem conta, a partir do CTA do canal (\"{cta}\"). Mantenha o sentido e as palavras do CTA (só ajuste "
+            "o que for preciso para encaixar na voz do narrador), em uma frase só e sem inventar outra chamada. Se a "
+            "história já terminar com um convite para seguir o canal, não repita: fique com um só. O convite conta "
+            "no tamanho da narração.")
+
+
 def sistema_escrita(canal: dict) -> str:
     """Igual em todas as chamadas de escrita do canal (ganchos, escrita, reescrita): o provedor guarda esse
     prefixo em cache e cobra bem menos por ele a partir da segunda chamada."""
@@ -472,7 +486,7 @@ cerca de {lim['palavras_min'] / lim['wps']:.0f} a {lim['palavras_max'] / lim['wp
 
 Campos:
 - narracao: a história inteira, texto corrido, pronto para ser lido em voz alta. Sem títulos, marcações ou rubricas.
-  Termine na última frase da história: convite para seguir, curtir ou se inscrever o programa acrescenta depois.
+  {instrucao_final(canal)}
 - titulo: título do vídeo.
 - descricao_youtube: 2 ou 3 frases para a descrição do vídeo, sem hashtags.
 
@@ -641,7 +655,7 @@ def escolher_gancho(projeto: dict, canal: dict, reprovadas: list[dict] | None = 
     anteriores: list[dict] = []
     melhor = ("", -1.0, None)
     for rodada in range(1, config.GANCHO_MAX_RODADAS + 1):
-        _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, config.EST_TEXTO) +
+        _checar_teto(projeto, _media_custo(projeto["id"], config.modelo_texto(), config.EST_TEXTO) +
                      _media_custo(projeto["id"], config.MODELO_JUIZ, config.EST_JEV))
         hist = vibe
         if anteriores:
@@ -702,7 +716,7 @@ def _sem_gancho(h: dict, gancho: str) -> dict:
 def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | None = None) -> dict:
     """Escreve a história inteira do zero. fraquezas: onde as versões descartadas falharam no Jev (só o critério,
     não o texto), para esta sair diferente em vez de remendar a anterior."""
-    _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, config.EST_TEXTO))
+    _checar_teto(projeto, _media_custo(projeto["id"], config.modelo_texto(), config.EST_TEXTO))
     fixo = projeto.get("gancho_fixo")
     pedido = (_pedido_continuacao(canal, gancho) if fixo else
               f"A narração começa exatamente com este gancho, não mude: \"{gancho}\"")
@@ -721,7 +735,7 @@ def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | Non
 
 
 def reescrever(projeto: dict, canal: dict, h: dict, problemas: list[str], avaliacao: dict | None) -> dict:
-    _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_TEXTO, config.EST_TEXTO))
+    _checar_teto(projeto, _media_custo(projeto["id"], config.modelo_texto(), config.EST_TEXTO))
     itens = [f"- {p}" for p in problemas]
     gancho_livre = False
     if avaliacao:

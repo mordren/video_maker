@@ -9,7 +9,6 @@ com outra vibe até RECOMECOS_TRAVA vezes; se ainda assim reprovar, para na revi
 """
 import json
 import queue
-import re
 import random
 import shutil
 import threading
@@ -304,27 +303,21 @@ def etapa_video(pid: int):
     qwen = (voz.get("provedor") or "edge") == "qwen"
     db.evento(pid, f"Narrando com {voz.get('nome')} ({voz.get('modelo') if qwen else 'Edge TTS'})"
                    f"{', uma cena por vez' if qwen else ''}...")
-    # O CTA do canal entra só na fala e na legenda da última cena; o texto aprovado da história não muda.
-    ultima = h["cenas"][-1]
-    fala = ultima["narracao"]
-    cta = (canal["config"].get("cta") or "").strip()
-    if cta and re.search(r"(siga|segue|inscreva|curta|compartilhe).*(canal|perfil|hist[óo]rias|v[ií]deos|mais)",
-                          " ".join(historia.frases(fala)[-2:]), re.I):
-        db.evento(pid, "A história já termina com um convite para seguir; o CTA do canal não foi acrescentado.", "aviso")
-        cta = ""
-    if cta:
-        ultima["narracao"] = f"{fala} {cta if cta[-1] in '.!?' else cta + '.'}"
-    try:
-        narr = narracao.narrar(pasta, h["cenas"], voz, pid)
-        if not qwen:
-            custos.registrar(pid, "narracao", "edge-tts", voz.get("nome"), 0.0, True, f"{narr['duracao']:.1f}s")
-        for t in narr["cenas"]:
-            db.executar("UPDATE cenas SET inicio = ?, fim = ? WHERE projeto_id = ? AND n = ?", (t["inicio"], t["fim"], pid, t["n"]))
-        db.evento(pid, f"Narração com {narr['duracao']:.1f}s{f' (CTA no fim: {cta})' if cta else ''}.")
-        db.atualizar("projetos", pid, status="montando")
-        saida = montagem.montar(obter(pid), canal, h, narr)
-    finally:
-        ultima["narracao"] = fala
+    # O CTA falado do canal já está na narração: o roteirista o escreve no fim da história (historia.instrucao_final),
+    # então a fala e a legenda seguem exatamente o texto aprovado das cenas, sem acréscimo aqui.
+    narr = narracao.narrar(pasta, h["cenas"], voz, pid)
+    if not qwen:
+        custos.registrar(pid, "narracao", "edge-tts", voz.get("nome"), 0.0, True, f"{narr['duracao']:.1f}s")
+    for t in narr["cenas"]:
+        db.executar("UPDATE cenas SET inicio = ?, fim = ? WHERE projeto_id = ? AND n = ?", (t["inicio"], t["fim"], pid, t["n"]))
+    db.evento(pid, f"Narração com {narr['duracao']:.1f}s.")
+    db.atualizar("projetos", pid, status="montando")
+    saida = montagem.montar(obter(pid), canal, h, narr)
+    # CTA em vídeo do canal (se enviado) como última parte; a montagem acima sempre recria o final.mp4, então não duplica.
+    r_cta = montagem.anexar_cta(obter(pid), canal, saida)
+    if r_cta and r_cta.get("anexado") and (canal["config"].get("cta") or "").strip():
+        db.evento(pid, "O canal tem CTA falado (escrito pelo roteirista no fim da narração) e CTA em vídeo: os dois "
+                       "entram no fim (confira se não ficou repetido).", "aviso")
     db.atualizar("projetos", pid, historia_json=h, status="pronto")
     tam = saida.stat().st_size / 1024 / 1024
     db.evento(pid, f"Vídeo pronto: {saida.name} ({tam:.1f} MB). Custo total US$ {custos.total(pid):.4f}.")

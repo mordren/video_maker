@@ -601,6 +601,63 @@ async function telaCanais() {
 const normal = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const linkPublicador = url => String(url || '').replace(/\/\/(127\.0\.0\.1|localhost)(?=[:/]|$)/, '//' + location.hostname);
 
+/* ------------------------------------------------------------------ CTA em vídeo (um por canal do Publicador) */
+const fmtDur = s => s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')} min` : `${Number(s).toFixed(1).replace('.', ',')} s`;
+const fmtMB = b => b < 1024 * 1024 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1024 / 1024).toFixed(1).replace('.', ',') + ' MB';
+function enviarCta(canal, arquivo, onProgresso) {
+  return new Promise((ok, falha) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/cta/' + encodeURIComponent(canal));
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgresso(e.loaded / e.total); };
+    x.onerror = () => falha(new Error('Falha de rede no envio do CTA.'));
+    x.onload = () => {
+      let j = {}; try { j = JSON.parse(x.responseText); } catch {}
+      if (x.status < 300) ok(j); else falha(new Error(j.detail || 'HTTP ' + x.status));
+    };
+    const fd = new FormData(); fd.append('arquivo', arquivo); x.send(fd);
+  });
+}
+// Preenche `box` com o CTA do canal: status, envio (com progresso), prévia e remoção. `canal` = nome no Publicador.
+async function ctaMontar(box, canal) {
+  const desenhar = async () => {
+    let i;
+    try { i = await api('/api/cta/' + encodeURIComponent(canal)); }
+    catch (e) { box.innerHTML = `<h3 style="margin-top:0">CTA em vídeo</h3><p class="small" style="color:var(--err)">${esc(e.message)}</p>`; return; }
+    box.innerHTML = `<h3 style="margin-top:0">CTA em vídeo <span class="badge">${esc(canal)}</span> ${i.existe ? '<span class="badge ok">enviado</span>' : '<span class="badge">nenhum</span>'}</h3>
+      <p class="small">Vídeo curto (.mp4, até 60 s) que entra como <b>última parte</b> de todo vídeo deste canal: nos cortes, quando o Cortador monta, e nas histórias, depois que as imagens são aprovadas e o vídeo é montado. Ele é ajustado ao vídeo (tamanho, fps e áudio). Sem CTA enviado, nada muda.</p>
+      ${i.existe ? `<div class="small" style="margin:8px 0"><b>${esc(i.nome_original)}</b> · ${fmtDur(i.duracao_s)} · ${i.largura}×${i.altura}${i.fps ? ' · ' + esc(String(i.fps).replace(/^(\d+)\/1$/, '$1')) + ' fps' : ''} · ${i.audio ? 'com áudio' : 'sem áudio (entra silêncio)'} · ${fmtMB(i.tamanho)} · enviado em ${esc(i.enviado_em || '?')}</div>` : ''}
+      <div class="row" style="align-items:center"><input type="file" accept=".mp4,video/mp4" data-cta-arq>
+        <button class="fix main" data-cta-enviar>${i.existe ? 'Trocar o CTA' : 'Enviar CTA'}</button>
+        ${i.existe ? '<button class="fix" data-cta-remover>Remover</button>' : ''}</div>
+      <div class="barra" data-cta-barra hidden><div style="width:0"></div></div><div class="small" data-cta-msg></div>
+      ${i.existe ? `<video controls preload="metadata" src="${esc(i.arquivo_url)}" style="max-height:340px;margin-top:10px"></video>` : ''}`;
+    const msg = $('[data-cta-msg]', box), barra = $('[data-cta-barra]', box);
+    $('[data-cta-enviar]', box).onclick = async ev => {
+      const f = $('[data-cta-arq]', box).files[0];
+      if (!f) return toast('Escolha um arquivo .mp4 primeiro.', true);
+      if (!/\.mp4$/i.test(f.name)) return toast('O CTA precisa ser um arquivo .mp4.', true);
+      if (i.existe && !confirm(`Trocar o CTA de ${canal}? O atual será substituído.`)) return;
+      ev.target.disabled = true; barra.hidden = false;
+      try {
+        await enviarCta(canal, f, p => {
+          $('div', barra).style.width = Math.round(p * 100) + '%';
+          msg.textContent = p < 1 ? `Enviando... ${Math.round(p * 100)}%` : 'Conferindo o vídeo...';
+        });
+        toast('CTA de ' + canal + ' enviado.');
+        desenhar();
+      } catch (e) { barra.hidden = true; msg.textContent = ''; ev.target.disabled = false; toast(e.message, true); }
+    };
+    const rem = $('[data-cta-remover]', box);
+    if (rem) rem.onclick = async () => {
+      if (!confirm(`Remover o CTA de ${canal}? Os próximos vídeos saem sem ele.`)) return;
+      await acao(() => api('/api/cta/' + encodeURIComponent(canal), {method: 'DELETE'}), 'CTA removido.');
+      desenhar();
+    };
+  };
+  box.innerHTML = '<div class="small">Lendo o CTA...</div>';
+  return desenhar();
+}
+
 function blocoCanaisPublicacao(pub, historias) {
   if (!pub || pub.erro) return `<div class="panel bad">Canais de publicação: ${esc(pub ? pub.erro : 'sem resposta')}</div>`;
   const cards = pub.canais.map(c => {
@@ -666,7 +723,9 @@ async function telaCanalPub(nome) {
       : `<p class="small">${c.no_publicador ? 'Sem configuração de postagem lida.' : 'Este canal não está no Publicador.'}</p>`}
     <p class="small">Intervalo, privacidade, descrição e TikTok se mudam no <a href="${esc(pubUrl)}" target="_blank" rel="noopener">Publicador ↗</a>.</p>
     ${historias.length ? `<p class="small">Canais de história que postam aqui: ${historias.map(h => `<a href="#/canal/${h.id}">${esc(h.nome)}</a>`).join(', ')}</p>` : ''}
-  </div>`;
+  </div>
+  <div class="panel" id="ctaBox"></div>`;
+  ctaMontar($('#ctaBox'), nome);
   $('#pSalvar').onclick = async () => {
     const corpo = {nome_exibicao: $('#pNome').value, descricao: $('#pDesc').value, nicho: $('#pNicho').value,
       publico: $('#pPublico').value, tom: $('#pTom').value, fontes: $('#pFontes').value,
@@ -782,7 +841,7 @@ async function telaCanal(id) {
         <button class="fix" id="cOuvir">Ouvir</button></div>
       <div data-instr><label>Como falar (instrução para o Qwen)</label><input type="text" id="cInstr" value="${esc(cfg.voz.instrucoes || '')}" placeholder="ex.: voz grave e calma, ritmo lento, clima de suspense">
         <label>A mais nas cenas de tensão 4 e 5</label><input type="text" id="cInstrAlta" value="${esc(cfg.voz.instrucoes_tensao_alta || '')}" placeholder="ex.: mais tenso, quase sussurrando"></div>
-      <label>CTA no fim do vídeo (4 ou 5 palavras, dito pelo narrador depois da última frase; vazio = sem CTA)</label>
+      <label>CTA falado (4 ou 5 palavras): vai como instrução no prompt do roteirista, que escreve o convite no fim da narração, na voz da história; vale para as histórias escritas depois de salvar; vazio = sem CTA. O CTA em vídeo (.mp4) se envia na aba Custos e publicação.</label>
       <input type="text" id="cCta" value="${esc(cfg.cta || '')}" placeholder="ex.: Siga para mais histórias.">
       <div class="small" data-qwen style="margin-top:6px">O Qwen gera a narração cena por cena, então cada imagem entra exatamente quando a fala dela começa. Velocidade no formato -6% ou +5%. A prévia custa cerca de US$ 0,0015 no OpenRouter.</div>
       <audio id="cAudio" controls style="width:100%;margin-top:8px;display:none"></audio>
@@ -824,9 +883,12 @@ async function telaCanal(id) {
         <div><label>Teto do laço da história (US$)</label><input type="number" step="0.005" id="cTetoLaco" value="${cfg.teto_laco_usd ?? ''}" placeholder="${statusSis ? statusSis.teto_laco : '0.01'} (padrão)"></div>
         <div><label>Canal no Publicador</label><input type="text" id="cPubCanal" value="${esc(cfg.publicador_canal || '')}" placeholder="nome do canal lá"></div></div>
       <div class="small" style="margin-top:8px">O laço (ganchos, escrita, Jev e reescritas) para quando gasta o teto e fica com a melhor versão. O orçamento por vídeo inclui o laço, as imagens e a narração.</div>
-    </div></section>`;
+    </div>
+    ${id ? '<div class="panel" id="ctaBox"></div>' : '<div class="panel small">Salve o canal primeiro para enviar o CTA em vídeo.</div>'}</section>`;
     mostrarSecao();
     ligar();
+    // O CTA é do canal no Publicador salvo (ou do slug, se o campo estiver vazio); ele serve aos cortes e às histórias.
+    if (id && $('#ctaBox')) ctaMontar($('#ctaBox'), ((cfg.publicador_canal || '').trim() || c.slug || '').toLowerCase());
   };
   const mostrarSecao = () => {
     $$('#cTabs button').forEach(b => b.classList.toggle('on', b.dataset.sec === secao));

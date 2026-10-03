@@ -123,7 +123,7 @@ CONFIG_PADRAO = {
     "reaproveitar_biblioteca": False,
     "modos_narrativos": [],  # [{"nome", "regra"}]: um por vídeo, em rodízio (ver historia.dica_modo)
     "publicador_canal": "",  # nome do canal no Publicador (ex.: garras)
-    "cta": "Siga para mais histórias.",  # dito pelo narrador depois da última frase; vazio = sem CTA
+    "cta": "Siga para mais histórias.",  # vai no prompt do roteirista (historia.instrucao_final), que escreve o convite no fim da narração; vazio = sem CTA
     "sugestoes_trilha": [],
 }
 

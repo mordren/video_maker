@@ -14,10 +14,11 @@ from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import canais, config, configuracoes, custos, db, efeitos, gerador, historia, montagem, narracao, pipeline, publicador, registro, relatorio, revisao, teste_comfy, youtube
+from . import canais, config, configuracoes, cta, custos, db, efeitos, gerador, historia, montagem, narracao, pipeline, publicador, registro, relatorio, revisao, teste_comfy, youtube
 
 ESTATICOS = Path(__file__).parent / "static"
 INICIO = time.time()
@@ -82,7 +83,7 @@ def status():
     return {
         "simulacao": config.SIMULACAO,
         "chaves": {"openrouter": bool(config.OPENROUTER_API_KEY), "pollinations": bool(config.POLLINATIONS_API_KEY)},
-        "modelos": {"texto": config.MODELO_TEXTO, "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
+        "modelos": {"texto": config.modelo_texto(), "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
         "ffmpeg": shutil.which(config.FFMPEG) is not None or Path(config.FFMPEG).exists(),
         "humanizer": {"arquivo": str(config.HUMANIZER_SKILL), "existe": config.HUMANIZER_SKILL.exists(),
                       "vocabulario": len(revisao.vocabulario_ia())},
@@ -217,7 +218,7 @@ def previa_prompt(dados: CanalIn):
     assunto = "<assunto do vídeo>"
     modo = "\n\nModo narrativo deste vídeo: <modo escolhido com os ganchos> (...). Siga-o do começo ao fim." \
         if canal["config"].get("modos_narrativos") else ""
-    return {"modelo": config.MODELO_TEXTO, "gancho": historia.mensagens_gancho(assunto, canal),
+    return {"modelo": config.modelo_texto(), "gancho": historia.mensagens_gancho(assunto, canal),
             "roteirista": [{"role": "system", "content": historia.sistema_escrita(canal)},
                            {"role": "user", "content": f"Assunto: {assunto}\n\n" +
                             historia._pedido_continuacao(canal, "<gancho escolhido pelo Jev>") + modo +
@@ -262,6 +263,72 @@ def alternar_trilha(tid: int, dados: TrilhaIn):
 def apagar_trilha(tid: int):
     db.executar("DELETE FROM trilhas WHERE id = ?", (tid,))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- CTA em vídeo por canal
+
+def _canal_cta(canal: str) -> str:
+    try:
+        return cta.chave(canal)
+    except cta.ErroCTA as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/cta", dependencies=[api])
+def listar_cta():
+    """CTAs enviados, um por canal do Publicador (garras, info...)."""
+    return {"ctas": cta.listar(), "max_duracao_s": cta.MAX_DURACAO_S, "max_mb": cta.MAX_BYTES // 1024 // 1024}
+
+
+@app.get("/api/cta/{canal}", dependencies=[api])
+def ver_cta(canal: str):
+    return cta.info(_canal_cta(canal))
+
+
+@app.post("/api/cta/{canal}", dependencies=[api])
+def enviar_cta(canal: str, arquivo: UploadFile = File(...)):
+    """Envia (ou troca) o CTA do canal: .mp4 com imagem e até 60 s, conferido com o ffprobe."""
+    try:
+        return cta.receber(_canal_cta(canal), arquivo.file, arquivo.filename or "")
+    except cta.ErroCTA as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/cta/{canal}", dependencies=[api])
+def apagar_cta(canal: str):
+    try:
+        return {"removido": cta.remover(_canal_cta(canal))}
+    except cta.ErroCTA as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/cta/{canal}/arquivo", dependencies=[api])
+def arquivo_cta(canal: str):
+    """O vídeo do CTA (prévia na tela e download pelo Cortador)."""
+    arq = cta.caminho(_canal_cta(canal))
+    if not arq.is_file():
+        raise HTTPException(404, "esse canal não tem CTA")
+    return FileResponse(arq, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/cta/{canal}/anexar", dependencies=[api])
+def anexar_cta(canal: str, arquivo: UploadFile = File(...)):
+    """Usado pelo Cortador: recebe o vídeo montado, devolve o mesmo vídeo com o CTA do canal no fim.
+    Canal sem CTA: devolve o vídeo como veio (cabeçalho X-CTA: sem_cta). Falha do anexo: 500 com o motivo."""
+    nome = _canal_cta(canal)
+    pasta = Path(tempfile.mkdtemp(prefix="cta_"))
+    entrada = pasta / "entrada.mp4"
+    try:
+        with open(entrada, "wb") as f:
+            shutil.copyfileobj(arquivo.file, f)
+        r = cta.anexar(entrada, nome)
+    except Exception as e:
+        shutil.rmtree(pasta, ignore_errors=True)
+        raise HTTPException(500, f"CTA não anexado: {e}")
+    limpar = BackgroundTask(shutil.rmtree, pasta, ignore_errors=True)
+    nome_saida = Path(arquivo.filename or "video.mp4").stem + ("_cta" if r["anexado"] else "") + ".mp4"
+    return FileResponse(entrada, media_type="video/mp4", filename=nome_saida, background=limpar,
+                        headers={"X-CTA": "anexado" if r["anexado"] else r["motivo"]})
 
 
 @app.get("/api/vozes", dependencies=[api])

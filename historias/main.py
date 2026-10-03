@@ -7,6 +7,7 @@
     python main.py efeito teste zoom_in caminho/imagem.jpg [--formato short]
     python main.py comfy-historia 8 [--motor qwen|kontext] [-o arquivo.json]   # história do projeto como workflow do Comfy
     python main.py comfy-baixar [--prefixo hist8] [-o pasta]   # baixa a pasta output do ComfyUI
+    python main.py cta-anexar video.mp4 --canal garras [-o saida.mp4]   # acrescenta o CTA do canal no fim (usado pelo Cortador)
     python main.py comfy "prompt" [--ref ficha.jpg] [--ref placa.jpg] [--formato short|longo|ficha] [--seed 42]
 """
 import argparse
@@ -68,6 +69,10 @@ def main():
     bx = sub.add_parser("comfy-baixar", help="baixa as imagens da pasta output do ComfyUI (pelo túnel)")
     bx.add_argument("--prefixo", default="", help="só os arquivos que começam assim (ex.: hist8)")
     bx.add_argument("-o", "--saida", default="testes_comfy/saida", help="pasta de destino")
+    ca = sub.add_parser("cta-anexar", help="acrescenta o CTA em vídeo do canal no fim de um vídeo montado")
+    ca.add_argument("video")
+    ca.add_argument("--canal", required=True, help="nome do canal no Publicador (garras, info...)")
+    ca.add_argument("-o", "--saida", help="arquivo de saída (padrão: troca o próprio vídeo)")
     ap.add_argument("--simulacao", action="store_true", help="não chama APIs pagas (respostas falsas)")
     ap.add_argument("--raiz", help="pasta alternativa para banco, projetos, biblioteca e trilhas")
     a = ap.parse_args()
@@ -104,6 +109,16 @@ def main():
         destino = Path("testes_efeitos") / f"{a.nome}_{Path(a.imagem).stem}.mp4"
         montagem.testar_efeito(a.nome, Path(a.imagem), destino, a.formato, a.tensao)
         print(f"Clipe de teste: {destino}")
+    elif a.cmd == "cta-anexar":
+        from estudio import cta
+        try:
+            r = cta.anexar(Path(a.video), a.canal, Path(a.saida) if a.saida else None)
+        except cta.ErroCTA as e:
+            sys.exit(f"CTA não anexado: {e}")
+        if r["anexado"]:
+            print(f"CTA anexado: {r['duracao_antes']} s + {r['duracao_cta']} s = {r['duracao_depois']} s -> {r['saida']}")
+        else:
+            print(f"Nada a fazer ({r['motivo']}).")
     elif a.cmd == "comfy-historia":
         from estudio import canais, comfy_historia, db
         db.iniciar()
