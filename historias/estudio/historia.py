@@ -14,6 +14,7 @@ Fluxo:
 import difflib
 import json
 import math
+import random
 import re
 import unicodedata
 from pathlib import Path
@@ -41,9 +42,10 @@ SCHEMA_NARRATIVA = {
 SCHEMA_BIBLIA = {
     "type": "object", "additionalProperties": False,
     "required": ["lugar_e_epoca", "narrador", "pessoas", "fato_oculto", "ato_do_narrador", "elo",
-                 "regra_sobrenatural", "pistas", "desfecho"],
+                 "regra_sobrenatural", "linha_do_tempo", "pistas", "desfecho"],
     "properties": {
         "lugar_e_epoca": {"type": "string"},
+        "linha_do_tempo": {"type": "array", "items": {"type": "string"}},
         "narrador": {"type": "object", "additionalProperties": False,
                      "required": ["nome", "quem_e", "aparencia", "destino"],
                      "properties": {"nome": {"type": "string"}, "quem_e": {"type": "string"},
@@ -400,6 +402,10 @@ PERGUNTAS_ESCRITA = {
                                         "conhecidos), fechando o que foi aberto em vez de abrir um mistério novo?"},
     "pessoas_claras": {"tipo": "noul", "corte": 0.85, "trava": False,
                        "pergunta": "Fica claro, ouvindo uma vez, quem é cada pessoa citada e qual a relação dela com o narrador?"},
+    "ordem_do_tempo": {"tipo": "noul", "corte": 0.85, "trava": False,
+                       "pergunta": "Ouvindo uma vez, dá para saber em que momento cada frase acontece em relação à "
+                                   "anterior: a história segue em ordem (antes, durante, depois, hoje), sem voltar ao "
+                                   "passado nem pular para o presente sem aviso, e sem contar um fato antes dele acontecer?"},
 }
 
 
@@ -692,7 +698,7 @@ PERGUNTAS_BIBLIA = {
 
 
 CAMPOS_BIBLIA = ("lugar_e_epoca", "narrador", "pessoas", "fato_oculto", "ato_do_narrador", "elo",
-                 "regra_sobrenatural", "pistas", "desfecho")
+                 "regra_sobrenatural", "linha_do_tempo", "pistas", "desfecho")
 
 
 def _valor_biblia(v):
@@ -723,6 +729,8 @@ def biblia_completa(b: dict) -> list[str]:
         falta.append("narrador.nome")
     if not b.get("pistas"):
         falta.append("pistas")
+    if not isinstance(b.get("linha_do_tempo"), list) or len(b["linha_do_tempo"]) < 3:
+        falta.append("linha_do_tempo")
     return falta
 
 
@@ -730,14 +738,18 @@ def _linhas_biblia(b: dict) -> str:
     n = b.get("narrador") or {}
     pessoas = "; ".join(f"{p.get('nome', '')} ({p.get('relacao', '')})" for p in b.get("pessoas") or []) or "nenhuma"
     pistas = "\n".join(f"  {i}. {p}" for i, p in enumerate(b.get("pistas") or [], 1))
+    tempo = "\n".join(f"  {i}. {p}" for i, p in enumerate(b.get("linha_do_tempo") or [], 1))
+    papel = next((p for p in PAPEIS_NARRADOR if p["nome"] == b.get("papel")), None)
     return (f"- Lugar e época: {b.get('lugar_e_epoca', '')}\n"
-            f"- Narrador: {n.get('nome', '')}, {n.get('quem_e', '')}. No fim: {n.get('destino', '')}\n"
+            + (f"- Perspectiva do narrador: {papel['nome']}. {papel['regra'].capitalize()}\n" if papel else "")
+            + f"- Narrador: {n.get('nome', '')}, {n.get('quem_e', '')}. No fim: {n.get('destino', '')}\n"
             f"- Outras pessoas: {pessoas}\n"
             f"- O que realmente aconteceu: {b.get('fato_oculto', '')}\n"
             f"- Ato deliberado que causa tudo: {b.get('ato_do_narrador', '')}\n"
             f"- Elo concreto (objeto ou lugar): {b.get('elo', '')}\n"
             f"- Regra do sobrenatural: {b.get('regra_sobrenatural', '')}\n"
-            f"- Pistas, em ordem:\n{pistas}\n"
+            + (f"- Linha do tempo (a ordem em que a narração conta; o gancho abre no fato 1):\n{tempo}\n" if tempo else "")
+            + f"- Pistas, em ordem:\n{pistas}\n"
             f"- Desfecho: {b.get('desfecho', '')}")
 
 
@@ -760,13 +772,52 @@ def bloco_pessoas_biblia(b: dict | None) -> str:
             "descricao_fixa; só quem aparece em imagem ganha ficha, até o máximo:\n" + "\n".join(linhas))
 
 
+PAPEIS_NARRADOR = [
+    {"nome": "o culpado",
+     "regra": "o narrador fez o ato com as próprias mãos e conta como quem confessa."},
+    {"nome": "o omisso",
+     "regra": "o narrador estava lá, viu o que ia acontecer e calou, olhou para o lado ou deixou. Não encostou na vítima: "
+              "a culpa dele é o que escolheu não fazer."},
+    {"nome": "quem encontra",
+     "regra": "o narrador não tem culpa de nada: acabou de chegar (morador novo, herdeiro, comprador, quem acha o objeto) "
+              "e descobre aos poucos o que outro fez ali. O perigo cai sobre ele agora, no presente."},
+    {"nome": "a vítima",
+     "regra": "o narrador é quem sofreu o ato e ainda conta, de dentro do que lhe fizeram (preso, enterrado, esquecido). "
+              "O sobrenatural é por que a voz dele chega ao ouvinte."},
+    {"nome": "quem ficou",
+     "regra": "o narrador é parente, sócio ou amigo de quem sumiu. Procura, desconfia, e a verdade vem até ele por um "
+              "objeto ou sinal. O culpado é outra pessoa, que o ouvinte conhece pelos olhos do narrador."},
+    {"nome": "quem aceitou",
+     "regra": "o narrador não cometeu crime: aceitou um favor, uma troca ou um pedido que parecia pequeno e agora paga "
+              "o preço. O ato dele é essa aceitação."},
+]
+
+
+def escolher_papel(projeto: dict, canal: dict) -> dict:
+    """Sorteia a perspectiva do narrador, fora do modelo (ele cai sempre no culpado). Evita as duas últimas histórias
+    do canal e a bíblia anterior deste mesmo projeto, quando ele recomeça."""
+    recentes = []
+    for r in db.todos("SELECT historia_json FROM projetos WHERE canal_id = ? AND id < ? AND historia_json IS NOT NULL "
+                      "ORDER BY id DESC LIMIT 2", (canal["id"], projeto["id"])):
+        try:
+            hj = json.loads(r["historia_json"]) if isinstance(r["historia_json"], str) else r["historia_json"]
+            recentes.append(((hj or {}).get("biblia") or {}).get("papel"))
+        except (ValueError, TypeError):
+            continue
+    recentes.append((projeto.get("biblia") or {}).get("papel"))
+    livres = [p for p in PAPEIS_NARRADOR if p["nome"] not in recentes] or PAPEIS_NARRADOR
+    return random.choice(livres)
+
+
 def mensagens_biblia(projeto: dict, canal: dict, reprovadas: list[dict] | None = None,
-                     falhas: list[str] | None = None) -> list[dict]:
+                     falhas: list[str] | None = None, papel: dict | None = None) -> list[dict]:
     lim = limites(canal)
     curta = lim["palavras_max"] <= 120
     max_pessoas = max(1, lim["max_personagens"] - 1)  # o narrador também ganha ficha
     max_pistas = 2 if lim["palavras_max"] <= 140 else 3
     vibe = _pedido_outra_vibe(reprovadas or [])
+    perspectiva = (f"\nPerspectiva obrigatória do narrador: {papel['nome']}. {papel['regra'].capitalize()} A história inteira é contada "
+                   "por esse ponto de vista; não vire uma confissão de assassino se não for o caso.\n" if papel else "")
     antes = ""
     if falhas:
         antes = ("\n\nUma bíblia anterior foi descartada pelo juiz. Faça outra, de outro jeito, e cuide do que ela "
@@ -779,7 +830,7 @@ Nesta etapa você NÃO escreve a narração. Ignore o campo "Campos" acima e mon
 fatos que o roteirista vai seguir. A narração final terá só {lim['palavras_min']} a {lim['palavras_max']} palavras,
 então a história precisa ser simples e caber nisso: narrador mais no máximo {max_pessoas} outra(s) pessoa(s) com nome,
 até {max_pistas} pistas.
-
+{perspectiva}
 Regras:
 - lugar_e_epoca: cidade ou região e ano ou período, concretos.
 - narrador: nome, quem é (ofício, idade, o que o liga ao que acontece), aparencia (uma expressão, 15 a 25 palavras) e
@@ -787,10 +838,16 @@ Regras:
 - pessoas: cada uma com nome próprio (nunca só um papel), a relação com o narrador (marido, filho, patrão...) e aparencia.
 - fato_oculto: o que realmente aconteceu, em ordem cronológica, em frases simples. Confira datas, horários e quem
   estava onde: nada pode se contradizer, e nenhuma pista pode desmentir a premissa.
-- ato_do_narrador: a decisão deliberada de alguém (de preferência do narrador) que provoca o estranho. O horror é
-  consequência dela, não azar. Se o narrador for inocente, diga o que ele escolheu fazer ou calar mesmo assim.
+- ato_do_narrador: a decisão deliberada (ou a omissão, a aceitação) de alguém que provoca o estranho, conforme a
+  perspectiva do narrador. O horror é consequência dela, não azar. Diga o motivo em uma frase e o gesto concreto: quem
+  fez o quê, com quem, por quê. Se o ato foi de outra pessoa, o campo descreve esse ato e o que o narrador fez diante dele.
 - elo: UM objeto ou lugar concreto que liga o ato à consequência; aparece cedo na história e volta no final.
 - regra_sobrenatural: o único impossível da história, com o que ele pode e não pode fazer. O resto obedece ao mundo real.
+- linha_do_tempo: 5 a 6 fatos curtos, na ordem em que a narração vai contá-los, do primeiro ao último. Cada um começa
+  com a marca de quando acontece ("Na noite do pagamento", "Cinco semanas depois", "Hoje") e diz quem faz o quê. O
+  fato 1 já é um acontecimento forte (o ato ou o que leva a ele), nunca o fim nem o "hoje"; o último fato é o desfecho.
+  A história nunca volta atrás: o que o ouvinte descobre depois (o que aconteceu antes) entra como fala ou objeto, não
+  como salto no tempo.
 - pistas: em ordem, plantadas antes do desfecho; uma delas mostra o ato; cada uma diz o que o ouvinte descobre.
 - desfecho: o que acontece com o narrador e com quem importa, amarrando o elo. Nenhum objeto, nome ou fato novo
   aparece só aqui. No máximo uma ponta solta, nascida do que já foi contado. Nada de "não lembro de ter feito" como
@@ -804,7 +861,8 @@ Teste antes de responder: conte a história em cinco frases a alguém que não c
 Responda com o objeto JSON preenchido, assim (os valores, não o schema):
 {{"lugar_e_epoca": "...", "narrador": {{"nome": "...", "quem_e": "...", "aparencia": "...", "destino": "..."}},
 "pessoas": [{{"nome": "...", "relacao": "...", "aparencia": "..."}}], "fato_oculto": "...", "ato_do_narrador": "...",
-"elo": "...", "regra_sobrenatural": "...", "pistas": ["...", "..."], "desfecho": "..."}}{vibe}{antes}"""},
+"elo": "...", "regra_sobrenatural": "...", "linha_do_tempo": ["...", "..."], "pistas": ["...", "..."],
+"desfecho": "..."}}{vibe}{antes}"""},
     ]
 
 
@@ -814,13 +872,16 @@ def criar_biblia(projeto: dict, canal: dict, reprovadas: list[dict] | None = Non
     pid = projeto["id"]
     falhas: list[str] = []
     melhor = None
+    papel = escolher_papel(projeto, canal)
+    db.evento(pid, f"Perspectiva do narrador: {papel['nome']}.")
     for t in range(1, BIBLIA_TENTATIVAS + 1):
         _checar_teto(projeto, _media_custo(pid, config.modelo_texto(), config.EST_TEXTO) +
                      _media_custo(pid, config.MODELO_JUIZ, config.EST_JEV))
-        b, _ = clientes.chat("biblia", mensagens_biblia(projeto, canal, reprovadas, falhas), SCHEMA_BIBLIA,
+        b, _ = clientes.chat("biblia", mensagens_biblia(projeto, canal, reprovadas, falhas, papel), SCHEMA_BIBLIA,
                              projeto_id=pid, etapa="historia", temperatura=1.0, max_tokens=2000,
                              contexto={"assunto": projeto["assunto"], "tipo": "biblia"})
         b = normalizar_biblia(b)
+        b["papel"] = papel["nome"]
         falta = biblia_completa(b)
         if falta:
             db.evento(pid, f"Bíblia {t}/{BIBLIA_TENTATIVAS} incompleta (faltou {', '.join(falta)}); pedindo de novo.", "aviso")
@@ -844,8 +905,14 @@ def criar_biblia(projeto: dict, canal: dict, reprovadas: list[dict] | None = Non
 
 
 def _regra_gancho_biblia(b: dict | None) -> str:
+    if not b:
+        return ""
+    tempo = b.get("linha_do_tempo") or []
+    abertura = (f" Os 5 ganchos são 5 jeitos de abrir ESTE fato, o primeiro da linha do tempo: \"{tempo[0]}\" "
+                "Nenhum gancho conta o que vem depois dele." if tempo else "")
     return ("\nO gancho nasce desta bíblia: promete só o que a história entrega, usa pessoas, lugar e elo dela e "
-            "não revela o desfecho." if b else "")
+            f"não revela o desfecho.{abertura} A história continua dele para frente. Escreva-o na 1ª pessoa do "
+            "narrador, no passado, sem o nome do narrador e sem misturar o \"hoje\" com o passado.")
 
 
 def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None, historico: str = "",
@@ -959,7 +1026,15 @@ def _regra_escrita_biblia(b: dict | None) -> str:
             "aparece, e traga o elo cedo e de volta no final. O ouvinte precisa conseguir remontar o que realmente "
             "aconteceu. O final só usa o que a bíblia e o texto já mostraram. Conte em linha reta no tempo, com no "
             "máximo duas marcas de data, e uma frase por fato; se não couber, corte a pista menos importante, nunca "
-            "o ato nem o desfecho. O narrador fala de si na 1ª pessoa o tempo todo, nunca pelo próprio nome." if b else "")
+            "o ato nem o desfecho. Ordem do tempo: escreva uma ou duas frases para cada item da linha do tempo da "
+            "bíblia, na ordem 1, 2, 3, sem pular nem voltar atrás; o gancho já cobre o fato 1 (ou 2) e a narração segue "
+            "dele para frente, sem recontá-lo. Passado o tempo, "
+            "avise com uma marca curta (\"Naquela noite\", \"Semanas depois\", \"Hoje\"); o \"hoje\" só entra no fim, e "
+            "passado e presente nunca se misturam na mesma frase. O narrador fala de si na 1ª pessoa o tempo todo, nunca pelo próprio nome. Mantenha a "
+            "perspectiva da bíblia. O meio da história é onde ela se perde: ali, cada frase traz um fato novo, e o ato "
+            "sai dito com todas as letras (quem fez o quê, com quem e por quê); o ouvinte não pode ter de adivinhar a "
+            "ligação entre uma frase e a seguinte. Frases de uma ou duas palavras só de reação (\"Eu vi.\", \"Eu olhava.\") "
+            "gastam o pouco espaço que existe: use no máximo uma, no ponto mais tenso." if b else "")
 
 
 def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | None = None) -> dict:
