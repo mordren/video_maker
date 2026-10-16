@@ -74,6 +74,22 @@
   #cortador .cortes .corte.longo video { aspect-ratio: 16/9; }
   #cortador .pilula-longo { display: inline-block; background: #1f3558; color: #cfe0ff; border-radius: 999px; padding: 1px 9px; font-weight: 600; }
   @media (max-width: 600px) { #cortador .cortes .corte.longo { grid-column: auto; } }
+  #cortador .thumbs-longo { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  #cortador .thumbs-longo figure { margin: 0; cursor: pointer; border: 3px solid transparent; border-radius: 8px; overflow: hidden; background: #000; }
+  #cortador .thumbs-longo figure.escolhida { border-color: var(--aviso); }
+  #cortador .thumbs-longo img { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; }
+  #cortador .thumbs-longo .fala { font-size: 11px; color: var(--fraco); font-style: italic; padding: 0 6px 5px; line-height: 1.3; }
+  #cortador .thumbs-longo img { cursor: zoom-in; }
+  #caixa-thumb { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.9); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 16px; }
+  #caixa-thumb[hidden] { display: none; }
+  #caixa-thumb img { max-width: min(1280px, calc(100vw - 150px)); max-height: 74vh; border-radius: 8px; box-shadow: 0 10px 40px #000; }
+  #caixa-thumb .info { max-width: min(1280px, calc(100vw - 150px)); text-align: center; color: var(--fraco); font-size: 13.5px; line-height: 1.45; }
+  #caixa-thumb .info b { color: var(--texto); font-size: 16px; }
+  #caixa-thumb .botoes { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: center; }
+  #caixa-thumb .seta { position: fixed; top: 50%; transform: translateY(-50%); font-size: 28px; padding: 10px 16px; }
+  #caixa-thumb .seta.esq { left: 12px; } #caixa-thumb .seta.dir { right: 12px; }
+  #caixa-thumb .fechar { position: fixed; top: 12px; right: 12px; font-size: 18px; }
+  #cortador .thumbs-longo figcaption { font-size: 11.5px; color: var(--fraco); padding: 3px 6px; display: flex; justify-content: space-between; gap: 6px; }
   #cortador .corte .meta { font-size: 12.5px; color: var(--fraco); line-height: 1.4; }
   #cortador .corte .meta b { color: var(--texto); font-weight: 600; }
   #cortador textarea { min-height: 0; }
@@ -92,6 +108,7 @@
     <a href="#/gerador" data-nav="gerador">Music</a>
     <a href="#/canais" data-nav="canais">Canais</a>
     <a href="#/custos" data-nav="custos">Custos</a>
+    <a href="#/teste-comfy" data-nav="teste-comfy">Teste Comfy</a>
     <a href="#/configuracoes" data-nav="configuracoes">Configurações</a>
   </nav>
   <div id="sistema" class="small"></div>
@@ -193,6 +210,17 @@
 <main id="app" hidden><div class="spin"></div></main>
 <div id="toast"></div>
 
+<div id="caixa-thumb" hidden>
+  <button class="fechar" title="Fechar (Esc)">✕</button>
+  <button class="seta esq" title="Anterior (←)">‹</button>
+  <img id="caixa-thumb-img" alt="">
+  <div class="info" id="caixa-thumb-info"></div>
+  <div class="botoes">
+    <button class="principal" id="caixa-thumb-usar">✓ usar esta</button>
+    <a class="fraco" id="caixa-thumb-baixar" href="#" download>baixar</a>
+  </div>
+  <button class="seta dir" title="Próxima (→)">›</button>
+</div>
 <script>
 // A página única: o app do Estúdio de Histórias (static/app.js) cuida das rotas
 // e chama window.cortador.ativar()/desativar() quando a aba Cortador abre/fecha.
@@ -316,7 +344,7 @@ function desenharCortes() {
   $("sem-cortes").hidden = lista.length > 0;
   // Só redesenha quando a lista muda: senão o vídeo tocando e o título sendo
   // digitado seriam apagados a cada atualização.
-  const assinatura = lista.map(([t, c]) => t.id + c.id + c.status + (c.versao || 0)).join("|") + "#" + estado.canais.join(",");
+  const assinatura = lista.map(([t, c]) => t.id + c.id + c.status + (c.versao || 0) + (c.thumbs_em || "")).join("|") + "#" + estado.canais.join(",");
   if (assinatura === assinaturaCortes) return;
   assinaturaCortes = assinatura;
   $("cortes").innerHTML = lista.map(([t, c]) => {
@@ -342,8 +370,17 @@ function desenharCortes() {
     if (c.tipo === "longo") {
       // título: o campo aceita qualquer texto, e as sugestões da IA aparecem ao clicar
       const lista = `lt-${t.id}-${c.id}`;
+      // thumbnail.py: 3 opções (prints do vídeo + frase da IA); a escolhida fica com borda
+      const tv = c.thumbs_em ? `?t=${encodeURIComponent(c.thumbs_em)}` : v;
+      const thumbs = (c.thumbs || []).map((x, i) => `<figure class="${i === (c.thumb_escolhida || 0) ? "escolhida" : ""}" data-i="${i}" title="${escapar(x.leitura || x.angulo || "")}">
+          <img loading="lazy" src="${base + encodeURIComponent(x.arquivo) + tv}" alt="${escapar(x.frase)}">
+          <figcaption><span>${escapar(x.frase)}</span><a href="${base + encodeURIComponent(x.arquivo) + tv}" download="thumb_${i + 1}.jpg">baixar</a></figcaption>
+          ${x.base ? `<div class="fala">“${escapar(x.base)}”</div>` : ""}</figure>`).join("");
       return `<div class="corte longo" data-t="${t.id}" data-c="${c.id}">
         <video controls preload="none" poster="${c.capa ? base + encodeURIComponent(c.capa) + v : ""}" src="${base + encodeURIComponent(c.arquivo) + v}"></video>
+        <div><label>Thumbnail <span class="fraco">${thumbs ? "(clique na imagem para ampliar, no texto para escolher)" : "(ainda não tem)"}</span>
+          <button class="gerar-thumbs" style="float:right;padding:2px 10px;font-size:12px">${thumbs ? "↺ gerar outras 3" : "🖼 gerar 3 thumbs"}</button></label>
+          ${thumbs ? `<div class="thumbs-longo">${thumbs}</div>` : ""}</div>
         <div class="meta"><span class="pilula-longo">📺 vídeo longo · ${mmss(c.duracao || 0)}</span> · ${c.remocoes || 0} pedaço(s) tirados · ${c.silencios_cortados || 0} silêncio(s) &gt; 4 s${etiquetaAudio(c.audio)}<br>${escapar(c.tema || "")} · de: ${escapar(t.titulo_video || "")}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
         <div><label>Título no YouTube <span class="fraco">(clique para ver as ${(c.titulos || []).length} sugestões)</span></label><input class="titulo" maxlength="100" list="${lista}" value="${escapar(c.titulo_publicacao || "")}"><datalist id="${lista}">${(c.titulos || []).map(x => `<option value="${escapar(x)}">`).join("")}</datalist></div>
         <div><label>Canal</label><select class="canal"><option value="">(escolha)</option>${canais}</select></div>
@@ -465,8 +502,9 @@ function desenharPropostas() {
   }).join("");
 }
 
-// Vídeo longo (fase1/trechos_longos.py): a prévia é o trecho bruto inteiro; a
-// lista diz o que vai sair (no tempo da prévia), além do silêncio > 4 s.
+// Vídeo longo (fase1/trechos_longos.py): a prévia é um corte de ~15 s com a
+// melhor parte (JEV), sem legenda; a lista diz o que vai sair (no tempo do
+// trecho de 15-20 min), além do silêncio > 4 s.
 const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 function cardLongo(t, c, produzindo, rodando) {
   const rem = c.remover || [];
@@ -485,7 +523,7 @@ function cardLongo(t, c, produzindo, rodando) {
        <button class="perigo descartar">descartar</button>`;
   return `<div class="corte longo ${produzindo ? "escolhido" : ""}" data-t="${t.id}" data-c="${c.id}">
     <video controls preload="metadata" src="/previa/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}"></video>
-    <div class="meta"><span class="pilula-longo">📺 vídeo longo · ~${Math.round((c.duracao || 0) / 60)} min</span><br><b>${escapar(c.titulo_publicacao || c.tema || c.id)}</b><br>${escapar(c.tema || "")} · de: ${escapar(t.titulo_video || "")}${c.comentario ? `<br>${escapar(c.comentario)}` : ""}${saem}${titulos}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
+    <div class="meta"><span class="pilula-longo">📺 vídeo longo · ~${Math.round((c.duracao || 0) / 60)} min</span><br><b>${escapar(c.titulo_publicacao || c.tema || c.id)}</b><br>${escapar(c.tema || "")} · de: ${escapar(t.titulo_video || "")}${c.comentario ? `<br>${escapar(c.comentario)}` : ""}${c.previa_inicio != null ? `<br><span class="fraco">▶ prévia: a melhor parte (~${Math.round(c.previa_fim - c.previa_inicio)} s, ${mmss(c.previa_inicio - c.inicio)} do trecho)</span>` : ""}${saem}${titulos}${c.mensagem ? `<br><span style="color:#ffb4b4">${escapar(c.mensagem)}</span>` : ""}</div>
     <div class="acoes">${acoes}</div>
   </div>`;
 }
@@ -516,6 +554,15 @@ $("cortes").addEventListener("change", async (e) => {
 $("cortes").addEventListener("click", async (e) => {
   const card = e.target.closest(".corte"); if (!card) return;
   const url = `/api/cortes/${card.dataset.t}/${card.dataset.c}`;
+  const fig = e.target.closest(".thumbs-longo figure");
+  if (fig && e.target.tagName === "IMG") { abrirThumb(card, Number(fig.dataset.i)); return; }
+  if (fig && !e.target.closest("a")) { escolherThumb(card, Number(fig.dataset.i)); return; }
+  if (e.target.classList.contains("gerar-thumbs")) {
+    const b = e.target; b.disabled = true; b.textContent = "gerando… (~1 min)";
+    try { await api(url + "/thumbs"); assinaturaCortes = ""; atualizar(); }
+    catch (err) { recado(err.message, "erro"); b.disabled = false; b.textContent = "↺ tentar de novo"; }
+    return;
+  }
   try {
     if (e.target.classList.contains("enviar")) {
       e.target.disabled = true; e.target.textContent = "enviando…";
@@ -534,6 +581,47 @@ $("cortes").addEventListener("click", async (e) => {
   } catch (err) {
     recado(err.message, "erro"); e.target.disabled = false; e.target.textContent = "📤 Enviar para a fila";
   }
+});
+
+// Thumb escolhida: grava sem redesenhar a lista (o vídeo pode estar tocando).
+function escolherThumb(card, i) {
+  return api(`/api/cortes/${card.dataset.t}/${card.dataset.c}`, {thumb: i}).then(() => {
+    card.querySelectorAll(".thumbs-longo figure").forEach(f => f.classList.toggle("escolhida", Number(f.dataset.i) === i));
+    if (!$("caixa-thumb").hidden) mostrarThumb();
+  }).catch(err => recado(err.message, "erro"));
+}
+
+// Caixa em tela cheia: a thumb grande, com a fala de onde saiu a frase.
+let caixaThumb = null;   // {card, i}
+function abrirThumb(card, i) { caixaThumb = {card, i}; mostrarThumb(); $("caixa-thumb").hidden = false; }
+function fecharThumb() { $("caixa-thumb").hidden = true; caixaThumb = null; }
+function mostrarThumb() {
+  const figs = [...caixaThumb.card.querySelectorAll(".thumbs-longo figure")];
+  caixaThumb.i = (caixaThumb.i + figs.length) % figs.length;
+  const f = figs[caixaThumb.i], img = f.querySelector("img");
+  $("caixa-thumb-img").src = img.src;
+  const fala = f.querySelector(".fala"), leitura = f.title;
+  $("caixa-thumb-info").innerHTML = `<b>${escapar(img.alt)}</b> <span class="fraco">(${caixaThumb.i + 1} de ${figs.length})</span>`
+    + (fala ? `<br>Fala: ${escapar(fala.textContent)}` : "") + (leitura ? `<br><i>${escapar(leitura)}</i>` : "");
+  const escolhida = f.classList.contains("escolhida");
+  $("caixa-thumb-usar").textContent = escolhida ? "✓ é a escolhida" : "✓ usar esta";
+  $("caixa-thumb-usar").disabled = escolhida;
+  $("caixa-thumb-baixar").href = img.src;
+  $("caixa-thumb-baixar").download = `thumb_${caixaThumb.i + 1}.jpg`;
+}
+$("caixa-thumb").addEventListener("click", (e) => {
+  if (e.target.id === "caixa-thumb") fecharThumb();
+  else if (e.target.classList.contains("fechar")) fecharThumb();
+  else if (e.target.classList.contains("esq")) { caixaThumb.i--; mostrarThumb(); }
+  else if (e.target.classList.contains("dir")) { caixaThumb.i++; mostrarThumb(); }
+  else if (e.target.id === "caixa-thumb-usar") escolherThumb(caixaThumb.card, caixaThumb.i);
+});
+document.addEventListener("keydown", (e) => {
+  if (!caixaThumb) return;
+  if (e.key === "Escape") fecharThumb();
+  else if (e.key === "ArrowLeft") { caixaThumb.i--; mostrarThumb(); }
+  else if (e.key === "ArrowRight") { caixaThumb.i++; mostrarThumb(); }
+  else if (e.key === "Enter") escolherThumb(caixaThumb.card, caixaThumb.i);
 });
 
 $("trabalhos").addEventListener("click", async (e) => {

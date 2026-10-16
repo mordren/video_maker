@@ -530,6 +530,27 @@ def _preencher_texto(page, seletor: str, valor: str, log=None, nome_campo: str =
             _emit(log, f"{nome_campo} deixado em branco (nada pra preencher).")
 
 
+def _enviar_thumbnail(page, thumb_path: Path, log=None) -> None:
+    """Entrega a imagem ao campo "Enviar miniatura" da etapa Detalhes.
+
+    Não derruba o envio: canal sem miniatura personalizada (precisa de
+    verificação por telefone) não tem o campo, e o vídeo sai com a miniatura
+    automática do YouTube mesmo assim.
+    """
+    campo = page.locator(
+        "ytcp-thumbnails-compact-editor-uploader input[type=file], "
+        "ytcp-thumbnail-uploader input[type=file], "
+        "#still-picker input[type=file]")
+    try:
+        campo.first.wait_for(state="attached", timeout=15_000)
+        campo.first.set_input_files(str(thumb_path))
+        page.wait_for_timeout(3000)
+        _emit(log, f"Miniatura enviada: {thumb_path.name} ({thumb_path.stat().st_size / 1024:.0f} KB).")
+    except Exception as erro:  # noqa: BLE001 — a tela do Studio pode mudar
+        _emit(log, f"⚠️ Não consegui enviar a miniatura ({type(erro).__name__}); "
+                   "o vídeo segue com a automática do YouTube.")
+
+
 def _marcar_nao_para_criancas(page, log=None) -> None:
     page.locator('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]').click(timeout=_ESPERA)
     _emit(log, "Marquei 'Não é conteúdo para crianças'.")
@@ -901,6 +922,7 @@ def upload_video(
     publish_at: datetime | None = None,
     headless: bool = False,
     log=None,
+    thumbnail: Path | None = None,
 ) -> str:
     """Envia um vídeo pela tela do Studio, na conta indicada. Devolve a URL.
 
@@ -1006,6 +1028,10 @@ def upload_video(
 
             etapa = "marcando 'não é para crianças'"
             _marcar_nao_para_criancas(page, log=_log)
+
+            if thumbnail and Path(thumbnail).exists():
+                etapa = "enviando a miniatura"
+                _enviar_thumbnail(page, Path(thumbnail), log=_log)
 
             etapa = "aguardando o envio do vídeo"
             _log("Aguardando o upload do vídeo terminar…")

@@ -227,6 +227,30 @@ class JEV:
             formato = "dinamico"
         return {"formato_sugerido": formato}
 
+    # Corte inicial do vídeo longo (estudio/video_longo.py) -----------------
+    def melhor_previa(self, candidatos: list[dict], tema: str = "", comentario: str = "") -> dict:
+        """Escolhe, entre janelas de ~15 s do trecho longo, a melhor parte para
+        servir de prévia (o que aparece na proposta antes de produzir os
+        15-20 min): tem que prender e se entender sozinha."""
+        opts = {f"c{i}": _resumo(c["texto"], 320) for i, c in enumerate(candidatos)}
+        state = {"tema_do_video": tema or "(nenhum)", "motivo_do_editor": comentario or "(nenhum)",
+                 "candidatos": opts}
+        a = self.decide(state, {
+            "melhor": {
+                "type": "choice",
+                "instructions": (
+                    "Um vídeo longo de 15-20 minutos vai ganhar uma prévia de ~15 segundos, "
+                    "sem legenda, para quem escolhe se vale produzi-lo. Escolha o candidato "
+                    "que mostra a MELHOR PARTE do vídeo: a fala mais forte (confronto, "
+                    "revelação, tirada, afirmação marcante) e que se entende sozinha, sem o "
+                    "resto do contexto. Evite cumprimento, preâmbulo, leitura de comentário "
+                    "ou frase que começa respondendo a algo que não aparece."),
+                "criteria": opts,
+            },
+        })
+        idx = _idx(a["melhor"]["choice"], 0)
+        return {"indice": idx, **candidatos[idx]}
+
     def tem_contexto(self, texto: str, gancho_do_editor: str = "", motivo_editor: str = "") -> dict:
         """Confere, depois de escolhido, se o texto ISOLADO do gancho (transcrito
         de novo só a partir do áudio recortado, sem o resto do bloco) ainda

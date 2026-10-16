@@ -241,6 +241,10 @@ def _montar() -> list[Grupo]:
         _f("mod.imagens.MODELO_VISAO", "Modelo de visão (nota da foto)", "texto",
            "~US$ 0,00003 por foto com o Gemini Flash-Lite."),
         _f("mod.imagens.NOTA_MIN", "Nota mínima da visão", "numero", "", minimo=0, maximo=10, passo=0.5),
+        _f("mod.thumbnail.MODELO_VISAO", "Thumb do longo: modelo que lê os prints", "texto",
+           "Descreve expressão e cena de cada print (OpenRouter). DeepSeek 4.1 Flash: ~US$ 0,0002 por 5 prints."),
+        _f("mod.thumbnail.MODELO_FRASE", "Thumb do longo: modelo das frases", "texto",
+           "Escreve as 3 frases a partir da fala de quem aparece (OpenRouter)."),
         _f("mod.imagens.TROCA_ALVO", "Segundos por foto", "numero", "", minimo=1, maximo=30, passo=0.5,
            unidade="s"),
         _f("mod.imagens.TROCA_MIN", "Segundos mínimos por foto", "numero", "", minimo=0.5, maximo=30, passo=0.5,
@@ -625,7 +629,7 @@ def _converter(c: Campo, bruto):
         validos = [o[0] for o in c.opcoes or []]
         if v not in validos:
             raise ValueError(f"{_nome(c)} precisa ser uma de: {', '.join(validos)}.")
-    if t == "texto" and c.chave.endswith((".modelo", "MODELO_VISAO")) and not re.fullmatch(r"[A-Za-z0-9._:/@+~\-]+", v):
+    if t == "texto" and c.chave.endswith((".modelo", "MODELO_VISAO", "MODELO_FRASE")) and not re.fullmatch(r"[A-Za-z0-9._:/@+~\-]+", v):
         raise ValueError(f"{_nome(c)} só aceita letras, números e . _ : / @ + ~ - (ex.: fabricante/modelo).")
     if t == "caminho" and not v.startswith("/") and not re.match(r"^[A-Za-z]:[\\/]", v):
         raise ValueError(f"{_nome(c)} precisa ser um caminho completo.")

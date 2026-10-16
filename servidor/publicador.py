@@ -46,6 +46,7 @@ import random
 import re
 import smtplib
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -60,6 +61,7 @@ from flask import Flask, jsonify, make_response, render_template, request, send_
 
 DATA_DIR = Path(os.environ.get("PUBLICADOR_DATA") or "/srv/publicador")
 VIDEOS_DIR = DATA_DIR / "videos"
+THUMBS_DIR = DATA_DIR / "thumbs"             # miniatura de cada item, <id>.jpg (some depois de enviar)
 FILA_PATH = DATA_DIR / "fila.json"
 CONFIG_PATH = DATA_DIR / "config.json"
 LOG_PATH = DATA_DIR / "publicador.log"
@@ -550,6 +552,10 @@ def _mandar_para_o_fim(item_id: str) -> None:
         salvar_fila(fila)
 
 
+def _caminho_thumb(item_id: str) -> Path:
+    return THUMBS_DIR / f"{item_id}.jpg"
+
+
 def _atualizar_item(item_id: str, **campos) -> None:
     with _TRAVA:
         fila = carregar_fila()
@@ -566,15 +572,79 @@ def _legenda_tiktok(titulo: str, cfg_canal: dict) -> str:
     return f"{titulo}\n\n{legenda}" if legenda else titulo
 
 
+def _duracao_mp4(caminho: Path) -> float | None:
+    """Duração lida direto do átomo mvhd do MP4/MOV, sem depender do ffprobe.
+
+    A TV box não tem ffmpeg instalado; os cortes do Estúdio são MP4, então
+    ler o cabeçalho resolve. Qualquer outro formato devolve None.
+    """
+    def _atomos(arq, fim):
+        while arq.tell() + 8 <= fim:
+            inicio = arq.tell()
+            tamanho, tipo = struct.unpack(">I4s", arq.read(8))
+            if tamanho == 1:
+                tamanho = struct.unpack(">Q", arq.read(8))[0]
+            elif tamanho == 0:
+                tamanho = fim - inicio
+            if tamanho < 8:
+                return
+            yield tipo, arq.tell(), inicio + tamanho
+            arq.seek(inicio + tamanho)
+
+    try:
+        with caminho.open("rb") as arq:
+            fim = caminho.stat().st_size
+            for tipo, dados, termina in _atomos(arq, fim):
+                if tipo != b"moov":
+                    continue
+                arq.seek(dados)
+                for tipo2, dados2, _ in _atomos(arq, termina):
+                    if tipo2 != b"mvhd":
+                        continue
+                    arq.seek(dados2)
+                    versao = arq.read(1)[0]
+                    arq.read(3)
+                    if versao == 1:
+                        _, _, escala, duracao = struct.unpack(">QQIQ", arq.read(28))
+                    else:
+                        _, _, escala, duracao = struct.unpack(">IIII", arq.read(16))
+                    return duracao / escala if escala else None
+    except (OSError, struct.error, IndexError):
+        pass
+    return None
+
+
 def _duracao_video(caminho: Path) -> float | None:
-    """Duração em segundos (ffprobe); None se não der para medir."""
+    """Duração em segundos (ffprobe, ou o cabeçalho do MP4); None se não der."""
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "default=nw=1:nk=1", str(caminho)],
                            capture_output=True, text=True, timeout=30, check=True)
         return float(r.stdout.strip())
     except (OSError, subprocess.SubprocessError, ValueError):
+        return _duracao_mp4(caminho)
+
+
+_DURACOES: dict[str, tuple[float, float | None]] = {}
+
+
+def _duracao_em_cache(arquivo: str) -> float | None:
+    """Duração do vídeo da fila, medida uma vez por versão do arquivo.
+
+    A tela pede o estado a cada poucos segundos; sem o cache seria um ffprobe
+    por vídeo a cada pedido. A chave é o mtime, então trocar o arquivo remede.
+    """
+    caminho = caminho_do_video(arquivo)
+    try:
+        mtime = caminho.stat().st_mtime
+    except OSError:
         return None
+    guardado = _DURACOES.get(arquivo)
+    if guardado and guardado[0] == mtime:
+        return guardado[1]
+    duracao = _duracao_video(caminho)
+    _DURACOES[arquivo] = (mtime, duracao)
+    return duracao
 
 
 def _talvez_publicar_no_tiktok(
@@ -698,7 +768,8 @@ def _enviar_item(item_id: str) -> None:
             # bloqueia automação com mais facilidade nesse modo.
             url = youtube_browser_upload.upload_video(
                 caminho, titulo, canal, descricao, privacidade,
-                publish_at=None, headless=False, log=progresso)
+                publish_at=None, headless=False, log=progresso,
+                thumbnail=_caminho_thumb(item_id))
         except Exception as erro:                        # noqa: BLE001
             tentativas = int(item.get("tentativas") or 0) + 1
             if _erro_de_rede(erro) and tentativas <= MAX_TENTATIVAS_REDE:
@@ -740,6 +811,7 @@ def _enviar_item(item_id: str) -> None:
             return
 
         registrar(f"✅ Publicado “{titulo}”: {url}")
+        _caminho_thumb(item_id).unlink(missing_ok=True)
         _atualizar_item(item_id, status="enviado", url=url, mensagem="", tentativas=0,
                         enviado_em=datetime.now().isoformat(timespec="seconds"))
         _anotar_publicado(item["arquivo"], titulo, canal)
@@ -825,6 +897,10 @@ def pagina():
     return resposta
 
 
+def _minutos(segundos: float | None) -> float | None:
+    return None if segundos is None else round(segundos / 60, 1)
+
+
 @app.get("/api/estado")
 def estado():
     fila = _adotar_canal_nos_orfaos()
@@ -838,7 +914,8 @@ def estado():
         "rodando": bool(fila.get("rodando")),
         "proximos": fila.get("proximos") or {},
         "enviando": _ENVIANDO,
-        "itens": fila.get("itens", []),
+        "itens": [{**item, "duracao_min": _minutos(_duracao_em_cache(item["arquivo"]))}
+                  for item in fila.get("itens", [])],
         "canais": canais_lista,
         "config": {"canais": canais_cfg},
         "tiktok_contas": tiktok_upload.list_accounts(),
@@ -904,6 +981,23 @@ def subir_videos():
     if recusados:
         resposta["erro"] = "Formato não aceito: " + ", ".join(recusados)
     return jsonify(resposta)
+
+
+@app.post("/api/itens/<item_id>/thumb")
+def subir_thumb(item_id: str):
+    """Recebe a miniatura (JPG/PNG, campo "thumb") do vídeo e guarda ao lado da
+    fila; o envio ao YouTube a usa e depois apaga."""
+    arq = request.files.get("thumb")
+    if arq is None or not arq.filename:
+        return jsonify({"erro": "Nenhuma imagem enviada."}), 400
+    with _TRAVA:
+        item = next((i for i in carregar_fila()["itens"] if i["id"] == item_id), None)
+    if item is None:
+        return jsonify({"erro": "Item não existe."}), 404
+    THUMBS_DIR.mkdir(parents=True, exist_ok=True)
+    arq.save(_caminho_thumb(item_id))
+    registrar(f"🖼️ Miniatura recebida para “{item.get('titulo') or item['arquivo']}”.")
+    return jsonify({"ok": True})
 
 
 @app.post("/api/itens/<item_id>")

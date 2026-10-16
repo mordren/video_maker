@@ -172,7 +172,7 @@ def humanizar(projeto: dict, canal: dict, h: dict) -> tuple[dict, dict]:
 
     # Rechecagem do Jev: só desfaz em caso grave.
     base = canais.perguntas_do_canal(cfg)
-    perguntas = {"gancho": base["gancho"], "coerencia": base["coerencia"]}
+    perguntas = {"gancho": base["gancho"], "coerencia": base.get("coerencia") or canais.PERGUNTA_COERENCIA}
     fixo = projeto.pop("gancho_fixo", None)
     aval = historia.avaliar(projeto, canal, novo, perguntas, etapa="revisao")
     if fixo:

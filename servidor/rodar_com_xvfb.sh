@@ -7,7 +7,7 @@
 set -euo pipefail
 
 DISPLAY_NUM=":97"
-Xvfb "$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp &
+Xvfb "$DISPLAY_NUM" -screen 0 1366x900x24 -nolisten tcp &
 XVFB_PID=$!
 trap 'kill "$XVFB_PID" 2>/dev/null || true' EXIT
 export DISPLAY="$DISPLAY_NUM"

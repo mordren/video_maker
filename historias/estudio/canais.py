@@ -67,18 +67,71 @@ EFEITOS_MOVIMENTO = ["zoom_in", "zoom_out", "pan", "tremor"]
 EFEITOS_SOBREPOSICAO = ["flash", "cintilar_luz", "vinheta_pulso"]
 
 # Perguntas que valem para qualquer canal. Pergunta com trava que falha reprova a história (recomeça com outra vibe).
+# Calibração de 14/10/2026 (13 textos: bons e versões ruins dos mesmos fatos, com frases soltas, ordem trocada, clichê e
+# final-charada): as perguntas antigas de sim/não sem níveis (coerência, entendimento, enfeite, personagem) davam quase a
+# mesma nota para bom e ruim (57% de acerto). Com níveis que descrevem situações, como pede a documentação do Jev, o
+# acerto foi a 98%. Os níveis vão em "criterios" (do mais fraco ao mais forte) e o juiz cita os campos do state
+# (historia.estado_juiz).
 PERGUNTAS_UNIVERSAIS = {
-    "gancho": {"tipo": "score", "corte": 8, "trava": False,
-               "pergunta": "Quem está rolando o feed para nos 3 primeiros segundos com esse gancho (a narração da cena 1)?"},
-    "personagem_consistente": {"tipo": "noul", "corte": 0.85, "trava": False,
-                               "pergunta": "O personagem principal mantém aparência, idade e comportamento do começo ao fim?"},
-    "coerencia": {"tipo": "noul", "corte": 0.85, "trava": False,
-                  "pergunta": "A sequência de fatos é coerente, sem furos nem contradições?"},
-    "sem_enfeite": {"tipo": "noul", "corte": 0.85, "trava": False,
-                    "pergunta": "Todo detalhe estranho cabe na lógica da história e serve a ela, sem imagem que soa "
-                                "bonita mas não fecha (ex.: água escorrendo de um poço que já secou) e sem final-charada?"},
-    "entendimento_audio": {"tipo": "noul", "corte": 0.80, "trava": False,
-                           "pergunta": "Dá para entender tudo ouvindo uma vez só, sem pronome ambíguo?"},
+    "gancho": {"tipo": "score", "corte": 7, "trava": False,
+               "pergunta": "Quem está rolando o feed para de rolar ao ouvir a primeira frase da narração (o gancho)?",
+               "criterios": [
+                   "A primeira frase é apresentação ou clima genérico (quem é, onde mora, 'era uma noite fria'), sem nada fora do normal",
+                   "Há algo estranho na primeira frase, mas vago ou já explicado, e não dá vontade de saber o resto",
+                   "A primeira frase traz uma situação estranha e concreta, mas longa ou confusa de entender só de ouvido",
+                   "A primeira frase traz, em poucas palavras, uma situação concreta e fora do normal que faz perguntar 'e aí?'",
+                   "A primeira frase junta uma pessoa comum, um lugar concreto e um fato ameaçador que poderia acontecer "
+                   "de verdade (impossível só se `pedido.assunto` pede algo sobrenatural), sem explicar, e quem ouve "
+                   "precisa saber o resto"]},
+    "encadeamento": {"tipo": "score", "corte": 7, "trava": False,
+                     "pergunta": "Como as frases da narração (`historia.frases`) se ligam umas às outras quando a história é "
+                                 "ouvida em voz alta?",
+                     "criterios": [
+                         "Lista de fragmentos e imagens soltas; trocar a ordem das frases quase não muda nada",
+                         "Muitas frases curtas isoladas, de duas a cinco palavras; quem ouve precisa adivinhar como uma leva à outra",
+                         "Parte das frases se liga por causa ou tempo, mas há saltos em que algo acontece sem motivo ou sem aviso",
+                         "Quase toda frase continua a anterior (por causa, consequência, oposição ou tempo marcado), com um ou "
+                         "dois saltos pequenos",
+                         "Cada frase nasce da anterior, como alguém contando de uma vez só; a ordem não pode ser trocada sem "
+                         "quebrar a história"]},
+    "causa": {"tipo": "score", "corte": 7, "trava": False,
+              "pergunta": "Por que acontece o que acontece de ruim na história?",
+              "criterios": [
+                  "Coisas estranhas acontecem uma depois da outra, sem motivo e sem ligação com o que o personagem fez",
+                  "Há um motivo sugerido, mas quem ouve não consegue dizer qual é",
+                  "O motivo existe e se entende, mas fica solto, sem ligar ao desfecho",
+                  "O desfecho é consequência clara de algo que alguém fez, decidiu ou ignorou antes na história"]},
+    # Calibrada com o feedback de 14/10/2026 (colher "ainda quente", selfie de dentro da laje, chave com o assassino e
+    # porta trancada por dentro): separa 88% dos pares; o juiz antigo dava ~8 para todas.
+    "plausibilidade": {"tipo": "score", "corte": 7, "trava": False,
+                       "pergunta": "Tirando o fenômeno sobrenatural que `pedido.assunto` pede (se pedir algum), tudo o que "
+                                   "acontece na história poderia acontecer no mundo real e faz sentido para quem ouve?",
+                       "criterios": [
+                           "Um fato central é fisicamente impossível ou absurdo, e o assunto não pede nada sobrenatural",
+                           "Um detalhe contradiz outro, a física ou o corpo humano, ou a história deixa um furo (como alguém "
+                           "entrou, como alguém sabe, como algo chegou ali)",
+                           "Tudo é possível, mas um sinal de perigo é enigmático e não quer dizer nada para quem ouve, ou "
+                           "alguém age como ninguém agiria no lugar dele",
+                           "Tudo poderia acontecer de verdade (ou só o fenômeno pedido pelo assunto foge da física); as "
+                           "pessoas agem como gente real e cada pista tem um sentido claro"]},
+    "clareza_audio": {"tipo": "score", "corte": 6, "trava": False,
+                      "pergunta": "Ouvindo uma única vez, quem ouve consegue acompanhar quem faz cada coisa, onde e quando?",
+                      "criterios": [
+                          "Não dá para saber quem é quem nem em que ordem as coisas aconteceram",
+                          "Há pelo menos um trecho em que não se sabe quem fez a ação ou se aquilo é passado ou presente",
+                          "Dá para acompanhar, mas um pronome ou uma troca de lugar ou de tempo obriga a pensar",
+                          "Sempre se sabe quem faz cada coisa, onde e quando"]},
+    # No lugar de personagem_consistente (reprovava 18 de 20 histórias boas e não pegava narrador morto contando).
+    "ponto_de_vista": {"tipo": "score", "corte": 7, "trava": False,
+                       "pergunta": "Quem conta a história mantém o mesmo ponto de vista e só conta o que poderia ter visto "
+                                   "ou sabido?",
+                       "criterios": [
+                           "Quem narra em primeira pessoa conta o que aconteceu depois da própria morte, ou vê o que não "
+                           "poderia ver",
+                           "A narração troca de pessoa no meio (de 'ele' para 'eu', ou de um narrador para outro) sem aviso",
+                           "Mesmo ponto de vista do começo ao fim, mas um trecho conta algo que esse narrador dificilmente saberia",
+                           "Mesmo ponto de vista do começo ao fim, e quem narra só conta o que viu, ouviu ou soube; se morre, "
+                           "a voz para ali e o resto é dito de fora"]},
     "prompts_batem": {"tipo": "noul", "corte": 0.85, "trava": False,
                       "pergunta": "Cada prompt de imagem mostra o que a narração daquela cena diz?"},
     "seguranca": {"tipo": "noul", "corte": 0.90, "trava": True,
@@ -123,9 +176,70 @@ CONFIG_PADRAO = {
     "reaproveitar_biblioteca": False,
     "modos_narrativos": [],  # [{"nome", "regra"}]: um por vídeo, em rodízio (ver historia.dica_modo)
     "publicador_canal": "",  # nome do canal no Publicador (ex.: garras)
-    "cta": "Siga para mais histórias.",  # dito pelo narrador depois da última frase; vazio = sem CTA
+    "cta": "Siga para mais histórias.",  # vai no prompt do roteirista (historia.instrucao_final), que escreve o convite no fim da narração; vazio = sem CTA
     "sugestoes_trilha": [],
 }
+
+# Finais coerentes (07/10/2026): "ele não veio te matar, veio ocupar meu lugar" nasceu de exigir reviravolta num assunto
+# simples. O assunto manda no desfecho; a virada é opcional e nunca desfaz o que o assunto pediu.
+REGRA_ASSUNTO = ("O que o assunto diz que acontece, acontece na história e é o desfecho: se pede que alguém morra, seja "
+                 "levado ou desapareça, isso acontece em cena. Nunca negue, adie ou desfaça ('ele não veio te matar', "
+                 "'era só um sonho') nem troque por outra coisa, como inversão de papéis ('veio ocupar o meu lugar').")
+REGRA_FINAL = ("Final coerente: é a consequência direta do que a história montou, e a última frase conta um fato que o "
+               "ouvinte entende sem decifrar (o que aconteceu, com quem). Reviravolta é opcional: só entra se for um "
+               "fato plantado antes que completa o assunto, sem anular o que ele pediu. Na última frase não entram "
+               "regra sobrenatural nova, explicação de como a coisa funciona, metáfora nem charada.")
+PERGUNTA_FINAL = ("O final é a consequência direta do que a história montou: a última frase conta um fato que se "
+                  "entende sem decifrar, sem regra nova, explicação solta ou charada, e deixa no máximo uma ponta "
+                  "nascida do que já foi contado?")
+PERGUNTA_REVIRAVOLTA = ("Se há reviravolta, ela é um fato plantado antes, sem destaque, que completa o assunto sem "
+                        "anular nem inverter o que ele pediu. Se não há, o final é a consequência direta do que veio "
+                        "antes (também vale).")
+# Fora das universais desde a calibração (não separava bom de ruim), mas serve de rede grossa na rechecagem do
+# humanizer (revisao.py: só desfaz a passada se a coerência despencar abaixo de COERENCIA_MINIMA).
+PERGUNTA_COERENCIA = {"tipo": "noul", "corte": 0.85, "trava": False,
+                      "pergunta": "A sequência de fatos é coerente, sem furos nem contradições?"}
+
+# Perguntas calibradas de terror (14/10/2026), no lugar de medo_especifico, tensao_antes_da_revelacao,
+# reviravolta_plantada e final_incomodo, que não separavam história boa de ruim. "suspense" foi testada com pares da
+# mesma história com e sem o aviso antecipado (acertou os três).
+PERGUNTAS_TERROR = {
+    "suspense": {"tipo": "score", "corte": 7, "trava": False,
+                 "pergunta": "Quem ouve fica esperando por uma ameaça antes de ela se cumprir?",
+                 "criterios": [
+                     "Nada antecipa o perigo: a coisa ruim acontece de repente no fim, ou não há perigo",
+                     "Só clima de medo vago (frio, escuro, barulho, sombra), sem uma ameaça definida",
+                     "Há uma ameaça definida, mas ela aparece só perto do fim",
+                     "Uma ameaça definida aparece cedo e a história avança na direção dela",
+                     "Cedo, quem ouve sabe ou percebe um perigo que o personagem ignora ou subestima, e cada passo seguinte "
+                     "aumenta a espera pelo desfecho"]},
+    "final": {"tipo": "score", "corte": 7, "trava": False,
+              "pergunta": "Como a última frase (`historia.ultima_frase`) fecha a história?",
+              "criterios": [
+                  "Nega ou desfaz a história ('era só um sonho', 'nada daquilo aconteceu'), ou não tem relação com o resto",
+                  "Final-charada: precisa ser decifrado, traz regra sobrenatural nova ou imagem solta que pede interpretação",
+                  "Final claro, mas genérico: o personagem simplesmente morre ou some, sem usar nada do que foi contado antes",
+                  "Final claro que é consequência do que veio antes e usa uma pessoa, objeto ou lugar já citado",
+                  "Final claro que dá sentido novo a um detalhe plantado antes sem destaque: quem ouve entende na hora e "
+                  "relembra a história de outro jeito"]},
+    "concretude": {"tipo": "score", "corte": 6, "trava": False,
+                   "pergunta": "A história soa como o relato de algo que aconteceu de verdade com alguém?",
+                   "criterios": [
+                       "Tudo genérico ('um homem', 'uma casa', 'algo estranho'), sem nome, lugar nem objeto específico",
+                       "Alguns detalhes concretos, mas o resto é clima e adjetivo de medo",
+                       "Pessoas, lugar e objetos concretos; soa como uma história inventada bem contada",
+                       "Nomes, lugar, hora e objetos do dia a dia tão específicos e comuns que soa como relato verdadeiro"]},
+}
+
+_CUMPRE_ASSUNTO_ANTIGA = ("O final cumpre o que o assunto pedido prometia? Se o assunto pede morte, ataque ou "
+                          "desaparecimento, isso acontece na história, e não é negado, adiado nem trocado por outra coisa "
+                          "(como inversão de papéis).")
+# 14/10/2026: sem a última frase, assunto aberto ("A Mulher de Branco da Estrada") reprovava na trava em 8 de 9 testes.
+PERGUNTA_CUMPRE_ASSUNTO = {"tipo": "noul", "corte": 0.8, "trava": True,
+                           "pergunta": "O final cumpre o que o assunto pedido (`pedido.assunto`) prometia? Se o assunto diz "
+                                       "o que acontece (morte, ataque, desaparecimento), isso acontece na história, e não é "
+                                       "negado, adiado nem trocado por outra coisa (como inversão de papéis). Se o assunto "
+                                       "não diz como termina (só traz uma situação, um lugar ou uma lenda), responda sim."}
 
 TERROR_GARRAS = {
     "nome": "Garras no Telhado",
@@ -145,15 +259,16 @@ TERROR_GARRAS = {
             "Um personagem principal, no máximo dois ambientes; o ambiente e a época seguem o assunto pedido.",
             "Vocabulário, objetos e cenário da época e do lugar: na cidade medieval use lanterna, não celular.",
             "Frases corridas e naturais, como alguém contando; só o final pode ser curto se virar a história.",
-            "Final com reviravolta que muda o sentido de algo mostrado antes.",
+            REGRA_ASSUNTO,
+            REGRA_FINAL,
             "Texto escrito na imagem só quando for absolutamente essencial.",
         ],
         "estrutura": ["gancho", "desenvolvimento", "virada", "susto_final"],
         "max_personagens": 1,
         "max_ambientes": 6,
         "juiz": {"perguntas": {
-            "final_reviravolta": {"tipo": "score", "corte": 7, "trava": False,
-                                  "pergunta": "O final muda o sentido de algo mostrado antes?"},
+            "final_reviravolta": {"tipo": "score", "corte": 7, "trava": False, "pergunta": PERGUNTA_FINAL},
+            "final_cumpre_assunto": PERGUNTA_CUMPRE_ASSUNTO,
             "tensao_crescente": {"tipo": "score", "corte": 7, "trava": False,
                                  "pergunta": "A tensão cresce de cena para cena?"},
             "originalidade": {"tipo": "score", "corte": 6, "trava": False,
@@ -170,21 +285,43 @@ TERROR_GARRAS = {
 }
 
 
+# "narração enxuta, com pausas" virava fileira de frases soltas ("Parou. O estalo parou junto."); 14/10/2026.
+_TERROR_SILENCIOSO_ANTIGO = ("narração enxuta, com pausas; o medo vem do que se vê e se ouve (olhar, som, objeto, "
+                             "ausência), não do que se explica")
+REGRA_TERROR_SILENCIOSO = ("o medo vem do que se vê e se ouve (olhar, som, objeto, ausência), não do que se explica; "
+                           "frases simples e encadeadas, cada uma continuando a anterior, sem fileira de fragmentos")
+
+# "o absurdo entra sem alarde" punha sobrenatural em assunto de crime ou acidente (concreto que se mexe, batidas na
+# parede); o Relato encontrado virava telegrama ("Cheguei. É ele. Vou entrar.") e fechava com "se alguém achar esta
+# gravação". Feedback de 14/10/2026.
+_RELATO_ENCONTRADO_ANTIGO = ("a narração inteira é um único documento (áudio, bilhete, diário, carta, laudo) "
+                             "lido do começo ao fim, na voz de quem o fez, no tempo em que o fez; ele termina interrompido ou "
+                             "sem conclusão, e o que aconteceu depois fica só no que falta. Ninguém narra de fora nem conta "
+                             "como o documento foi achado")
+REGRA_RELATO_ENCONTRADO = (_RELATO_ENCONTRADO_ANTIGO + ". Quem gravou ou escreveu fala em frases inteiras, como alguém "
+                           "explicando a outra pessoa o que está acontecendo e por quê, nunca em telegrama ('Cheguei. É "
+                           "ele.'), e nunca fala do próprio documento ('se alguém achar esta gravação')")
+_TERROR_COTIDIANO_ANTIGO = "começa banal, numa situação comum; o absurdo entra sem alarde"
+REGRA_TERROR_COTIDIANO = ("começa banal, numa situação comum; o perigo entra sem alarde, por algo que poderia acontecer "
+                          "de verdade (uma pessoa, um hábito, um objeto, um descuido); nada sobrenatural se o assunto não "
+                          "pedir")
+_MODOS_NOVOS = {_TERROR_SILENCIOSO_ANTIGO: REGRA_TERROR_SILENCIOSO, _RELATO_ENCONTRADO_ANTIGO: REGRA_RELATO_ENCONTRADO,
+                _TERROR_COTIDIANO_ANTIGO: REGRA_TERROR_COTIDIANO}
+
 MODOS_TERROR = [
-    {"nome": "Confissão", "regra": "alguém relata algo que aconteceu consigo; 1ª pessoa, tom íntimo, como quem fala baixo"},
-    {"nome": "Relato encontrado", "regra": "a narração inteira é um único documento (áudio, bilhete, diário, carta, laudo) "
-     "lido do começo ao fim, na voz de quem o fez, no tempo em que o fez; ele termina interrompido ou sem conclusão, "
-     "e o que aconteceu depois fica só no que falta. Ninguém narra de fora nem conta como o documento foi achado"},
-    {"nome": "Terror cotidiano", "regra": "começa banal, numa situação comum; o absurdo entra sem alarde"},
+    {"nome": "Confissão", "regra": "alguém relata algo que aconteceu consigo; 1ª pessoa, tom íntimo, como quem fala baixo; "
+     "quem confessa sobreviveu ao que conta, então não serve quando o assunto mata o narrador"},
+    {"nome": "Relato encontrado", "regra": REGRA_RELATO_ENCONTRADO},
+    {"nome": "Terror cotidiano", "regra": REGRA_TERROR_COTIDIANO},
     {"nome": "Horror psicológico", "regra": "o medo nasce da percepção e da dúvida; nada é confirmado, "
      "o ouvinte duvida do narrador"},
     {"nome": "Sobrenatural", "regra": "presenças e fatos que desafiam a realidade, com regras próprias e consistentes "
      "(o que a coisa pode e não pode fazer)"},
     {"nome": "Horror cósmico", "regra": "a descoberta de algo incompreensível sobre a existência; escala humana contra "
      "algo indiferente, e a linguagem do narrador falha"},
-    {"nome": "Final retroativo", "regra": "a última frase muda o sentido de tudo; a pista é plantada cedo, sem destaque"},
-    {"nome": "Terror silencioso", "regra": "narração enxuta, com pausas; o medo vem do que se vê e se ouve "
-     "(olhar, som, objeto, ausência), não do que se explica"},
+    {"nome": "Final retroativo", "regra": "a última frase revela o fato plantado cedo, sem destaque, que explica o que veio antes; "
+     "completa o assunto, nunca o desfaz"},
+    {"nome": "Terror silencioso", "regra": REGRA_TERROR_SILENCIOSO},
 ]
 
 REGRA_NARRADOR = ("Um narrador só, uma identidade só do começo ao fim; mesma voz, mesmo ponto de vista. Se o narrador "
@@ -193,11 +330,9 @@ ESTRUTURA_GARRAS_NOVO = [
     "Gancho: situação estranha ou detalhe fora do lugar que prende a atenção, sem explicação.",
     "Desenvolvimento: criação de tensão com imagens sensoriais antes de qualquer revelação.",
     "Complicação: o estranho ganha peso e aperta o narrador; tudo continua fazendo sentido dentro da história.",
-    "Reviravolta: detalhe plantado antes, sem destaque, muda o sentido de algo já mostrado.",
-    "Final: amarra a história; pode ficar aberto, mas a única ponta solta é uma que a própria história criou.",
+    "Clímax: o que o assunto prometeu acontece em cena (opcional: um detalhe plantado antes, sem destaque, explica por quê).",
+    "Final: a consequência direta, em um fato claro; a única ponta solta possível é uma que a própria história criou.",
 ]
-PERGUNTA_FINAL = ("O final amarra a história e deixa no máximo uma ponta solta, nascida do que já foi contado, sem "
-                  "mistério novo nem frase-charada que o ouvinte precisa decifrar?")
 
 GARRAS_NOVO = {
     "nome": "Garras Novo",
@@ -212,6 +347,8 @@ GARRAS_NOVO = {
         "regras_escrita": [
             "Comece com algo que capture a atenção e crie motivo para ficar no vídeo: um mistério, uma pergunta, uma situação impossível, um conflito que o observador quer resolver.",
             REGRA_NARRADOR,
+            REGRA_ASSUNTO,
+            REGRA_FINAL,
             "O narrador quer algo específico e toma uma decisão; o horror vem dessa decisão, não de observar coisas estranhas.",
             "Cada frase causa a próxima; encadeia eventos em sequência lógica, sem pulos ou imagens desconexas.",
             "Escolha uma regra sobrenatural (tempo voltando, duplo, possessão, maldição) e mantenha ela inteira até o fim.",
@@ -250,9 +387,9 @@ GARRAS_NOVO = {
                                 "pergunta": "A história ativa um medo específico e reconhecível (ser observado, perder o controle, ser esquecido, estar errado sobre algo), e não só sustos soltos?"},
             "tensao_antes_da_revelacao": {"tipo": "score", "corte": 7, "trava": False,
                                           "pergunta": "A tensão cresce antes de qualquer revelação, com imagens sensoriais concretas em vez de adjetivos de medo?"},
-            "reviravolta_plantada": {"tipo": "score", "corte": 7, "trava": False,
-                                     "pergunta": "A reviravolta ou o detalhe impossível tem uma pista plantada antes, sem destaque, e muda o sentido de algo já mostrado?"},
+            "reviravolta_plantada": {"tipo": "score", "corte": 7, "trava": False, "pergunta": PERGUNTA_REVIRAVOLTA},
             "final_incomodo": {"tipo": "score", "corte": 7, "trava": False, "pergunta": PERGUNTA_FINAL},
+            "final_cumpre_assunto": PERGUNTA_CUMPRE_ASSUNTO,
             "sem_cliche": {"tipo": "noul", "corte": 0.80, "trava": False,
                            "pergunta": "A história evita clichês (era só um sonho, espelho com outra pessoa, criança cantando, passos e figura no final) e gore gratuito?"},
             "epoca_e_lugar": {"tipo": "noul", "corte": 0.85, "trava": False,
@@ -358,7 +495,9 @@ def semear():
     if not db.um("SELECT id FROM canais WHERE slug = ?", (slugify(GARRAS_NOVO["nome"]),)):
         salvar(GARRAS_NOVO)
     migrar_regras_garras_novo()
+    migrar_finais_coerentes()
     migrar_voz_qwen()
+    migrar_juiz_calibrado()
 
 
 _MODO_RELATO_ANTIGO = ("a narração lê um áudio, gravação, laudo, bilhete ou mensagem achado por alguém; "
@@ -402,6 +541,109 @@ def migrar_regras_garras_novo():
         final["pergunta"] = PERGUNTA_FINAL
     if novas != regras or modos_novos != modos or estrutura_nova != estrutura or mudou_final:
         cfg["regras_escrita"], cfg["modos_narrativos"], cfg["estrutura"] = novas, modos_novos, estrutura_nova
+        db.executar("UPDATE canais SET config_json = ? WHERE id = ?", (json.dumps(cfg, ensure_ascii=False), c["id"]))
+
+
+_FINAL_ANTIGO_REGRAS = (
+    "Final que amarra a história: pode ficar aberto, incômodo ou macabro, mas a única ponta solta é uma que a própria "
+    "história criou; nada de mistério novo na última frase.",
+    "Termine com uma virada que amarra a história e deixa o arrepio: pode ficar uma pergunta no ar, mas uma só, "
+    "nascida da própria história, nunca um mistério novo.",
+    "Final com reviravolta que muda o sentido de algo mostrado antes.",
+)
+_REVIRAVOLTA_ANTIGA = "Uma reviravolta no terço final, plantada antes sem destaque, que faz sentido quando se olha para trás."
+_REVIRAVOLTA_NOVA = ("Reviravolta só se a trama pedir: no terço final, plantada antes sem destaque, fazendo sentido quando "
+                     "se olha para trás, e sem anular o que o assunto pediu.")
+_PERGUNTAS_ANTIGAS = {   # chave da pergunta do juiz: (texto anterior, texto atual)
+    "reviravolta_plantada": ("A reviravolta acontece no terço final da história (nos últimos segundos, não no meio), tem "
+                             "uma pista plantada antes, sem destaque, e muda o sentido de algo já mostrado?",
+                             PERGUNTA_REVIRAVOLTA),
+    "final_incomodo": ("O final amarra a história e deixa no máximo uma ponta solta, nascida do que já foi contado, sem "
+                       "mistério novo nem frase-charada que o ouvinte precisa decifrar?", PERGUNTA_FINAL),
+    "final_reviravolta": ("O final muda o sentido de algo mostrado antes?", PERGUNTA_FINAL),
+    "virada_final_perturbadora": ("O final amarra a história com uma virada perturbadora e deixa no máximo uma ponta "
+                                  "solta, nascida do que já foi contado, sem mistério novo?", PERGUNTA_FINAL),
+}
+_MODOS_ANTIGOS = {
+    "Confissão": "alguém relata algo que aconteceu consigo; 1ª pessoa, tom íntimo, como quem fala baixo",
+    "Final retroativo": "a última frase muda o sentido de tudo; a pista é plantada cedo, sem destaque",
+}
+
+
+def migrar_finais_coerentes():
+    """Troca as regras de final que exigiam reviravolta (e geravam 'veio ocupar o meu lugar') pelas coerentes, nos
+    canais de terror já salvos. Só mexe no texto que ainda é o antigo; o que você editou na tela fica como está."""
+    modos_novos = {m["nome"]: m["regra"] for m in MODOS_TERROR}
+    for c in db.todos("SELECT id, slug, config_json FROM canais WHERE slug IN (?, ?)",
+                      (slugify(GARRAS_NOVO["nome"]), slugify(TERROR_GARRAS["nome"]))):
+        cfg = db.carregar_json(c["config_json"], {})
+        antes = json.dumps(cfg, sort_keys=True)
+        novas = []
+        for r in cfg.get("regras_escrita") or []:
+            if r == _REVIRAVOLTA_ANTIGA:
+                novas.append(_REVIRAVOLTA_NOVA)
+            elif r in _FINAL_ANTIGO_REGRAS:
+                novas += [x for x in (REGRA_ASSUNTO, REGRA_FINAL) if x not in novas]
+            else:
+                novas.append(r)
+        if REGRA_FINAL not in novas:   # canal sem regra de final reconhecida: acrescenta
+            novas += [x for x in (REGRA_ASSUNTO, REGRA_FINAL) if x not in novas]
+        cfg["regras_escrita"] = novas
+        cfg["modos_narrativos"] = [{**m, "regra": modos_novos[m["nome"]]} if _MODOS_ANTIGOS.get(m["nome"]) == m.get("regra") else m
+                                   for m in cfg.get("modos_narrativos") or []]
+        if c["slug"] == slugify(GARRAS_NOVO["nome"]):
+            cfg["estrutura"] = [ESTRUTURA_GARRAS_NOVO[3] if e == "reviravolta" else ESTRUTURA_GARRAS_NOVO[4] if e == "fecho" else e
+                                for e in cfg.get("estrutura") or []]
+        perguntas = cfg.setdefault("juiz", {}).setdefault("perguntas", {})
+        for chave, (antigo, novo) in _PERGUNTAS_ANTIGAS.items():
+            if chave in perguntas and perguntas[chave].get("pergunta") == antigo:
+                perguntas[chave]["pergunta"] = novo
+        perguntas.setdefault("final_cumpre_assunto", dict(PERGUNTA_CUMPRE_ASSUNTO))
+        if json.dumps(cfg, sort_keys=True) != antes:
+            db.executar("UPDATE canais SET config_json = ? WHERE id = ?", (json.dumps(cfg, ensure_ascii=False), c["id"]))
+
+
+# Calibração do juiz (14/10/2026): perguntas que davam a mesma nota para história boa e ruim saem; entram as
+# calibradas de terror. A regra das "imagens sensoriais" do Garras Novo gerava colagem de sensações soltas.
+_PERGUNTAS_SEM_SINAL = ("modo_respeitado", "medo_especifico", "tensao_antes_da_revelacao", "reviravolta_plantada",
+                        "final_incomodo", "coerencia", "entendimento_audio", "sem_enfeite", "personagem_consistente")
+_REGRA_SENSORIAL_ANTIGA = "Crie tensão antes de revelar qualquer coisa; imagens sensoriais (som, cheiro, luz, temperatura)."
+REGRA_SENSORIAL_NOVA = ("Crie tensão antes de revelar: um sinal concreto de perigo aparece cedo e a pessoa segue em frente. "
+                        "Som, cheiro, luz e temperatura entram dentro de frases que contam o que alguém faz, nunca em "
+                        "fileira de sensações soltas.")
+# A pergunta do gancho do canal pedia "detalhe impossível": o gancho fica fixo antes da história, e o texto depois
+# inventava absurdos para justificá-lo.
+_GANCHO_IMPOSSIVEL = ("Quem está rolando o feed para nos 3 primeiros segundos com esse gancho? Ele traz uma situação "
+                      "estranha ou um detalhe impossível, sem explicar, em poucas palavras?")
+GANCHO_POSSIVEL = ("Quem está rolando o feed para nos 3 primeiros segundos com esse gancho? Ele traz, em poucas palavras e "
+                   "sem explicar, uma situação estranha ou ameaçadora que poderia acontecer de verdade (impossível só se o "
+                   "assunto pede algo sobrenatural)?")
+JUIZ_CALIBRADO = "2026-10-14b"  # mudar a versão roda a migração de novo (só troca textos antigos exatos)
+
+
+def migrar_juiz_calibrado():
+    """Uma vez por canal de terror (marca "juiz_calibrado"): o que você mudar na tela depois disso fica como está."""
+    for c in db.todos("SELECT id, slug, config_json FROM canais WHERE slug IN (?, ?)",
+                      (slugify(GARRAS_NOVO["nome"]), slugify(TERROR_GARRAS["nome"]))):
+        cfg = db.carregar_json(c["config_json"], {})
+        if cfg.get("juiz_calibrado") == JUIZ_CALIBRADO:
+            continue
+        perguntas = cfg.setdefault("juiz", {}).setdefault("perguntas", {})
+        for k in _PERGUNTAS_SEM_SINAL:
+            perguntas.pop(k, None)
+        for k, q in PERGUNTAS_TERROR.items():
+            perguntas.setdefault(k, copy.deepcopy(q))
+        cfg["regras_escrita"] = [REGRA_SENSORIAL_NOVA if r == _REGRA_SENSORIAL_ANTIGA else r
+                                 for r in cfg.get("regras_escrita") or []]
+        cfg["modos_narrativos"] = [{**m, "regra": _MODOS_NOVOS.get(m.get("regra"), m.get("regra"))}
+                                   for m in cfg.get("modos_narrativos") or []]
+        q = perguntas.get("gancho")
+        if q and q.get("pergunta") == _GANCHO_IMPOSSIVEL:
+            q["pergunta"] = GANCHO_POSSIVEL
+        q = perguntas.get("final_cumpre_assunto")
+        if q and q.get("pergunta") == _CUMPRE_ASSUNTO_ANTIGA:
+            q["pergunta"] = PERGUNTA_CUMPRE_ASSUNTO["pergunta"]
+        cfg["juiz_calibrado"] = JUIZ_CALIBRADO
         db.executar("UPDATE canais SET config_json = ? WHERE id = ?", (json.dumps(cfg, ensure_ascii=False), c["id"]))
 
 

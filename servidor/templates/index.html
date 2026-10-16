@@ -462,7 +462,8 @@ function desenharFila() {
       + '<td><button class="mini" data-sobe="' + item.id + '"' + (indice === 0 ? " disabled" : "") + '>↑</button> '
       + '<button class="mini" data-desce="' + item.id + '"' + (indice === estado.itens.length - 1 ? " disabled" : "") + '>↓</button></td>'
       + '<td><input data-titulo="' + item.id + '" value="' + escapar(item.titulo) + '">'
-      + '<div class="fraco" style="font-size:12px;margin-top:3px">' + escapar(item.arquivo) + "</div></td>"
+      + '<div class="fraco" style="font-size:12px;margin-top:3px">' + escapar(item.arquivo)
+        + (item.duracao_min == null ? "" : " · " + String(item.duracao_min).replace(".", ",") + " min") + "</div></td>"
       + '<td><select data-canal="' + item.id + '">' + opcoesDeCanal(item.canal) + "</select></td>"
       + '<td><span class="pilula ' + escapar(classe) + '">' + escapar(situacao) + "</span>"
       + (detalhe ? '<div style="font-size:12px;margin-top:3px">' + detalhe + "</div>" : "") + "</td>"

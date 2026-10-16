@@ -26,6 +26,12 @@ def _cabecalhos_openrouter():
     }
 
 
+def _cabecalhos_deepseek():
+    if not config.DEEPSEEK_API_KEY:
+        raise ErroAPI("DEEPSEEK_API_KEY não configurada (Configurações > Chaves e acesso, ou no arquivo .env)")
+    return {"Authorization": f"Bearer {config.DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+
+
 def _cabecalhos_polli():
     if not config.POLLINATIONS_API_KEY:
         raise ErroAPI("POLLINATIONS_API_KEY não configurada no arquivo .env")
@@ -59,6 +65,9 @@ def extrair_json(txt: str):
     try:
         return json.loads(txt)
     except ValueError:
+        resgatado = _resgatar_eco_de_schema(txt)
+        if resgatado is not None:
+            return resgatado
         ini = min([i for i in (txt.find("{"), txt.find("[")) if i >= 0], default=-1)
         fim = max(txt.rfind("}"), txt.rfind("]"))
         if ini >= 0 and fim > ini:
@@ -66,49 +75,102 @@ def extrair_json(txt: str):
         raise
 
 
+_CHAVES_DE_SCHEMA = {"type", "additionalProperties", "required", "properties"}
+
+
+def _resgatar_eco_de_schema(txt: str):
+    """O modelo às vezes repete o schema, fecha o objeto e escreve os dados reais logo depois (`{schema},"chave":...}`).
+    Devolve só os dados reais, ou None se o texto não tem esse formato."""
+    try:
+        eco, fim = json.JSONDecoder().raw_decode(txt)
+    except ValueError:
+        return None
+    if not (isinstance(eco, dict) and "properties" in eco and set(eco) <= _CHAVES_DE_SCHEMA):
+        return None
+    resto = txt[fim:].lstrip()
+    if not resto.startswith(","):
+        return None
+    try:
+        dados = json.loads("{" + resto[1:])
+    except ValueError:
+        return None
+    return dados if isinstance(dados, dict) and dados else None
+
+
 # ---------------------------------------------------------------- texto
 
 def chat(tarefa: str, mensagens: list[dict], schema: dict | None = None, *, projeto_id=None, etapa="texto",
-         temperatura: float = 0.8, max_tokens: int = 6000, contexto: dict | None = None):
+         temperatura: float = 0.8, max_tokens: int = 6000, contexto: dict | None = None, _repetida: bool = False):
     """Devolve (resposta, custo_usd). Com schema, a resposta já vem como dict."""
     if config.SIMULACAO:
         resp = simulacao.chat(tarefa, mensagens, contexto or {})
-        custos.registrar(projeto_id, etapa, "simulacao", config.MODELO_TEXTO, 0.0, True, tarefa)
+        custos.registrar(projeto_id, etapa, "simulacao", config.modelo_texto(), 0.0, True, tarefa)
         return resp, 0.0
 
-    corpo = {
-        "model": config.MODELO_TEXTO,
-        "messages": mensagens,
-        "temperature": temperatura,
-        "max_tokens": max_tokens,
-        "usage": {"include": True},
-        "reasoning": {"enabled": False},
-    }
-    if schema:
-        corpo["response_format"] = {"type": "json_schema",
-                                    "json_schema": {"name": tarefa, "strict": True, "schema": schema}}
+    pensa = tarefa in config.RACIOCINIO_TAREFAS or "todas" in config.RACIOCINIO_TAREFAS
+    oficial = config.PROVEDOR_TEXTO == "deepseek"
+    # Os tokens de raciocínio saem do mesmo limite da resposta: sem folga a história viria cortada.
+    limite = max_tokens + 16000 if pensa else max_tokens
+    if oficial:
+        # A API oficial só aceita json_object (sem schema): o schema vai no pedido. O deepseek-reasoner ignora temperature.
+        msgs = list(mensagens)
+        if schema:
+            msgs.append({"role": "system", "content": "Responda só com um objeto JSON válido neste schema: "
+                                                       + json.dumps(schema, ensure_ascii=False)})
+        corpo = {"model": "deepseek-reasoner" if pensa else "deepseek-chat", "messages": msgs,
+                 "max_tokens": min(limite, 60000 if pensa else 8000)}
+        if not pensa:
+            corpo["temperature"] = temperatura
+        if schema:
+            corpo["response_format"] = {"type": "json_object"}
+        url, cabecalhos = config.DEEPSEEK_URL, _cabecalhos_deepseek()
+    else:
+        corpo = {
+            "model": config.MODELO_TEXTO,
+            "messages": mensagens,
+            "temperature": temperatura,
+            "max_tokens": limite,
+            "usage": {"include": True},
+            "reasoning": {"enabled": pensa},
+        }
+        if schema:
+            corpo["response_format"] = {"type": "json_schema",
+                                        "json_schema": {"name": tarefa, "strict": True, "schema": schema}}
+        url, cabecalhos = config.OPENROUTER_URL, _cabecalhos_openrouter()
     inicio = time.time()
-    r = _post(config.OPENROUTER_URL, corpo, _cabecalhos_openrouter())
+    timeout = config.API_TIMEOUT_S * 3 if pensa else None
+    r = _post(url, corpo, cabecalhos, timeout=timeout)
     if r.status_code == 400:
         # Alguns provedores recusam json_schema estrito ou o desligamento do raciocínio: tenta o modo simples.
         corpo.pop("reasoning", None)
         if schema:
             corpo["response_format"] = {"type": "json_object"}
-        r = _post(config.OPENROUTER_URL, corpo, _cabecalhos_openrouter())
+        r = _post(url, corpo, cabecalhos, timeout=timeout)
+    nome_api = "DeepSeek" if oficial else "OpenRouter"
     if r.status_code != 200:
-        raise ErroAPI(f"OpenRouter HTTP {r.status_code}: {r.text[:500]}")
+        raise ErroAPI(f"{nome_api} HTTP {r.status_code}: {r.text[:500]}")
     dados = r.json()
     if "error" in dados:
-        raise ErroAPI(f"OpenRouter: {dados['error']}")
+        raise ErroAPI(f"{nome_api}: {dados['error']}")
     uso = dados.get("usage") or {}
-    custo = uso.get("cost")
-    real = custo is not None
-    if custo is None:
-        custo = (uso.get("prompt_tokens", 0) * config.PRECO_TEXTO_ENTRADA
-                 + uso.get("completion_tokens", 0) * config.PRECO_TEXTO_SAIDA)
-    em_cache = (uso.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
-    custos.registrar(projeto_id, etapa, "openrouter", config.MODELO_TEXTO, custo, real,
+    if oficial:
+        # A API oficial não devolve o custo: calcula pelo preço por token (cache e não cache separados).
+        acertos = uso.get("prompt_cache_hit_tokens") or 0
+        custo = ((uso.get("prompt_tokens", 0) - acertos) * config.PRECO_DEEPSEEK_ENTRADA
+                 + acertos * config.PRECO_DEEPSEEK_ENTRADA_CACHE
+                 + uso.get("completion_tokens", 0) * config.PRECO_DEEPSEEK_SAIDA)
+        real, em_cache = True, acertos
+    else:
+        custo = uso.get("cost")
+        real = custo is not None
+        if custo is None:
+            custo = (uso.get("prompt_tokens", 0) * config.PRECO_TEXTO_ENTRADA
+                     + uso.get("completion_tokens", 0) * config.PRECO_TEXTO_SAIDA)
+        em_cache = (uso.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+    raciocinio = (uso.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+    custos.registrar(projeto_id, etapa, "deepseek" if oficial else "openrouter", config.modelo_texto(), custo, real,
                      f"{tarefa} · {uso.get('prompt_tokens', '?')}+{uso.get('completion_tokens', '?')} tokens"
+                     f"{f' ({raciocinio} de raciocínio)' if raciocinio else ''}"
                      f"{f' ({em_cache} do cache)' if em_cache else ''}")
     conteudo = dados["choices"][0]["message"].get("content") or ""
     # Guarda a parte variável do pedido (mensagem do usuário) e a resposta, para ver depois o que foi pedido e o que veio.
@@ -119,6 +181,11 @@ def chat(tarefa: str, mensagens: list[dict], schema: dict | None = None, *, proj
         try:
             return extrair_json(conteudo), custo
         except ValueError as e:
+            if not _repetida:
+                # Resposta torta (schema repetido, JSON cortado): um segundo pedido costuma sair certo.
+                resp, custo2 = chat(tarefa, mensagens, schema, projeto_id=projeto_id, etapa=etapa,
+                                    temperatura=temperatura, max_tokens=max_tokens, contexto=contexto, _repetida=True)
+                return resp, custo + custo2
             raise ErroAPI(f"Resposta não é JSON válido ({e}): {conteudo[:300]}")
     return conteudo.strip(), custo
 
@@ -187,7 +254,7 @@ def usa_comfy() -> bool:
 
 
 def gerar_imagem(prompt: str, largura: int, altura: int, seed: int, referencias: list | None = None, *,
-                 projeto_id=None, etapa="imagens", modelo: str | None = None):
+                 projeto_id=None, etapa="imagens", modelo: str | None = None, literal: bool = False):
     """Devolve (bytes, url_link, custo). O cabeçalho Link traz a URL pública da imagem, reaproveitável como referência.
     Referências: URL pública (Pollinations) ou Path local (Comfy); um Path que cair na Pollinations é enviado antes."""
     global _comfy_fora_ate
@@ -201,7 +268,7 @@ def gerar_imagem(prompt: str, largura: int, altura: int, seed: int, referencias:
     if usa_comfy():
         inicio = time.time()
         try:
-            dados = comfy.gerar(prompt, largura, altura, seed, [Path(r) for r in referencias])
+            dados = comfy.gerar(prompt, largura, altura, seed, [Path(r) for r in referencias], literal)
         except comfy.ComfyFora as e:
             _comfy_fora_ate = time.time() + config.COMFY_PAUSA_S
             registro.escrever(projeto_id, "API", f"comfy fora, usando Pollinations: {e}")

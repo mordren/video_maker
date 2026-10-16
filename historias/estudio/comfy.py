@@ -96,8 +96,9 @@ def eh_qwen(wf: dict | None = None) -> bool:
     return any(n.get("class_type") == _QWEN for n in (wf or _modelo()).values())
 
 
-def montar_workflow(prompt: str, largura: int, altura: int, seed: int, refs: list[str]) -> tuple[dict, str]:
-    """Devolve (workflow pronto, id do nó SaveImage)."""
+def montar_workflow(prompt: str, largura: int, altura: int, seed: int, refs: list[str],
+                    literal: bool = False) -> tuple[dict, str]:
+    """Devolve (workflow pronto, id do nó SaveImage). literal=True manda o texto exatamente como veio."""
     wf = copy.deepcopy(_modelo())
     amostrador = wf[_um(wf, "KSampler")]["inputs"]
     qwen = eh_qwen(wf)
@@ -105,7 +106,7 @@ def montar_workflow(prompt: str, largura: int, altura: int, seed: int, refs: lis
         del wf[k]
     proximo = max(int(k) for k in wf if k.isdigit()) + 1
     if qwen:
-        proximo = _refs_qwen(wf, amostrador, prompt, refs, proximo)
+        proximo = _refs_qwen(wf, amostrador, prompt if literal else _picture(prompt), refs, proximo)
     else:
         proximo = _refs_kontext(wf, amostrador, prompt, refs, proximo)
 
@@ -129,7 +130,7 @@ def _refs_qwen(wf, amostrador, prompt, refs, proximo) -> int:
     positivo, negativo = amostrador["positive"][0], amostrador["negative"][0]
     if wf[positivo].get("class_type") != _QWEN:
         raise ErroComfy(f"No workflow do Qwen, o positive do KSampler precisa vir direto do {_QWEN}")
-    wf[positivo]["inputs"]["prompt"] = _picture(prompt)
+    wf[positivo]["inputs"]["prompt"] = prompt
     imagens = []
     for nome in refs:
         carregar, escala = str(proximo), str(proximo + 1)
@@ -179,11 +180,11 @@ def _ajustar(dados: bytes, largura: int, altura: int) -> bytes:
     return saida.getvalue()
 
 
-def gerar(prompt: str, largura: int, altura: int, seed: int, refs: list[Path]) -> bytes:
+def gerar(prompt: str, largura: int, altura: int, seed: int, refs: list[Path], literal: bool = False) -> bytes:
     """Gera uma imagem e devolve JPEG já no tamanho pedido."""
     nomes = [_enviar_ref(p) for p in refs]
     gw, gh = _tamanho(largura, altura)
-    wf, saida = montar_workflow(prompt, gw, gh, seed, nomes)
+    wf, saida = montar_workflow(prompt, gw, gh, seed, nomes, literal)
     r = _req("POST", "/prompt", json={"prompt": wf, "client_id": _CLIENTE})
     if r.status_code != 200:
         raise ErroComfy(f"Comfy recusou o workflow HTTP {r.status_code}: {r.text[:500]}")

@@ -70,13 +70,14 @@ async function rota() {
   try {
     // A tela de um canal de publicação é do Cortador: abre mesmo com o serviço de Histórias fora do ar.
     if (seg === 'canal-pub') return await telaCanalPub(decodeURIComponent(id || ''));
-    if (!presets && !(UNIFICADO && ['canais', 'custos', 'configuracoes'].includes(seg))) presets = await api('/api/presets');
+    if (!presets && !(UNIFICADO && ['canais', 'custos', 'configuracoes', 'teste-comfy'].includes(seg))) presets = await api('/api/presets');
     if (!seg) await telaProjetos();
     else if (seg === 'projeto') await telaProjeto(+id);
     else if (seg === 'canais') await telaCanais();
     else if (seg === 'canal') await telaCanal(id === 'novo' ? null : +id);
     else if (seg === 'custos') await telaCustos();
     else if (seg === 'gerador') await telaGerador();
+    else if (seg === 'teste-comfy') await telaTesteComfy();
     else if (seg === 'configuracoes') await telaConfiguracoes();
     else if (seg && seg.startsWith('desempenho')) await telaDesempenho();
     else app.innerHTML = '<p>Página não encontrada.</p>';
@@ -174,7 +175,7 @@ async function telaProjeto(id) {
         .map(([k, t]) => `<button data-aba="${k}" class="${abaProjeto === k ? 'on' : ''}">${t}</button>`).join('')}</div>
       <div id="aba"></div>
     </div>
-    <div><h3 style="margin-top:14px">Registro</h3><div class="log" id="log"></div></div>
+    <div><h3 style="margin-top:14px">Registro</h3><div class="log" id="logProjeto"></div></div>
   </div>`;
   renderEventos(eventos);
   renderAcoes(p);
@@ -184,7 +185,7 @@ async function telaProjeto(id) {
 }
 
 function renderEventos(evs, anexar = false) {
-  const log = $('#log'); if (!log) return;
+  const log = $('#logProjeto'); if (!log) return;
   const html = evs.slice().reverse().map(e => `<div class="${e.nivel}"><time>${esc((e.criado_em || '').slice(11))}</time>${esc(e.msg)}</div>`).join('');
   if (anexar) log.insertAdjacentHTML('afterbegin', html); else log.innerHTML = html;
 }
@@ -389,33 +390,67 @@ function abaImagens(p) {
       : s && s.status === 'gerando' && !ov ? '<div class="spin"></div>' : s && s.status === 'erro' ? `<span class="small fail" style="padding:10px">${esc(s.erro)}</span>` : '<span class="small">aguardando</span>');
     return `<div class="scene ${larga ? 'wide' : ''}"><div class="img">${img}<span class="n">${c.n}</span></div>
       <div class="body"><div>${esc(c.narracao)}</div>
-      <textarea data-n="${c.n}" ${podeRefazer ? '' : 'disabled'}>${esc(c.prompt_imagem)}</textarea>
+      <div class="small">Prompt completo, exatamente o que vai para o gerador. Se você colar ou mudar o texto, ele segue do jeito que está.</div>
+      <textarea data-n="${c.n}" style="min-height:170px" placeholder="carregando o prompt..." ${podeRefazer ? '' : 'disabled'}>${esc(c.prompt_manual || '')}</textarea>
       <input type="text" data-dest="${c.n}" placeholder="destaque (objeto em vermelho)" value="${esc(c.destaque || '')}" ${podeRefazer ? '' : 'disabled'}>
       ${opcoesRef.length ? `<div class="small">Referências desta cena (a 1ª vale mais; vazio = automático)</div>
-      <div data-refs="${c.n}">${(c.referencias || []).filter(v => opcoesRef.some(o => o[0] === v)).map(v => linhaRef(c.n, v, podeRefazer)).join('')}</div>
-      <button class="small" data-refadd="${c.n}" ${podeRefazer ? '' : 'disabled'}>Adicionar referência</button>` : ''}
+      <div data-refs="${c.n}">${c.sem_referencias ? '' : (c.referencias || []).filter(v => opcoesRef.some(o => o[0] === v)).map(v => linhaRef(c.n, v, podeRefazer)).join('')}</div>
+      <div class="row" style="align-items:center;gap:10px"><button class="small" data-refadd="${c.n}" ${podeRefazer ? '' : 'disabled'}>Adicionar referência</button>
+      <label class="small"><input type="checkbox" data-semref="${c.n}" ${c.sem_referencias ? 'checked' : ''} ${podeRefazer ? '' : 'disabled'}> nenhuma referência</label>
+      <button class="small" data-auto="${c.n}" title="Descarta o texto editado e monta o prompt automático de novo" ${podeRefazer ? '' : 'disabled'}>Prompt automático</button></div>` : ''}
+      <div class="row" data-anexos="${c.n}" style="gap:6px"></div>
       ${c.mesma_imagem_de ? `<div class="small" style="color:var(--acc)">mesma imagem da cena ${c.mesma_imagem_de}, com outro movimento (${esc(c.efeito || 'detalhe')}), sem custo</div>` : ''}
       <div class="small">tensão ${c.tensao} · ${esc(c.efeito || '')}${c.extra ? ' + ' + esc(c.extra) : ''}${s && !c.mesma_imagem_de ? ' · seed ' + s.seed + (s.versao ? ' · v' + s.versao : '') : ''}</div>
       <div class="row"><button class="small" data-refazer="${c.n}" ${podeRefazer ? '' : 'disabled'} title="${c.mesma_imagem_de ? 'Gera uma imagem própria para esta cena' : 'Gera esta imagem de novo'}">${c.mesma_imagem_de ? 'Imagem própria' : 'Refazer'}</button>
       <button class="small" data-testar="${c.n}" ${s && s.status === 'ok' ? '' : 'disabled'}>Testar efeito</button></div></div></div>`;
   }).join('')}</div>`;
-  const ligarRemover = box => $$('[data-refx]', box).forEach(x => x.onclick = () => x.closest('[data-refl]').remove());
-  $$('[data-refs]', el).forEach(ligarRemover);
+  // Escolhas de referência da cena n, como a tela mostra agora
+  const escolhas = n => {
+    const box = $(`[data-refs="${n}"]`, el), sem = $(`[data-semref="${n}"]`, el);
+    return {destaque: $(`input[data-dest="${n}"]`, el).value,
+      referencias: box ? [...new Set($$('select', box).map(x => x.value))].slice(0, 2) : undefined,
+      sem_referencias: sem ? sem.checked : undefined};
+  };
+  // Monta de novo o prompt completo da cena n com as escolhas da tela. Texto editado à mão só é trocado se você confirmar.
+  const atualizarPrompt = async (n, forcar) => {
+    const ta = $(`textarea[data-n="${n}"]`, el);
+    if (!forcar && ta.value && ta.value !== ta.dataset.base && !confirm('Você mudou o prompt à mão.\n\nAtualizar o texto com as referências escolhidas e perder a sua edição?\n(Cancelar mantém o seu texto como está.)')) return;
+    try {
+      const r = await api(`/api/projetos/${p.id}/cenas/${n}/previa-prompt`, {method: 'POST', body: escolhas(n)});
+      ta.value = ta.dataset.base = r.prompt;
+      $(`[data-anexos="${n}"]`, el).innerHTML = r.imagens.length
+        ? '<span class="small">imagens anexadas:</span>' + r.imagens.map(u => `<img data-zoom src="${u}?t=${t}" style="height:56px;border-radius:4px">`).join('')
+        : '<span class="small">nenhuma imagem anexada</span>';
+    } catch (e) { ta.placeholder = 'não consegui montar o prompt: ' + e.message; }
+  };
+  const ligarRemover = box => $$('[data-refx]', box).forEach(x => x.onclick = () => { const n = box.dataset.refs; x.closest('[data-refl]').remove(); atualizarPrompt(n); });
+  const ligarSelect = box => $$('select', box).forEach(s => s.onchange = () => atualizarPrompt(box.dataset.refs));
+  $$('[data-refs]', el).forEach(box => { ligarRemover(box); ligarSelect(box); });
   $$('[data-refadd]', el).forEach(b => b.onclick = () => {
     const n = b.dataset.refadd, box = $(`[data-refs="${n}"]`, el);
     if ($$('[data-refl]', box).length >= 2) return alert('No máximo 2 referências por cena.');
     const usadas = $$('select', box).map(x => x.value);
     const livre = opcoesRef.find(o => !usadas.includes(o[0])) || opcoesRef[0];
     box.insertAdjacentHTML('beforeend', linhaRef(n, livre[0], true));
-    ligarRemover(box);
+    $(`[data-semref="${n}"]`, el).checked = false;
+    ligarRemover(box); ligarSelect(box);
+    atualizarPrompt(n);
+  });
+  $$('[data-semref]', el).forEach(c => c.onchange = () => {
+    if (c.checked) $(`[data-refs="${c.dataset.semref}"]`, el).innerHTML = '';
+    atualizarPrompt(+c.dataset.semref);
+  });
+  $$('[data-auto]', el).forEach(b => b.onclick = () => atualizarPrompt(+b.dataset.auto, true));
+  $$('input[data-dest]', el).forEach(i => i.onchange = () => atualizarPrompt(+i.dataset.dest));
+  // Mostra o prompt inteiro em cada cena; quem já tem texto colado à mão mantém o dele
+  h.cenas.forEach(c => {
+    atualizarPrompt(c.n, true).then(() => { if (c.prompt_manual) $(`textarea[data-n="${c.n}"]`, el).value = c.prompt_manual; });
   });
   $$('[data-refazer]', el).forEach(b => b.onclick = async () => {
-    const n = +b.dataset.refazer, prompt = $(`textarea[data-n="${n}"]`, el).value, destaque = $(`input[data-dest="${n}"]`, el).value;
-    const box = $(`[data-refs="${n}"]`, el);
-    const referencias = box ? [...new Set($$('select', box).map(x => x.value))].slice(0, 2) : undefined;
+    const n = +b.dataset.refazer, prompt_final = $(`textarea[data-n="${n}"]`, el).value;
     b.disabled = true;
     console.log(`[refazer] cena ${n}: iniciando geração (pedido enviado)`);
-    await acao(() => api(`/api/projetos/${p.id}/cenas/${n}/refazer`, {method: 'POST', body: {prompt_imagem: prompt, destaque, referencias}}), `Refazendo a cena ${n}...`);
+    await acao(() => api(`/api/projetos/${p.id}/cenas/${n}/refazer`, {method: 'POST', body: {prompt_final, ...escolhas(n)}}), `Refazendo a cena ${n}...`);
     vigiarCena(p.id, n);
     telaProjeto(p.id);
   });
@@ -1504,6 +1539,89 @@ async function telaConfiguracoes() {
       await telaConfiguracoes();
     } catch { /* o aviso já apareceu */ } finally { b.disabled = false; }
   };
+}
+
+
+/* ------------------------------------------------------------------ teste do ComfyUI */
+async function telaTesteComfy() {
+  const e = await api('/api/teste-comfy');
+  if (!rotaAtiva('#/teste-comfy')) return;
+  const opcoesProj = e.projetos.map(p => `<option value="${p.id}">#${p.id} · ${esc(p.titulo)}</option>`).join('');
+  app.innerHTML = `
+    <h2>Teste do ComfyUI</h2>
+    <div class="panel">
+      <label>Link do Cloudflare (o que a célula do Colab imprime; muda a cada sessão)</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="tcUrl" style="flex:1;min-width:280px" placeholder="https://xxxx.trycloudflare.com" value="${esc(e.url)}">
+        <button id="tcSalvar" class="main">Salvar e testar</button>
+      </div>
+      <p class="small">Workflow: <b>${esc(e.workflow)}</b> · ${e.megapixels} MP. Salvar grava COMFY_URL; o motor de imagem dos vídeos continua como está nas Configurações.</p>
+      <div id="tcConexao" class="small"></div>
+    </div>
+    <div class="panel">
+      ${e.projetos.length ? `
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+        <div style="flex:1;min-width:240px"><label>História</label><select id="tcProj">${opcoesProj}</select></div>
+        <div style="flex:1;min-width:240px"><label>Cena</label><select id="tcCena"></select></div>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tcRefazer"> Refazer fichas e placa</label>
+        <button id="tcGerar" class="gold">Gerar teste</button>
+      </div>
+      <p class="small">Gera a ficha de cada pessoa da cena, a placa do lugar (se houver) e a cena usando essas imagens como referência. As fichas ficam guardadas: testar outra cena com as mesmas pessoas só gera a cena.</p>`
+      : '<p>Nenhuma história escrita ainda. Crie uma em Histórias e volte aqui.</p>'}
+    </div>
+    <div id="tcSaida"></div>`;
+
+  const conexao = async () => {
+    const r = await api('/api/configuracoes/testar/comfy', {method: 'POST'});
+    $('#tcConexao').innerHTML = `<span class="badge ${r.ok ? 'ok' : 'err'}">${r.ok ? 'conectado' : 'sem conexão'}</span> ${esc(r.mensagem)}`;
+  };
+  if (e.url) conexao().catch(() => {});
+  $('#tcSalvar').onclick = async () => {
+    const url = $('#tcUrl').value.trim().replace(/\/+$/, '');
+    await acao(() => api('/api/configuracoes', {method: 'PUT', body: {COMFY_URL: url}}), url ? 'Link salvo.' : 'Link removido.');
+    $('#tcConexao').textContent = 'Testando...';
+    await conexao().catch(err => { $('#tcConexao').textContent = err.message; });
+  };
+  if (!e.projetos.length) return;
+
+  const cenas = () => {
+    const p = e.projetos.find(x => x.id === +$('#tcProj').value);
+    $('#tcCena').innerHTML = p.cenas.map(c => `<option value="${c.n}">${c.n} · ${esc(c.resumo)}</option>`).join('');
+  };
+  $('#tcProj').onchange = cenas; cenas();
+
+  const desenhar = j => {
+    const passos = j.passos || [];
+    $('#tcSaida').innerHTML = (j.estado === 'erro' ? `<div class="panel bad">${esc(j.erro)}</div>` : '') +
+      (j.estado === 'gerando' ? '<p class="small">Gerando no Comfy... cada imagem leva alguns minutos na T4.</p>' : '') +
+      `<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">` + passos.map(p => `
+        <div class="panel" style="width:300px;margin:0">
+          <b>${esc(p.rotulo)}</b>
+          ${p.arquivo ? `<img data-zoom src="${p.arquivo}" style="width:100%;border-radius:6px;margin-top:8px;cursor:zoom-in">`
+            : p.status === 'erro' ? `<p class="bad">${esc(p.erro)}</p>` : '<div class="spin"></div>'}
+          <p class="small">${p.segundos != null ? p.segundos + ' s' : ''}</p>
+          <details><summary class="small">prompt</summary><p class="small">${esc(p.prompt)}</p></details>
+        </div>`).join('') + '</div>';
+  };
+  const acompanhar = () => {
+    clearInterval(timer);
+    timer = setInterval(async () => {
+      if (!rotaAtiva('#/teste-comfy')) { clearInterval(timer); timer = null; return; }
+      const j = await api('/api/teste-comfy/progresso').catch(() => null);
+      if (!j) return;
+      desenhar(j);
+      if (j.estado !== 'gerando') { clearInterval(timer); timer = null; $('#tcGerar').disabled = false; }
+    }, 3000);
+  };
+  $('#tcGerar').onclick = async () => {
+    $('#tcGerar').disabled = true;
+    try {
+      const j = await acao(() => api('/api/teste-comfy/gerar', {method: 'POST', body: {
+        projeto_id: +$('#tcProj').value, cena: +$('#tcCena').value, refazer_fichas: $('#tcRefazer').checked}}));
+      desenhar(j); acompanhar();
+    } catch { $('#tcGerar').disabled = false; }
+  };
+  if (e.job && e.job.estado) { desenhar(e.job); if (e.job.estado === 'gerando') { $('#tcGerar').disabled = true; acompanhar(); } }
 }
 
 /* ------------------------------------------------------------------ início */

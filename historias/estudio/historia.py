@@ -14,10 +14,8 @@ Fluxo:
 import difflib
 import json
 import math
-import random
 import re
 import unicodedata
-from pathlib import Path
 
 from . import canais, clientes, config, custos, db
 from .custos import OrcamentoEstourado
@@ -37,29 +35,6 @@ SCHEMA_NARRATIVA = {
     "type": "object", "additionalProperties": False, "required": ["titulo", "descricao_youtube", "narracao"],
     "properties": {"titulo": {"type": "string"}, "descricao_youtube": {"type": "string"},
                    "narracao": {"type": "string"}},
-}
-
-SCHEMA_BIBLIA = {
-    "type": "object", "additionalProperties": False,
-    "required": ["lugar_e_epoca", "narrador", "pessoas", "fato_oculto", "ato_do_narrador", "elo",
-                 "regra_sobrenatural", "linha_do_tempo", "pistas", "desfecho"],
-    "properties": {
-        "lugar_e_epoca": {"type": "string"},
-        "linha_do_tempo": {"type": "array", "items": {"type": "string"}},
-        "narrador": {"type": "object", "additionalProperties": False,
-                     "required": ["nome", "quem_e", "aparencia", "destino"],
-                     "properties": {"nome": {"type": "string"}, "quem_e": {"type": "string"},
-                                    "aparencia": {"type": "string"}, "destino": {"type": "string"}}},
-        "pessoas": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["nome", "relacao", "aparencia"],
-            "properties": {"nome": {"type": "string"}, "relacao": {"type": "string"}, "aparencia": {"type": "string"}}}},
-        "fato_oculto": {"type": "string"},
-        "ato_do_narrador": {"type": "string"},
-        "elo": {"type": "string"},
-        "regra_sobrenatural": {"type": "string"},
-        "pistas": {"type": "array", "items": {"type": "string"}},
-        "desfecho": {"type": "string"},
-    },
 }
 
 SCHEMA_DECUPAGEM = {
@@ -238,9 +213,12 @@ def _impor_gancho(narracao: str, gancho: str) -> str:
 
 
 def normalizar_narrativa(h: dict, gancho: str | None = None) -> dict:
+    plano = h.get("plano")
     h = {"titulo": (h.get("titulo") or "").strip(), "descricao_youtube": (h.get("descricao_youtube") or "").strip(),
          "narracao": _impor_gancho(h.get("narracao", ""), gancho) if gancho else
          re.sub(r"\s+", " ", h.get("narracao", "")).strip()}
+    if isinstance(plano, dict):
+        h["plano"] = plano
     fs = frases(h["narracao"])
     h["gancho"] = fs[0] if fs else ""
     return h
@@ -278,6 +256,12 @@ def normalizar_cenas(h: dict) -> dict:
     return h
 
 
+# Fileira de frases curtas ("Parou. O estalo parou junto.") é o "frases soltas" de que o usuário reclamou em 14/10/2026.
+# O texto do poço escrito por ele tem duas ("Me escondi.", "Minha irmã aos prantos."), então duas passam.
+MAX_PALAVRAS_FRASE_CURTA = 4
+MAX_FRASES_CURTAS = 2
+
+
 def checar_narrativa(h: dict, canal: dict) -> tuple[list[str], dict]:
     """Checagens em Python sobre o texto corrido, custo zero."""
     lim = limites(canal)
@@ -294,6 +278,12 @@ def checar_narrativa(h: dict, canal: dict) -> tuple[list[str], dict]:
         problemas.append(f"a narração tem {total} palavras; precisa de {lim['palavras_min']} a {lim['palavras_max']} "
                          f"(faltam {lim['palavras_min'] - total}; acrescente detalhes concretos no meio da história, "
                          "sem mexer no gancho nem no final)")
+    curtas = [f for f in frases(h.get("narracao", "")) if contar_palavras(f) <= MAX_PALAVRAS_FRASE_CURTA]
+    metricas["frases_curtas"] = len(curtas)
+    if len(curtas) > MAX_FRASES_CURTAS:
+        problemas.append(f"frases soltas: {len(curtas)} frases de até {MAX_PALAVRAS_FRASE_CURTA} palavras "
+                         f"({'; '.join(curtas[:5])}); no máximo {MAX_FRASES_CURTAS}. Junte cada uma à frase vizinha "
+                         "com \"quando\", \"porque\", \"então\", \"mas\" ou \"até que\", sem mudar os fatos")
     if total > maximo:
         problemas.append(f"a narração tem {total} palavras; precisa de {lim['palavras_min']} a {lim['palavras_max']} "
                          f"(corte {total - lim['palavras_max']}; tire repetições e explicações, não o gancho nem o final)")
@@ -346,6 +336,37 @@ def texto_para_juiz(h: dict, canal: dict, assunto: str, modo: str | None = None)
     return "\n".join(linhas)
 
 
+FORMATO_JUIZ = {"short": "Short vertical de terror com {s} segundos de narração em {idioma}. A narração é ouvida uma única "
+                         "vez, sem texto na tela, por alguém que está rolando o feed.",
+                "long": "Vídeo narrado de {s} segundos em {idioma}, ouvido uma vez, sem texto na tela."}
+
+
+def estado_juiz(h: dict, canal: dict, assunto: str, modo: str | None = None) -> dict:
+    """O state do Jev como objeto com campos nomeados (docs TypeSafe, "State"): o pedido, o modo e a história separada
+    em frases, para as perguntas citarem `historia.frases[0]` (o gancho) e `historia.ultima_frase`. Na calibração de
+    14/10/2026 o texto corrido de antes deu notas quase iguais para história boa e ruim."""
+    lim = limites(canal)
+    narr = narracao_completa(h)
+    fs = frases(narr)
+    m = _modo(canal, modo)
+    segundos = f"{lim['palavras_min'] / lim['wps']:.0f} a {lim['palavras_max'] / lim['wps']:.0f}"
+    estado = {
+        "formato": FORMATO_JUIZ.get(canal["formato"], FORMATO_JUIZ["short"]).format(s=segundos, idioma=canal["idioma"]),
+        "canal": {"nome": canal["nome"], "descricao": canal["descricao"]},
+        "pedido": {"assunto": assunto,
+                   "modo_narrativo": {"nome": m["nome"], "definicao": m["regra"]} if m else None},
+        "historia": {"titulo": h.get("titulo", ""), "frases": fs, "ultima_frase": fs[-1] if fs else "",
+                     "narracao_completa": narr},
+    }
+    if h.get("cenas"):
+        fichas = {p["id"]: p for p in h.get("personagens", [])}
+        estado["imagens"] = [{"cena": c["n"], "narracao": c["narracao"],
+                              "imagem": " ".join([c["prompt_imagem"]] + [descrever_pessoa(fichas[p["id"]], p)
+                                                                          for p in pessoas_cena(c) if p["id"] in fichas])}
+                             for c in h["cenas"]]
+    return estado
+
+
 def perguntas_jev(perguntas: dict) -> dict:
     out = {}
     for k, p in perguntas.items():
@@ -390,30 +411,8 @@ def interpretar(respostas: dict, perguntas: dict) -> dict:
 PERGUNTAS_VISUAIS = {"prompts_batem"}
 
 
-# Perguntas de sentido, sobre o texto corrido, valem para todo canal com bíblia (config "biblia", padrão ligado).
-# Uma pergunta do canal com a mesma chave tem prioridade.
-PERGUNTAS_ESCRITA = {
-    "cadeia_causal": {"tipo": "noul", "corte": 0.85, "trava": False,
-                      "pergunta": "Quem ouve a história entende por que o que acontece com o narrador acontece: o estranho "
-                                  "é consequência de algo que alguém fez, e cada fato leva ao seguinte, sem saltos?"},
-    "final_sem_fato_novo": {"tipo": "noul", "corte": 0.85, "trava": False,
-                            "pergunta": "A última frase só usa pessoas, objetos e lugares que já tinham aparecido antes na "
-                                        "história (o acontecimento final pode ser novo, mas feito de elementos já "
-                                        "conhecidos), fechando o que foi aberto em vez de abrir um mistério novo?"},
-    "pessoas_claras": {"tipo": "noul", "corte": 0.85, "trava": False,
-                       "pergunta": "Fica claro, ouvindo uma vez, quem é cada pessoa citada e qual a relação dela com o narrador?"},
-    "ordem_do_tempo": {"tipo": "noul", "corte": 0.85, "trava": False,
-                       "pergunta": "Ouvindo uma vez, dá para saber em que momento cada frase acontece em relação à "
-                                   "anterior: a história segue em ordem (antes, durante, depois, hoje), sem voltar ao "
-                                   "passado nem pular para o presente sem aviso, e sem contar um fato antes dele acontecer?"},
-}
-
-
 def perguntas_narrativa(canal: dict) -> dict:
-    perguntas = {k: v for k, v in canais.perguntas_do_canal(canal["config"]).items() if k not in PERGUNTAS_VISUAIS}
-    if canal["config"].get("biblia", True):
-        perguntas = {**{k: v for k, v in PERGUNTAS_ESCRITA.items() if k not in perguntas}, **perguntas}
-    return perguntas
+    return {k: v for k, v in canais.perguntas_do_canal(canal["config"]).items() if k not in PERGUNTAS_VISUAIS}
 
 
 def _media_custo(projeto_id, servico_modelo: str, padrao: float, etapa: str = "historia") -> float:
@@ -457,22 +456,109 @@ def bloco_biblioteca(biblioteca: list[dict]) -> str:
             "\n".join(f"- {b['tipo']} {b['chave']}: {b['descricao_fixa']}" for b in biblioteca))
 
 
-def bloco_exemplos() -> str:
-    """Textos de referência (estudio/exemplos/*.txt, em ordem de nome): mostram o espírito, não são para copiar.
-    Fixos, então ficam dentro do prefixo em cache do prompt de escrita."""
-    arquivos = sorted((Path(__file__).parent / "exemplos").glob("*.txt"))
-    if not arquivos:
-        return ""
-    textos = "\n\n".join(f"Exemplo {i}:\n\"\"\"\n{a.read_text(encoding='utf-8').strip()}\n\"\"\""
-                         for i, a in enumerate(arquivos, 1))
-    return f"""
-Textos de referência do canal. Pegue o espírito: o ato do narrador (ou o que se esconde) tem consequência concreta,
-cada objeto e lugar citado volta no fim, lugar e época ancoram a história, o custo cai em gente de verdade, fatos
-simples em vez de adjetivo. Não copie frases, temas nem estrutura exata, e escreva no idioma do canal, mesmo que
-algum exemplo esteja em outro:
+# Técnicas de micro-contos e de relatos reais de terror (pesquisa de 14/10/2026): a regra "mas / por isso" de Trey Parker
+# e Matt Stone, a bomba debaixo da mesa de Hitchcock (suspense é o público saber antes), a elipse do microconto
+# (a violência fica no corte, o leitor completa), a última frase que relê a primeira (two-sentence horror) e os sinais
+# banais explicados de jeito comum dos casos reais (Hinterkaifeck: pegadas na neve, chave sumida, passos no sótão).
+# Escritas sem citar nenhum conto, para não puxar todo vídeo para o mesmo tema.
+COMO_CONTAR = """
+Como contar (técnicas de micro-contos e de relatos reais de terror):
+- Encadeie as frases. Entre uma frase e a seguinte cabe "por isso" (consequência) ou "mas" (obstáculo), nunca só
+  "e depois". Cada frase retoma algo da anterior (a pessoa, o objeto, a hora) e conta o que aconteceu por causa disso.
+  Se duas frases pudessem trocar de lugar sem mudar nada, estão soltas: junte as duas numa frase com "quando",
+  "porque", "então", "até que", "mas", ou corte uma.
+- Uma linha de ação só: alguém quer uma coisa concreta, faz algo para conseguir, e a história segue esse ato até a
+  consequência. O mal acontece por causa desse ato (guardou o que não devia, abriu o que estava fechado, mentiu,
+  ignorou o aviso), e quem ouve entende isso sem explicação. Nada de colagem de sensações (frio, cheiro, silêncio)
+  sem alguém fazendo alguma coisa.
+- Suspense é quem ouve saber antes. Cedo, mostre um sinal concreto de perigo (uma notícia, uma pergunta estranha, um
+  objeto fora do lugar, uma regra) e faça o personagem seguir em frente, explicando o sinal de um jeito comum ("achou
+  que fosse o vizinho") ou sem dar importância. Quem ouve desconfia; o personagem não. Cada passo seguinte chega mais
+  perto do perigo.
+- Soe como relato verdadeiro: nome de gente comum, lugar, hora, objetos do dia a dia, voz simples de quem conta.
+- Mundo real. Se o assunto é um crime, um acidente ou um sumiço, nada sobrenatural: o medo vem de gente e de coisas
+  que acontecem de verdade. Mesmo no sobrenatural, só o fenômeno pedido foge da física; o resto obedece a ela e ao
+  bom senso. Calor de corpo some em minutos (nada fica "ainda quente" ou "ainda morno" sem fogo por perto), concreto
+  e terra endurecem como sempre, ninguém manda mensagem de onde não daria. Cada pista é algo que uma pessoa real
+  notaria e entenderia na hora (o carro do aluno parado na rua, a mochila atrás da fôrma), não um sinal enigmático.
+  Porta trancada por dentro, janela fechada, chave só com a vítima: só use se a história mostrar como o outro entrou.
+  Cada pessoa age como alguém de verdade agiria no lugar dela.
+- A coisa ruim pode acontecer fora da cena: mostre o antes (o último gesto) e o depois (o que os outros acharam),
+  e deixe quem ouve completar o meio.
+- Virada sem clichê: o final dá sentido novo a um detalhe que já apareceu antes, sem destaque, e quem ouve entende
+  na hora, lembrando a história de outro jeito. Nunca informação nova no fim, nunca "era sonho", "era fantasma o
+  tempo todo" ou "o assassino era eu". Sem um detalhe assim, termine na consequência direta, em um fato claro."""
 
-{textos}
-"""
+# Plano curto pedido antes do texto, no mesmo JSON (canal com "plano_narrativa"): a linha de ação, o sinal de perigo
+# e o detalhe que volta no fim, decididos antes de escrever, sem uma chamada a mais.
+SCHEMA_PLANO = {"type": "object", "additionalProperties": False,
+                "required": ["quem_quer_o_que", "o_que_faz", "sinal_de_perigo", "como_ignora", "por_que_acontece",
+                             "desfecho", "detalhe_que_volta"],
+                "properties": {k: {"type": "string"} for k in ("quem_quer_o_que", "o_que_faz", "sinal_de_perigo",
+                                                               "como_ignora", "por_que_acontece", "desfecho",
+                                                               "detalhe_que_volta")}}
+INSTRUCAO_PLANO = """- plano: antes do texto, decida em poucas palavras: quem_quer_o_que (a pessoa e o que ela quer), o_que_faz (o ato
+  que move a história), sinal_de_perigo (o aviso concreto que aparece cedo), como_ignora (por que a pessoa segue em
+  frente), por_que_acontece (o ato de alguém que provoca o desfecho: o que a pessoa fez, decidiu ou ignorou, e quem
+  ouve precisa entender isso pela narração), desfecho (o que acontece no fim, como o assunto pede) e detalhe_que_volta
+  (o que aparece cedo sem destaque e ganha sentido no fim). O plano não é lido; a narracao segue o plano."""
+
+
+# Versão "voz" (canal com "prompt_voz"): no lugar da lista de proibições, um retrato de como a história soa e um
+# cenário decidido antes do texto, na mesma chamada. Teste de 14/10/2026, ainda sem implantar.
+VOZ_CONTADA = """
+Como esta história deve soar:
+Imagine alguém contando a um conhecido, numa conversa de verdade, algo que aconteceu com gente que ele conhece ou de
+que ouviu falar. A voz é simples, calma e específica. Diz o nome da pessoa, o bairro, o dia, o que ela estava
+fazendo, e conta na ordem em que tudo aconteceu: a pessoa quis algo e fez um gesto por um motivo que se entende; por
+isso veio o fato seguinte; e esse fato fechou o caminho dela. Cada frase continua a anterior, com "porque", "então",
+"mas", "até que", e só uma ou outra é curta, para o golpe que importa.
+O medo vem de quem ouve entender, antes da pessoa, o que está para acontecer, enquanto ela tem uma razão comum para
+não ver (achou que era o vizinho, tinha pressa, não era problema dela). Os detalhes são da vida de todo dia:
+ferramenta, comida, horário, vizinho, ônibus, mensagem no celular. A violência fica fora de cena: aparece o último
+gesto e o que os outros encontraram depois. A história termina num fato dito com calma, que quem ouve entende sem
+precisar decifrar."""
+
+LIMITES_FIRMES = """
+O que não muda:
+- Tudo o que acontece poderia acontecer de verdade, e cada pessoa age como gente de verdade agiria. Só o fenômeno
+  sobrenatural que o assunto pede (se pedir algum) foge da física: corpo esfria em minutos, concreto e terra se
+  comportam como sempre, ninguém sabe o que não viu, ninguém manda mensagem de onde não daria, e porta trancada por
+  dentro só vale se a história mostrar como o outro entrou.
+- O assunto manda no desfecho: o que ele diz que acontece, acontece em cena e é o final. Nunca "era só um sonho" nem
+  a história desfeita.
+- Quem narra em 1ª pessoa não conta nada depois de morrer; a voz para na hora, e o desfecho vem de fora.
+- Sem travessão, sem "não X, mas Y", sem adjetivo vago de medo ("sinistro", "inexplicável") no lugar do fato."""
+
+SCHEMA_PLANO_VOZ = {"type": "object", "additionalProperties": False,
+                    "required": ["cenario", "ordem_dos_fatos", "quem_quer_o_que", "o_que_faz", "sinal_de_perigo",
+                                 "por_que_acontece", "desfecho", "detalhe_que_volta"],
+                    "properties": {k: {"type": "string"} for k in (
+                        "cenario", "ordem_dos_fatos", "quem_quer_o_que", "o_que_faz", "sinal_de_perigo",
+                        "por_que_acontece", "desfecho", "detalhe_que_volta")}}
+INSTRUCAO_PLANO_VOZ = """- plano: antes do texto, decida em poucas palavras: cenario (quem são as pessoas, onde moram ou trabalham, época, o
+  objeto e a rotina do dia a dia que aparecem), ordem_dos_fatos (3 a 5 fatos em ordem, do gancho ao desfecho, cada um
+  causado pelo anterior), quem_quer_o_que, o_que_faz (o ato que move a história), sinal_de_perigo (o aviso concreto
+  que aparece cedo e o motivo comum para a pessoa não levar a sério), por_que_acontece (o que a pessoa fez, decidiu ou
+  ignorou que provoca o desfecho), desfecho (o que acontece no fim, como o assunto pede; o gancho já faz parte dos
+  fatos) e detalhe_que_volta (o que aparece cedo sem destaque e ganha sentido no fim). O plano não é lido; a narracao
+  segue o plano."""
+
+
+def usa_plano(canal: dict) -> bool:
+    return bool(canal["config"].get("plano_narrativa"))
+
+
+def usa_voz(canal: dict) -> bool:
+    return bool(canal["config"].get("prompt_voz"))
+
+
+def schema_narrativa(canal: dict) -> dict:
+    if not usa_plano(canal):
+        return SCHEMA_NARRATIVA
+    plano = SCHEMA_PLANO_VOZ if usa_voz(canal) else SCHEMA_PLANO
+    return {**SCHEMA_NARRATIVA, "required": ["plano"] + SCHEMA_NARRATIVA["required"],
+            "properties": {"plano": plano, **SCHEMA_NARRATIVA["properties"]}}
 
 
 def instrucao_final(canal: dict) -> str:
@@ -531,11 +617,21 @@ Sentido antes de efeito:
   um gesto que já apareceu antes).
 - Tempo marcado como se fala ("ontem de manhã", "de madrugada"), sem lista de dias da semana.
 - Sentimento dito direto quando importa ("tenho certeza", "não sei se vou escapar"), sem metáfora.
-- O final amarra a história: o que foi aberto se resolve ou se explica, menos UMA ponta, que pode ficar aberta.
-  Essa ponta nasce do que já foi contado. Nada de mistério novo na última frase, nem final-charada que o ouvinte
-  precisa decifrar (um objeto que "não devia existir", uma frase solta que pede explicação).
-- Quem narra em 1ª pessoa não conta nada depois de morrer. Se morre, a voz dele para antes, e o desfecho pode vir
-  numa última frase de fato visto de fora."""
+- O assunto manda no desfecho. Antes de escrever, decida em uma linha o que acontece com o personagem no fim e
+  escreva a história para chegar lá. Se o assunto diz o que acontece (morre, é levado, desaparece, é atacado),
+  isso ACONTECE em cena e é o final. Nunca negue, adie ou desfaça ("ele não veio te matar", "era só um sonho") e
+  nunca troque por outra coisa, como inversão de papéis ("veio ocupar o meu lugar").
+- Final coerente: consequência direta do que a história montou. A última frase conta um FATO que o ouvinte entende
+  sem decifrar (o que aconteceu, com quem, onde). Nela não entram regra sobrenatural nova, explicação de como a
+  coisa funciona, metáfora nem frase solta que pede interpretação (um objeto que "não devia existir", "só aparece
+  quando ninguém olha"). Tudo o que o final usa já apareceu antes.
+- Reviravolta é opcional. Só vale se for um fato plantado antes, sem destaque, que explica por que o desfecho
+  aconteceu, completando o assunto. Sem uma assim, o final é a consequência e basta: simples e coerente vale mais
+  do que surpreendente e confuso.
+- O que é sobrenatural só faz o que a regra da história permite, e o que faz tem motivo dentro dela (o que a coisa
+  quer, por que agora, por que essa pessoa).
+- Quem narra em 1ª pessoa não conta nada depois de morrer. Se o narrador morre, a voz dele para na hora em que
+  acontece (relato interrompido), e o desfecho pode vir numa última frase de fato visto de fora."""
     return f"""Você é o roteirista do canal "{canal['nome']}". {canal['descricao']}
 
 Você escreve a narração de um vídeo curto: um texto corrido, contado de uma vez, que precisa funcionar só no
@@ -549,12 +645,10 @@ Estrutura da história: {estrutura}
 
 Tamanho (conferido por programa; fora dele a história volta): entre {lim['palavras_min']} e {lim['palavras_max']} palavras,
 cerca de {lim['palavras_min'] / lim['wps']:.0f} a {lim['palavras_max'] / lim['wps']:.0f} segundos de narração.
-{sentido}
-{bloco_exemplos() if cfg.get("exemplos", True) else ""}
-{estilo_texto}
+{(VOZ_CONTADA + chr(10) + LIMITES_FIRMES) if usa_voz(canal) else sentido + chr(10) + COMO_CONTAR + chr(10) + estilo_texto}
 
 Campos:
-- narracao: a história inteira, texto corrido, pronto para ser lido em voz alta. Sem títulos, marcações ou rubricas.
+{((INSTRUCAO_PLANO_VOZ if usa_voz(canal) else INSTRUCAO_PLANO) + chr(10)) if usa_plano(canal) else ''}- narracao: a história inteira, texto corrido, pronto para ser lido em voz alta. Sem títulos, marcações ou rubricas.
   {instrucao_final(canal)}
 - titulo: título do vídeo.
 - descricao_youtube: 2 ou 3 frases para a descrição do vídeo, sem hashtags.
@@ -678,245 +772,8 @@ def dica_modo(projeto: dict, canal: dict) -> str:
     return f"\n\nModo narrativo deste vídeo: {m['nome']} ({m['regra']}). Siga-o do começo ao fim." if m else ""
 
 
-# ---------------------------------------------------------------- bíblia (antes do gancho)
-
-BIBLIA_TENTATIVAS = 3
-PERGUNTAS_BIBLIA = {
-    "biblia_clara": {"tipo": "noul", "corte": 0.8, "trava": False,
-                     "pergunta": "Quem só lê este resumo entende quem é cada pessoa, a relação entre elas e o que "
-                                 "realmente aconteceu, sem precisar adivinhar nada?"},
-    "biblia_sem_contradicao": {"tipo": "noul", "corte": 0.8, "trava": False,
-                               "pergunta": "Datas, horários, lugares e pistas são compatíveis entre si e com o fato oculto, "
-                                           "sem nenhuma contradição nem pista que desminta a premissa?"},
-    "biblia_causa": {"tipo": "noul", "corte": 0.8, "trava": False,
-                     "pergunta": "O que acontece com o narrador é consequência direta de algo que alguém fez de propósito, "
-                                 "e o objeto ou lugar do elo liga o ato a essa consequência?"},
-    "biblia_fecha": {"tipo": "noul", "corte": 0.8, "trava": False,
-                     "pergunta": "O desfecho usa só pessoas, objetos e fatos que já estão no resumo e fecha o que a "
-                                 "história abriu, com no máximo uma ponta solta nascida do que já foi contado?"},
-}
-
-
-CAMPOS_BIBLIA = ("lugar_e_epoca", "narrador", "pessoas", "fato_oculto", "ato_do_narrador", "elo",
-                 "regra_sobrenatural", "linha_do_tempo", "pistas", "desfecho")
-
-
-def _valor_biblia(v):
-    """Tira o embrulho de schema que o modelo às vezes devolve: {"type": "string", "value": "..."}."""
-    if isinstance(v, dict):
-        if set(v) <= {"type", "value", "description"} and "value" in v:
-            return _valor_biblia(v["value"])
-        return {k: _valor_biblia(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [_valor_biblia(x) for x in v]
-    return v
-
-
-def normalizar_biblia(b) -> dict:
-    """Aceita a bíblia solta ou embrulhada em {"properties": {...}} e devolve só os campos esperados."""
-    if isinstance(b, dict) and "properties" in b and not any(c in b for c in CAMPOS_BIBLIA):
-        b = b["properties"]
-    b = _valor_biblia(b if isinstance(b, dict) else {})
-    return {c: b[c] for c in CAMPOS_BIBLIA if c in b}
-
-
-def biblia_completa(b: dict) -> list[str]:
-    """Campos que faltam ou vieram vazios (uma bíblia assim nem vai para o juiz)."""
-    n = b.get("narrador") if isinstance(b.get("narrador"), dict) else {}
-    falta = [c for c in ("lugar_e_epoca", "fato_oculto", "ato_do_narrador", "elo", "desfecho")
-             if not str(b.get(c) or "").strip()]
-    if not str(n.get("nome") or "").strip():
-        falta.append("narrador.nome")
-    if not b.get("pistas"):
-        falta.append("pistas")
-    if not isinstance(b.get("linha_do_tempo"), list) or len(b["linha_do_tempo"]) < 3:
-        falta.append("linha_do_tempo")
-    return falta
-
-
-def _linhas_biblia(b: dict) -> str:
-    n = b.get("narrador") or {}
-    pessoas = "; ".join(f"{p.get('nome', '')} ({p.get('relacao', '')})" for p in b.get("pessoas") or []) or "nenhuma"
-    pistas = "\n".join(f"  {i}. {p}" for i, p in enumerate(b.get("pistas") or [], 1))
-    tempo = "\n".join(f"  {i}. {p}" for i, p in enumerate(b.get("linha_do_tempo") or [], 1))
-    papel = next((p for p in PAPEIS_NARRADOR if p["nome"] == b.get("papel")), None)
-    return (f"- Lugar e época: {b.get('lugar_e_epoca', '')}\n"
-            + (f"- Perspectiva do narrador: {papel['nome']}. {papel['regra'].capitalize()}\n" if papel else "")
-            + f"- Narrador: {n.get('nome', '')}, {n.get('quem_e', '')}. No fim: {n.get('destino', '')}\n"
-            f"- Outras pessoas: {pessoas}\n"
-            f"- O que realmente aconteceu: {b.get('fato_oculto', '')}\n"
-            f"- Ato deliberado que causa tudo: {b.get('ato_do_narrador', '')}\n"
-            f"- Elo concreto (objeto ou lugar): {b.get('elo', '')}\n"
-            f"- Regra do sobrenatural: {b.get('regra_sobrenatural', '')}\n"
-            + (f"- Linha do tempo (a ordem em que a narração conta; o gancho abre no fato 1):\n{tempo}\n" if tempo else "")
-            + f"- Pistas, em ordem:\n{pistas}\n"
-            f"- Desfecho: {b.get('desfecho', '')}")
-
-
-def bloco_biblia(b: dict | None) -> str:
-    """A bíblia como entra nos prompts de gancho, escrita e reescrita."""
-    if not b:
-        return ""
-    return ("\n\nBíblia da história (decidida antes de escrever; os fatos abaixo são os únicos que existem):\n"
-            + _linhas_biblia(b))
-
-
-def bloco_pessoas_biblia(b: dict | None) -> str:
-    """Nomes e aparências da bíblia para a decupagem, que não deve inventar outras pessoas."""
-    if not b:
-        return ""
-    n = b.get("narrador") or {}
-    linhas = [f"- {n.get('nome', '')} (narrador): {n.get('aparencia', '')}"]
-    linhas += [f"- {p.get('nome', '')} ({p.get('relacao', '')}): {p.get('aparencia', '')}" for p in b.get("pessoas") or []]
-    return ("\n\nPessoas desta história, com nome e aparência já definidos. Use estes nomes e parta destas aparências nas "
-            "descricao_fixa; só quem aparece em imagem ganha ficha, até o máximo:\n" + "\n".join(linhas))
-
-
-PAPEIS_NARRADOR = [
-    {"nome": "o culpado",
-     "regra": "o narrador fez o ato com as próprias mãos e conta como quem confessa."},
-    {"nome": "o omisso",
-     "regra": "o narrador estava lá, viu o que ia acontecer e calou, olhou para o lado ou deixou. Não encostou na vítima: "
-              "a culpa dele é o que escolheu não fazer."},
-    {"nome": "quem encontra",
-     "regra": "o narrador não tem culpa de nada: acabou de chegar (morador novo, herdeiro, comprador, quem acha o objeto) "
-              "e descobre aos poucos o que outro fez ali. O perigo cai sobre ele agora, no presente."},
-    {"nome": "a vítima",
-     "regra": "o narrador é quem sofreu o ato e ainda conta, de dentro do que lhe fizeram (preso, enterrado, esquecido). "
-              "O sobrenatural é por que a voz dele chega ao ouvinte."},
-    {"nome": "quem ficou",
-     "regra": "o narrador é parente, sócio ou amigo de quem sumiu. Procura, desconfia, e a verdade vem até ele por um "
-              "objeto ou sinal. O culpado é outra pessoa, que o ouvinte conhece pelos olhos do narrador."},
-    {"nome": "quem aceitou",
-     "regra": "o narrador não cometeu crime: aceitou um favor, uma troca ou um pedido que parecia pequeno e agora paga "
-              "o preço. O ato dele é essa aceitação."},
-]
-
-
-def escolher_papel(projeto: dict, canal: dict) -> dict:
-    """Sorteia a perspectiva do narrador, fora do modelo (ele cai sempre no culpado). Evita as duas últimas histórias
-    do canal e a bíblia anterior deste mesmo projeto, quando ele recomeça."""
-    recentes = []
-    for r in db.todos("SELECT historia_json FROM projetos WHERE canal_id = ? AND id < ? AND historia_json IS NOT NULL "
-                      "ORDER BY id DESC LIMIT 2", (canal["id"], projeto["id"])):
-        try:
-            hj = json.loads(r["historia_json"]) if isinstance(r["historia_json"], str) else r["historia_json"]
-            recentes.append(((hj or {}).get("biblia") or {}).get("papel"))
-        except (ValueError, TypeError):
-            continue
-    recentes.append((projeto.get("biblia") or {}).get("papel"))
-    livres = [p for p in PAPEIS_NARRADOR if p["nome"] not in recentes] or PAPEIS_NARRADOR
-    return random.choice(livres)
-
-
-def mensagens_biblia(projeto: dict, canal: dict, reprovadas: list[dict] | None = None,
-                     falhas: list[str] | None = None, papel: dict | None = None) -> list[dict]:
-    lim = limites(canal)
-    curta = lim["palavras_max"] <= 120
-    max_pessoas = max(1, lim["max_personagens"] - 1)  # o narrador também ganha ficha
-    max_pistas = 2 if lim["palavras_max"] <= 140 else 3
-    vibe = _pedido_outra_vibe(reprovadas or [])
-    perspectiva = (f"\nPerspectiva obrigatória do narrador: {papel['nome']}. {papel['regra'].capitalize()} A história inteira é contada "
-                   "por esse ponto de vista; não vire uma confissão de assassino se não for o caso.\n" if papel else "")
-    antes = ""
-    if falhas:
-        antes = ("\n\nUma bíblia anterior foi descartada pelo juiz. Faça outra, de outro jeito, e cuide do que ela "
-                 "não cumpriu:\n" + "\n".join(f"- {f}" for f in falhas))
-    return [
-        {"role": "system", "content": sistema_escrita(canal)},
-        {"role": "user", "content": f"""Assunto: {projeto['assunto']}
-
-Nesta etapa você NÃO escreve a narração. Ignore o campo "Campos" acima e monte a bíblia da história: o esqueleto de
-fatos que o roteirista vai seguir. A narração final terá só {lim['palavras_min']} a {lim['palavras_max']} palavras,
-então a história precisa ser simples e caber nisso: narrador mais no máximo {max_pessoas} outra(s) pessoa(s) com nome,
-até {max_pistas} pistas.
-{perspectiva}
-Regras:
-- lugar_e_epoca: cidade ou região e ano ou período, concretos.
-- narrador: nome, quem é (ofício, idade, o que o liga ao que acontece), aparencia (uma expressão, 15 a 25 palavras) e
-  destino (o que acontece com ele no fim; se morre, a voz dele para antes).
-- pessoas: cada uma com nome próprio (nunca só um papel), a relação com o narrador (marido, filho, patrão...) e aparencia.
-- fato_oculto: o que realmente aconteceu, em ordem cronológica, em frases simples. Confira datas, horários e quem
-  estava onde: nada pode se contradizer, e nenhuma pista pode desmentir a premissa.
-- ato_do_narrador: a decisão deliberada (ou a omissão, a aceitação) de alguém que provoca o estranho, conforme a
-  perspectiva do narrador. O horror é consequência dela, não azar. Diga o motivo em uma frase e o gesto concreto: quem
-  fez o quê, com quem, por quê. Se o ato foi de outra pessoa, o campo descreve esse ato e o que o narrador fez diante dele.
-- elo: UM objeto ou lugar concreto que liga o ato à consequência; aparece cedo na história e volta no final.
-- regra_sobrenatural: o único impossível da história, com o que ele pode e não pode fazer. O resto obedece ao mundo real.
-- linha_do_tempo: 5 a 6 fatos curtos, na ordem em que a narração vai contá-los, do primeiro ao último. Cada um começa
-  com a marca de quando acontece ("Na noite do pagamento", "Cinco semanas depois", "Hoje") e diz quem faz o quê. O
-  fato 1 já é um acontecimento forte (o ato ou o que leva a ele), nunca o fim nem o "hoje"; o último fato é o desfecho.
-  A história nunca volta atrás: o que o ouvinte descobre depois (o que aconteceu antes) entra como fala ou objeto, não
-  como salto no tempo.
-- pistas: em ordem, plantadas antes do desfecho; uma delas mostra o ato; cada uma diz o que o ouvinte descobre.
-- desfecho: o que acontece com o narrador e com quem importa, amarrando o elo. Nenhum objeto, nome ou fato novo
-  aparece só aqui. No máximo uma ponta solta, nascida do que já foi contado. Nada de "não lembro de ter feito" como
-  explicação, nem de charada para o ouvinte decifrar.
-Simplicidade: um ato, uma consequência, um elo. Sem subtramas (sócio, fraude, herança), sem personagem que só
-explica, sem anos e datas além do ano da época. O texto falado tem uma frase por fato e cabem uns seis fatos:
-fato_oculto em até 3 frases curtas, em linha reta no tempo; cada pista em até 15 palavras; desfecho em 1 frase.
-Teste antes de responder: conte a história em cinco frases a alguém que não conhece o assunto. Se alguma frase pedir
-"como assim?", corrija a bíblia.
-
-Responda com o objeto JSON preenchido, assim (os valores, não o schema):
-{{"lugar_e_epoca": "...", "narrador": {{"nome": "...", "quem_e": "...", "aparencia": "...", "destino": "..."}},
-"pessoas": [{{"nome": "...", "relacao": "...", "aparencia": "..."}}], "fato_oculto": "...", "ato_do_narrador": "...",
-"elo": "...", "regra_sobrenatural": "...", "linha_do_tempo": ["...", "..."], "pistas": ["...", "..."],
-"desfecho": "..."}}{vibe}{antes}"""},
-    ]
-
-
-def criar_biblia(projeto: dict, canal: dict, reprovadas: list[dict] | None = None) -> dict:
-    """Personagens, fato oculto, ato, elo, pistas e desfecho, antes de qualquer gancho. O Jev confere o resumo
-    (poucas chamadas baratas): uma bíblia ruim estragaria todas as tentativas de escrita. Fica a melhor."""
-    pid = projeto["id"]
-    falhas: list[str] = []
-    melhor = None
-    papel = escolher_papel(projeto, canal)
-    db.evento(pid, f"Perspectiva do narrador: {papel['nome']}.")
-    for t in range(1, BIBLIA_TENTATIVAS + 1):
-        _checar_teto(projeto, _media_custo(pid, config.modelo_texto(), config.EST_TEXTO) +
-                     _media_custo(pid, config.MODELO_JUIZ, config.EST_JEV))
-        b, _ = clientes.chat("biblia", mensagens_biblia(projeto, canal, reprovadas, falhas, papel), SCHEMA_BIBLIA,
-                             projeto_id=pid, etapa="historia", temperatura=1.0, max_tokens=2000,
-                             contexto={"assunto": projeto["assunto"], "tipo": "biblia"})
-        b = normalizar_biblia(b)
-        b["papel"] = papel["nome"]
-        falta = biblia_completa(b)
-        if falta:
-            db.evento(pid, f"Bíblia {t}/{BIBLIA_TENTATIVAS} incompleta (faltou {', '.join(falta)}); pedindo de novo.", "aviso")
-            falhas = [f"preencha todos os campos da bíblia (faltou {', '.join(falta)})"]
-            continue
-        state = (f"Canal: {canal['nome']}. {canal['descricao']}\nAssunto pedido: {projeto['assunto']}\n\n"
-                 f"Resumo da história (a narração ainda não foi escrita):\n{_linhas_biblia(b)}")
-        respostas, _ = clientes.decidir(state, perguntas_jev(PERGUNTAS_BIBLIA), projeto_id=pid, etapa="historia",
-                                        contexto={"tipo": "biblia", "biblia": b})
-        aval = interpretar(respostas, PERGUNTAS_BIBLIA)
-        db.evento(pid, f"Bíblia {t}/{BIBLIA_TENTATIVAS}: nota {aval['nota_geral']:.2f} · falhas: "
-                       f"{', '.join(aval['falhas']) or 'nenhuma'}")
-        if melhor is None or (aval["passou"], aval["nota_geral"]) > melhor[0]:
-            melhor = ((aval["passou"], aval["nota_geral"]), b)
-        if aval["passou"]:
-            break
-        falhas = [PERGUNTAS_BIBLIA[k]["pergunta"] for k in aval["falhas"]]
-    if melhor is None:
-        raise clientes.ErroAPI("O modelo não devolveu uma bíblia completa")
-    return melhor[1]
-
-
-def _regra_gancho_biblia(b: dict | None) -> str:
-    if not b:
-        return ""
-    tempo = b.get("linha_do_tempo") or []
-    abertura = (f" Os 5 ganchos são 5 jeitos de abrir ESTE fato, o primeiro da linha do tempo: \"{tempo[0]}\" "
-                "Nenhum gancho conta o que vem depois dele." if tempo else "")
-    return ("\nO gancho nasce desta bíblia: promete só o que a história entrega, usa pessoas, lugar e elo dela e "
-            f"não revela o desfecho.{abertura} A história continua dele para frente. Escreva-o na 1ª pessoa do "
-            "narrador, no passado, sem o nome do narrador e sem misturar o \"hoje\" com o passado.")
-
-
 def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None, historico: str = "",
-                     evitar_modos: tuple = (), biblia: dict | None = None) -> list[dict]:
+                     evitar_modos: tuple = ()) -> list[dict]:
     """Pedido dos 5 ganchos (e do modo narrativo). Separado para a tela do canal mostrar o prompt exato.
     evitar_modos: modos de tentativas reprovadas na trava; saem da lista enquanto sobrar algum."""
     modos = canal["config"].get("modos_narrativos") or []
@@ -924,17 +781,22 @@ def mensagens_gancho(assunto: str, canal: dict, ultimo: str | None = None, histo
     modos = [m for m in modos if m["nome"].lower() not in evitar] or modos
     bloco_modo, campo_modo = "", "\"modo\": \"\""
     if modos:
-        bloco_modo = ("\n\nPrimeiro escolha o modo narrativo que melhor serve ao assunto"
+        bloco_modo = ("\n\nPrimeiro escolha o modo narrativo que melhor serve ao assunto, e que permita o desfecho que o "
+                      "assunto pede (se o narrador morre ou desaparece, não use um modo em que ele conta depois, como a "
+                      "confissão: conte em 3ª pessoa, ou use um em que a voz para na hora e uma última frase de fato "
+                      "visto de fora mostra o desfecho; um relato que só para antes do desfecho não cumpre o assunto)"
                       f"{' (evite repetir ' + ultimo + ', usado no vídeo anterior, se outro servir)' if ultimo else ''}; "
                       "os 5 ganchos são escritos nesse modo:\n" + "\n".join(f"- {m['nome']}: {m['regra']}" for m in modos))
         campo_modo = "\"modo\": nome exato do modo escolhido"
     return [
         {"role": "system", "content": sistema_escrita(canal)},
-        {"role": "user", "content": f"Assunto: {assunto}{bloco_biblia(biblia)}{_regra_gancho_biblia(biblia)}"
-                                    f"{bloco_modo}\n\nEscreva 5 ganchos diferentes para abrir essa "
+        {"role": "user", "content": f"Assunto: {assunto}{bloco_modo}\n\nEscreva 5 ganchos diferentes para abrir essa "
          "história. O gancho é a primeira frase da narração, entre 120 e 150 caracteres: já carrega a premissa (quem, "
-         "onde e o que há de impossível) e faz quem está rolando o feed parar nos 3 primeiros segundos, sem revelar o "
-         f"final. Cada um com uma abordagem diferente.{historico}\n\nResponda com {{{campo_modo}, \"ganchos\": [5 textos]}}."},
+         "onde e o que há de errado) e faz quem está rolando o feed parar nos 3 primeiros segundos, sem revelar o "
+         "final. O gancho é um fato da história que vem depois, e ela vai ter de explicá-lo: só o que poderia "
+         "acontecer de verdade (um sumiço, um aviso, um objeto fora do lugar, alguém que aparece), e nada impossível "
+         f"se o assunto não pede algo sobrenatural. Cada um com uma abordagem diferente.{historico}\n\nResponda com "
+         f"{{{campo_modo}, \"ganchos\": [5 textos]}}."},
     ]
 
 
@@ -968,20 +830,25 @@ def escolher_gancho(projeto: dict, canal: dict, reprovadas: list[dict] | None = 
         if anteriores:
             hist += "\n\nGanchos anteriores e a nota que tiveram (0-10, corte " + f"{corte}" + "). Não repita; faça melhor:\n" + \
                     "\n".join(f"- ({a['nota']:.1f}) {a['texto']}" for a in anteriores)
-        msgs = mensagens_gancho(projeto["assunto"], canal, ultimo, hist, evitar, projeto.get("biblia"))
+        msgs = mensagens_gancho(projeto["assunto"], canal, ultimo, hist, evitar)
         resp, _ = clientes.chat("ganchos", msgs, SCHEMA_GANCHOS, projeto_id=projeto["id"], etapa="historia",
                                 temperatura=1.0, max_tokens=1200, contexto={"assunto": projeto["assunto"]})
         ganchos = [g.strip() for g in resp.get("ganchos", []) if g.strip()][:5]
         if not ganchos:
             continue
         m = _modo(canal, str(resp.get("modo") or "").strip(" .*"))
-        state = f"Canal: {canal['nome']}. {canal['descricao']}\nAssunto do vídeo: {projeto['assunto']}\n" \
-                f"Formato: vídeo curto vertical, narração em {canal['idioma']}. O gancho é a primeira frase que o narrador lê."
-        qs = {f"g{i}": {"type": "score", "instructions": f"{base['pergunta']}\nGancho: \"{g}\"", "criteria": ESCALA}
+        # Mesma pergunta e mesmos níveis da avaliação da história inteira; a história ainda não existe, então o
+        # state leva só os candidatos.
+        criterios = perguntas_jev({"gancho": base})["gancho"]["criteria"]
+        qs = {f"g{i}": {"type": "score", "criteria": criterios,
+                        "instructions": f"{base['pergunta']}\nA primeira frase avaliada aqui é o gancho candidato {i}: \"{g}\""}
               for i, g in enumerate(ganchos, 1)}
+        state = estado_juiz({"narracao": ""}, canal, projeto["assunto"], m["nome"] if m else None)
+        state["historia"] = {"ganchos_candidatos": ganchos,
+                             "observacao": "a história ainda não foi escrita; o gancho escolhido será a primeira frase dela"}
         respostas, _ = clientes.decidir(state, qs, projeto_id=projeto["id"], etapa="historia",
                                         contexto={"tipo": "ganchos"})
-        notas = [(g, clientes.nota_score(respostas.get(f"g{i}", {}), len(ESCALA))) for i, g in enumerate(ganchos, 1)]
+        notas = [(g, clientes.nota_score(respostas.get(f"g{i}", {}), len(criterios))) for i, g in enumerate(ganchos, 1)]
         for g, n in notas:
             anteriores.append({"texto": g, "nota": n})
         top = max(notas, key=lambda x: x[1])
@@ -1020,23 +887,6 @@ def _sem_gancho(h: dict, gancho: str) -> dict:
     return {**h, "narracao": narr[len(gancho):].strip() if narr.startswith(gancho) else narr}
 
 
-def _regra_escrita_biblia(b: dict | None) -> str:
-    return ("\nSiga a bíblia: não contradiga nenhum fato dela e não invente outros. Plante as pistas antes do final, "
-            "mostre o ato do narrador, apresente cada pessoa pelo nome e pela relação logo na primeira vez que "
-            "aparece, e traga o elo cedo e de volta no final. O ouvinte precisa conseguir remontar o que realmente "
-            "aconteceu. O final só usa o que a bíblia e o texto já mostraram. Conte em linha reta no tempo, com no "
-            "máximo duas marcas de data, e uma frase por fato; se não couber, corte a pista menos importante, nunca "
-            "o ato nem o desfecho. Ordem do tempo: escreva uma ou duas frases para cada item da linha do tempo da "
-            "bíblia, na ordem 1, 2, 3, sem pular nem voltar atrás; o gancho já cobre o fato 1 (ou 2) e a narração segue "
-            "dele para frente, sem recontá-lo. Passado o tempo, "
-            "avise com uma marca curta (\"Naquela noite\", \"Semanas depois\", \"Hoje\"); o \"hoje\" só entra no fim, e "
-            "passado e presente nunca se misturam na mesma frase. O narrador fala de si na 1ª pessoa o tempo todo, nunca pelo próprio nome. Mantenha a "
-            "perspectiva da bíblia. O meio da história é onde ela se perde: ali, cada frase traz um fato novo, e o ato "
-            "sai dito com todas as letras (quem fez o quê, com quem e por quê); o ouvinte não pode ter de adivinhar a "
-            "ligação entre uma frase e a seguinte. Frases de uma ou duas palavras só de reação (\"Eu vi.\", \"Eu olhava.\") "
-            "gastam o pouco espaço que existe: use no máximo uma, no ponto mais tenso." if b else "")
-
-
 def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | None = None) -> dict:
     """Escreve a história inteira do zero. fraquezas: onde as versões descartadas falharam no Jev (só o critério,
     não o texto), para esta sair diferente em vez de remendar a anterior."""
@@ -1050,11 +900,10 @@ def escrever(projeto: dict, canal: dict, gancho: str, fraquezas: list[str] | Non
                  "desenvolvimento, e cuide em especial do que elas não cumpriram:\n" + "\n".join(f"- {f}" for f in fraquezas))
     msgs = [
         {"role": "system", "content": sistema_escrita(canal)},
-        {"role": "user", "content": f"Assunto: {projeto['assunto']}{bloco_biblia(projeto.get('biblia'))}"
-                                    f"{_regra_escrita_biblia(projeto.get('biblia'))}\n\n{pedido}"
-                                    f"{dica_modo(projeto, canal)}{antes}\n\nEscreva a história em JSON."},
+        {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\n{pedido}{dica_modo(projeto, canal)}{antes}\n\n"
+                                    "Escreva a história em JSON."},
     ]
-    h, _ = clientes.chat("narrativa", msgs, SCHEMA_NARRATIVA, projeto_id=projeto["id"], etapa="historia",
+    h, _ = clientes.chat("narrativa", msgs, schema_narrativa(canal), projeto_id=projeto["id"], etapa="historia",
                          temperatura=0.9, contexto={"assunto": projeto["assunto"], "gancho": gancho})
     return _com_gancho(h, gancho) if fixo else normalizar_narrativa(h, gancho)
 
@@ -1081,14 +930,13 @@ def reescrever(projeto: dict, canal: dict, h: dict, problemas: list[str], avalia
     trava += dica_modo(projeto, canal)
     msgs = [
         {"role": "system", "content": sistema_escrita(canal)},
-        {"role": "user", "content": f"Assunto: {projeto['assunto']}{bloco_biblia(projeto.get('biblia'))}"
-                                    f"{_regra_escrita_biblia(projeto.get('biblia'))}\n\nVersão atual"
+        {"role": "user", "content": f"Assunto: {projeto['assunto']}\n\nVersão atual"
                                     f"{' (só a parte depois do gancho)' if fixo else ''}:\n{_json_narrativa(versao)}\n\n"
                                     f"O que falhou na avaliação:\n" + "\n".join(itens) +
                                     "\n\nReescreva só o necessário para corrigir esses pontos e mantenha o que já está bom."
                                     f"{trava}\nDevolva a história completa em JSON."},
     ]
-    nova, _ = clientes.chat("reescrita", msgs, SCHEMA_NARRATIVA, projeto_id=projeto["id"], etapa="historia",
+    nova, _ = clientes.chat("reescrita", msgs, schema_narrativa(canal), projeto_id=projeto["id"], etapa="historia",
                             contexto={"historia": h, "problemas": problemas})
     if fixo:
         return _com_gancho(nova, fixo)
@@ -1101,7 +949,7 @@ def avaliar(projeto: dict, canal: dict, h: dict, perguntas: dict | None = None, 
         perguntas = {k: v for k, v in perguntas.items() if k != "gancho"}
     if etapa == "historia":
         _checar_teto(projeto, _media_custo(projeto["id"], config.MODELO_JUIZ, config.EST_JEV))
-    state = texto_para_juiz(h, canal, projeto["assunto"], projeto.get("modo"))
+    state = estado_juiz(h, canal, projeto["assunto"], projeto.get("modo"))
     respostas, _ = clientes.decidir(state, perguntas_jev(perguntas), projeto_id=projeto["id"], etapa=etapa,
                                     contexto={"tipo": "historia", "historia": h})
     return interpretar(respostas, perguntas)
@@ -1229,8 +1077,7 @@ def decupar(projeto: dict, canal: dict, h: dict, biblioteca: list[dict] | None =
     msgs = [
         {"role": "system", "content": sistema_decupagem(canal)},
         {"role": "user", "content": f"Título: {h.get('titulo', '')}\n\nNarração em {len(trs)} trechos:\n{lista}"
-                                    f"{bloco_biblioteca(biblioteca or [])}{bloco_pessoas_biblia(h.get('biblia'))}"
-                                    "\n\nDivida em cenas e responda em JSON."},
+                                    f"{bloco_biblioteca(biblioteca or [])}\n\nDivida em cenas e responda em JSON."},
     ]
     resp, _ = clientes.chat("decupagem", msgs, SCHEMA_DECUPAGEM, projeto_id=pid, etapa="decupagem", temperatura=0.6,
                             contexto={"trechos": trs})
@@ -1389,9 +1236,6 @@ def laco(projeto: dict, canal: dict, reprovadas: list[dict] | None = None) -> di
     n = config.LACO_MAX_HISTORIAS
     gancho = None
     try:
-        # A bíblia (pessoas, fato, ato, elo, pistas, desfecho) vem antes do gancho e fica fixa nas tentativas.
-        if canal["config"].get("biblia", True):
-            projeto["biblia"] = criar_biblia(projeto, canal, reprovadas)
         # O gancho escolhido pelo Jev fica fixo; cada tentativa escreve o resto do zero.
         gancho, _nota_g, _ = escolher_gancho(projeto, canal, reprovadas)
         projeto["gancho_fixo"] = gancho
@@ -1402,15 +1246,14 @@ def laco(projeto: dict, canal: dict, reprovadas: list[dict] | None = None) -> di
                 # Tamanho é mecânico: um ajuste só no comprimento, sem reescrever a história.
                 h = reescrever(projeto, canal, h, problemas, None)
                 problemas, metricas = checar_narrativa(h, canal)
-            if projeto.get("biblia"):
-                h["biblia"] = projeto["biblia"]
             aval = avaliar(projeto, canal, h)
             v = salvar_versao(projeto, h, "escrita", {"problemas": problemas, "metricas": metricas}, aval)
             falhas = ", ".join(aval["falhas"]) or "nenhuma"
             db.evento(pid, f"História {tentativa}/{n} (versão {v}): nota geral {aval['nota_geral']:.2f} · falhas: {falhas}"
                            f"{' · fora do tamanho: ' + '; '.join(problemas) if problemas else ''}")
-            # Ordem: passa na segurança, cabe no tamanho, nota geral.
-            chave = (not aval["trava_falhou"], not problemas, aval["nota_geral"])
+            # Ordem: passa na trava, cabe no tamanho, menos perguntas reprovadas, nota geral. Só a média escolhia a
+            # história com absurdo, porque a maioria das perguntas dá nota alta para qualquer texto.
+            chave = (not aval["trava_falhou"], not problemas, -len(aval["falhas"]), aval["nota_geral"])
             if melhor is None or chave > melhor[0]:
                 melhor = (chave, h, aval, v, problemas)
             if aval["passou"] and not problemas:

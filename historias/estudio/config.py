@@ -47,7 +47,7 @@ MODELO_TEXTO = os.getenv("MODELO_TEXTO", "deepseek/deepseek-v4.1-flash")
 MODELO_JUIZ = os.getenv("MODELO_JUIZ", "typesafe/jev-1.13")
 # Tarefas de texto que rodam com o raciocínio (thinking) do DeepSeek ligado, separadas por vírgula. Vazio = nenhuma;
 # "todas" liga em tudo. Tarefas: biblia, ganchos, narrativa, reescrita, decupagem, prompts_cena, humanizer, sugestao_canal.
-RACIOCINIO_TAREFAS = {t.strip() for t in os.getenv("RACIOCINIO_TAREFAS", "biblia,narrativa,reescrita").lower().split(",") if t.strip()}
+RACIOCINIO_TAREFAS = {t.strip() for t in os.getenv("RACIOCINIO_TAREFAS", "").lower().split(",") if t.strip()}
 # Provedor do texto: "openrouter" (usa MODELO_TEXTO) ou "deepseek" (API oficial: deepseek-chat, ou deepseek-reasoner nas
 # tarefas com raciocínio). Juiz (Jev) e narração seguem no OpenRouter; a imagem tem o motor próprio.
 PROVEDOR_TEXTO = os.getenv("PROVEDOR_TEXTO", "openrouter").strip().lower()

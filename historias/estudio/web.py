@@ -5,6 +5,7 @@ A API externa para gerar vídeo a partir de um assunto é o mesmo POST /api/proj
 Se ESTUDIO_API_TOKEN estiver definido, chamadas de fora do computador precisam do cabeçalho
 Authorization: Bearer <token>.
 """
+import copy
 import os
 import shutil
 import tempfile
@@ -17,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import canais, config, configuracoes, custos, db, efeitos, gerador, historia, montagem, narracao, pipeline, publicador, registro, relatorio, revisao, youtube
+from . import canais, config, configuracoes, custos, db, efeitos, gerador, historia, montagem, narracao, pipeline, publicador, registro, relatorio, revisao, teste_comfy, visual, youtube
 
 ESTATICOS = Path(__file__).parent / "static"
 INICIO = time.time()
@@ -82,7 +83,7 @@ def status():
     return {
         "simulacao": config.SIMULACAO,
         "chaves": {"openrouter": bool(config.OPENROUTER_API_KEY), "pollinations": bool(config.POLLINATIONS_API_KEY)},
-        "modelos": {"texto": config.MODELO_TEXTO, "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
+        "modelos": {"texto": config.modelo_texto(), "juiz": config.MODELO_JUIZ, "imagem": config.MODELO_IMAGEM},
         "ffmpeg": shutil.which(config.FFMPEG) is not None or Path(config.FFMPEG).exists(),
         "humanizer": {"arquivo": str(config.HUMANIZER_SKILL), "existe": config.HUMANIZER_SKILL.exists(),
                       "vocabulario": len(revisao.vocabulario_ia())},
@@ -133,6 +134,29 @@ def testar_configuracao(servico: str):
     if servico not in ("openrouter", "comfy", "publicador"):
         raise HTTPException(404, "serviço desconhecido")
     return configuracoes.testar(servico)
+
+
+# ---------------------------------------------------------------- teste do ComfyUI (aba Teste Comfy)
+
+class TesteComfyIn(BaseModel):
+    projeto_id: int
+    cena: int = 1
+    refazer_fichas: bool = False
+
+
+@app.get("/api/teste-comfy", dependencies=[api])
+def teste_comfy_estado():
+    return teste_comfy.estado()
+
+
+@app.post("/api/teste-comfy/gerar", dependencies=[api])
+def teste_comfy_gerar(dados: TesteComfyIn):
+    return teste_comfy.iniciar(dados.projeto_id, dados.cena, dados.refazer_fichas)
+
+
+@app.get("/api/teste-comfy/progresso", dependencies=[api])
+def teste_comfy_progresso():
+    return teste_comfy._job
 
 
 # ---------------------------------------------------------------- canais
@@ -188,7 +212,7 @@ def previa_prompt(dados: CanalIn):
     assunto = "<assunto do vídeo>"
     modo = "\n\nModo narrativo deste vídeo: <modo escolhido com os ganchos> (...). Siga-o do começo ao fim." \
         if canal["config"].get("modos_narrativos") else ""
-    return {"modelo": config.MODELO_TEXTO, "gancho": historia.mensagens_gancho(assunto, canal),
+    return {"modelo": config.modelo_texto(), "gancho": historia.mensagens_gancho(assunto, canal),
             "roteirista": [{"role": "system", "content": historia.sistema_escrita(canal)},
                            {"role": "user", "content": f"Assunto: {assunto}\n\n" +
                             historia._pedido_continuacao(canal, "<gancho escolhido pelo Jev>") + modo +
@@ -329,6 +353,10 @@ def editar_historia(pid: int, dados: HistoriaIn):
     antigas = {c["n"]: c for c in (p["historia"] or {}).get("cenas", [])}
     if len(h.get("cenas", [])) != len(antigas):
         raise HTTPException(400, "a edição não pode mudar o número de cenas")
+    for c in h.get("cenas", []):
+        antiga = antigas.get(c.get("n")) or {}
+        if c.get("prompt_manual") and c.get("prompt_imagem") != antiga.get("prompt_imagem"):
+            c.pop("prompt_manual")  # mexeu no prompt da cena aqui: vale o novo, não o texto colado antes
     h = historia.normalizar_cenas(h)
     db.atualizar("projetos", pid, historia_json=h)
     db.evento(pid, "História editada à mão.")
@@ -426,6 +454,42 @@ class RefazerIn(BaseModel):
     prompt_imagem: str | None = None
     destaque: str | None = None
     referencias: list[str] | None = None  # ["personagem:id" | "ambiente:id"], no máximo 2, a primeira vale mais
+    sem_referencias: bool | None = None  # True = nenhuma imagem de referência vai junto
+    prompt_final: str | None = None  # texto inteiro da caixa; se difere do automático, vai exatamente como está
+
+
+def _aplicar_escolhas(h: dict, n: int, dados) -> dict | None:
+    """Passa referências e destaque do pedido para a cena n de h. Devolve a cena."""
+    cena = next((c for c in h["cenas"] if c["n"] == n), None)
+    if not cena:
+        return None
+    if dados.referencias is not None:
+        cena["referencias"] = dados.referencias
+    if dados.sem_referencias is not None:
+        cena["sem_referencias"] = bool(dados.sem_referencias)
+    if getattr(dados, "destaque", None) is not None:
+        cena["destaque"] = dados.destaque.strip()
+    historia.normalizar_cenas(h)
+    return cena
+
+
+class PreviaIn(BaseModel):
+    referencias: list[str] | None = None
+    sem_referencias: bool | None = None
+    destaque: str | None = None
+
+
+@app.post("/api/projetos/{pid}/cenas/{n}/previa-prompt", dependencies=[api])
+def previa_prompt_cena(pid: int, n: int, dados: PreviaIn):
+    """O prompt completo que seguiria para o gerador com as escolhas da tela (sem salvar nada)."""
+    p = _projeto(pid)
+    h = copy.deepcopy(p["historia"])
+    cena = _aplicar_escolhas(h, n, dados)
+    if not cena:
+        raise HTTPException(404, "cena não encontrada")
+    cena.pop("prompt_manual", None)
+    prompt, arquivos = visual.previa_prompt(canais.obter(p["canal_id"]), h, cena)
+    return {"prompt": prompt, "imagens": [f"/arquivos/{a}" for a in arquivos]}
 
 
 @app.post("/api/projetos/{pid}/cenas/{n}/refazer", dependencies=[api])
@@ -433,16 +497,17 @@ def refazer_cena(pid: int, n: int, dados: RefazerIn):
     p = _projeto(pid)
     if p["status"] not in ("aguardando_imagens", "pronto", "erro", "interrompido"):
         raise HTTPException(409, f"ação indisponível no estado '{p['status']}'")
-    if dados.prompt_imagem or dados.destaque is not None or dados.referencias is not None:
-        for c in p["historia"]["cenas"]:
-            if c["n"] == n:
-                if dados.referencias is not None:
-                    c["referencias"] = dados.referencias
-                    historia.normalizar_cenas(p["historia"])
-                if dados.prompt_imagem:
-                    c["prompt_imagem"] = dados.prompt_imagem.strip()
-                if dados.destaque is not None:
-                    c["destaque"] = dados.destaque.strip()
+    if (dados.prompt_imagem or dados.destaque is not None or dados.referencias is not None
+            or dados.sem_referencias is not None or dados.prompt_final is not None):
+        cena = _aplicar_escolhas(p["historia"], n, dados)
+        if cena:
+            if dados.prompt_imagem:
+                cena["prompt_imagem"] = dados.prompt_imagem.strip()
+            if dados.prompt_final is not None:
+                cena.pop("prompt_manual", None)
+                auto, _ = visual.previa_prompt(canais.obter(p["canal_id"]), p["historia"], cena)
+                if dados.prompt_final.strip() and dados.prompt_final.strip() != auto.strip():
+                    cena["prompt_manual"] = dados.prompt_final  # exatamente como foi colado
         db.atualizar("projetos", pid, historia_json=p["historia"])
     db.evento(pid, f"Refazendo a cena {n}.")
     antes = _estado_arquivo_cena(pid, n)

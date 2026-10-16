@@ -83,7 +83,7 @@ def url_referencia(item: dict) -> str:
 
 def ref_envio(item: dict):
     """O Comfy recebe o arquivo local da ficha/placa; a Pollinations, a URL pública."""
-    return config.BASE / item["arquivo"] if clientes.usa_comfy() else url_referencia(item)
+    return config.BASE / item["arquivo"] if clientes.usa_comfy() or item.get("local") else url_referencia(item)
 
 
 def _parecido(a: str, b: str) -> bool:
@@ -234,13 +234,17 @@ def chaves_referencia(c: dict) -> list[tuple[str, str]]:
     return saida[:historia.MAX_REFERENCIAS]
 
 
-def montar_prompt(h: dict, c: dict, canal: dict, refs: dict) -> tuple[str, list]:
+def montar_prompt(h: dict, c: dict, canal: dict, refs: dict, envio=ref_envio) -> tuple[str, list]:
     """Ordem do prompt: estilo, orientação, referências escolhidas (a primeira antes), lugar e luz, uma linha por
-    pessoa no lugar dela, clima e destaque. Sem escolha manual, as referências vêm do ambiente e das pessoas da cena."""
+    pessoa no lugar dela, clima e destaque. Sem escolha manual, as referências vêm do ambiente e das pessoas da cena.
+    Com c["sem_referencias"], nenhuma imagem vai junto e o texto não cita referência.
+    `envio` converte o item da biblioteca no que é enviado (a prévia troca por algo que não sobe arquivo)."""
     fichas = {x["id"]: x for x in h.get("personagens", [])}
     ambientes = {x["id"]: x for x in h.get("ambientes", [])}
+    if c.get("sem_referencias"):
+        refs = {}
     manual = [k for k in chaves_referencia(c) if refs.get(k)]
-    urls = [ref_envio(refs[k]) for k in manual]
+    urls = [envio(refs[k]) for k in manual]
     miolo = []
     if manual:
         # Cada referência é apresentada pelo número, na ordem escolhida, antes de qualquer outra coisa da cena.
@@ -257,7 +261,7 @@ def montar_prompt(h: dict, c: dict, canal: dict, refs: dict) -> tuple[str, list]
             return None
         if manual:
             return manual.index(chave) + 1 if chave in manual else None
-        urls.append(ref_envio(item))
+        urls.append(envio(item))
         return len(urls)
 
     # Placa escolhida à mão manda no lugar da cena (é para isso que serve a escolha)
@@ -289,6 +293,9 @@ def gerar_cena(projeto: dict, canal: dict, h: dict, c: dict, refs: dict, versao:
     pid = projeto["id"]
     n = c["n"]
     prompt, urls = montar_prompt(h, c, canal, refs)
+    manual = c.get("prompt_manual")
+    if manual:  # texto colado pelo usuário: vai exatamente como está, sem estilo nem trechos acrescentados
+        prompt = manual
     seed = projeto["seed_base"] + n + versao * 1000
     db.executar("INSERT INTO cenas (projeto_id, n, status, seed, versao, prompt_final) VALUES (?, ?, 'gerando', ?, ?, ?) "
                 "ON CONFLICT(projeto_id, n) DO UPDATE SET status='gerando', seed=excluded.seed, versao=excluded.versao, "
@@ -296,7 +303,7 @@ def gerar_cena(projeto: dict, canal: dict, h: dict, c: dict, refs: dict, versao:
     try:
         _verificar_orcamento(projeto, canal)
         w, hh = dims_cena(canal)
-        dados, _, _ = clientes.gerar_imagem(prompt, w, hh, seed, urls, projeto_id=pid, etapa="cenas")
+        dados, _, _ = clientes.gerar_imagem(prompt, w, hh, seed, urls, projeto_id=pid, etapa="cenas", literal=bool(manual))
         destino = pasta(projeto) / "cenas" / f"{n:02d}.jpg"
         if destino.exists() and versao > 0:
             destino.replace(destino.with_name(f"{n:02d}_v{versao - 1}.jpg"))
@@ -367,6 +374,29 @@ def copiar_reaproveitadas(projeto: dict, h: dict):
                      destino.relative_to(config.BASE).as_posix()))
 
 
+def refs_da_cena(canal: dict, h: dict, c: dict) -> dict:
+    """Fichas e placas já feitas para ESTE projeto (bib_chave); nunca cai numa entrada antiga com o mesmo id."""
+    refs = {}
+    escolhidas = chaves_referencia(c)
+    for tipo, lista in (("personagem", h.get("personagens", [])), ("ambiente", h.get("ambientes", []))):
+        for obj in lista:
+            if not obj.get("bib_chave"):
+                continue
+            if tipo == "ambiente" and obj["id"] not in historia.ambientes_recorrentes(h) \
+                    and (tipo, obj["id"]) not in escolhidas:
+                continue
+            item = db.um("SELECT * FROM biblioteca WHERE canal_id = ? AND tipo = ? AND chave = ?",
+                         (canal["id"], tipo, obj["bib_chave"]))
+            if item:
+                refs[(tipo, obj["id"])] = item
+    return refs
+
+
+def previa_prompt(canal: dict, h: dict, c: dict) -> tuple[str, list[str]]:
+    """O texto completo que iria para o gerador agora e o arquivo de cada imagem anexada, sem subir nada."""
+    return montar_prompt(h, c, canal, refs_da_cena(canal, h, c), envio=lambda item: item["arquivo"])
+
+
 def refazer(projeto: dict, canal: dict, h: dict, n: int) -> Path:
     c = next(x for x in h["cenas"] if x["n"] == n)
     if c.pop("mesma_imagem_de", None):
@@ -375,20 +405,7 @@ def refazer(projeto: dict, canal: dict, h: dict, n: int) -> Path:
         db.atualizar("projetos", projeto["id"], historia_json=h)
     atual = db.um("SELECT versao FROM cenas WHERE projeto_id = ? AND n = ?", (projeto["id"], n))
     versao = (atual["versao"] + 1) if atual else 0
-    # Só usa a ficha/placa criada para ESTE projeto (bib_chave); nunca cai numa entrada antiga com o mesmo id.
-    refs = {}
-    escolhidas = chaves_referencia(c)
-    for tipo, lista in (("personagem", h.get("personagens", [])), ("ambiente", h.get("ambientes", []))):
-        for obj in lista:
-            if not obj.get("bib_chave"):
-                continue
-            if tipo == "ambiente" and obj["id"] not in historia.ambientes_recorrentes(h)                     and (tipo, obj["id"]) not in escolhidas:
-                continue
-            item = db.um("SELECT * FROM biblioteca WHERE canal_id = ? AND tipo = ? AND chave = ?",
-                         (canal["id"], tipo, obj["bib_chave"]))
-            if item:
-                refs[(tipo, obj["id"])] = item
-    destino = gerar_cena(projeto, canal, h, c, refs, versao)
+    destino = gerar_cena(projeto, canal, h, c, refs_da_cena(canal, h, c), versao)
     copiar_reaproveitadas(projeto, h)  # quem reaproveita esta cena recebe a imagem nova
     folha_contato(projeto, h)
     return destino

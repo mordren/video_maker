@@ -142,6 +142,8 @@ def refazer_imagens(pid: int):
     h = p["historia"]
     for obj in h.get("personagens", []) + h.get("ambientes", []):
         obj.pop("bib_chave", None)
+    for c in h.get("cenas", []):  # prompt colado à mão tem o estilo antigo dentro; volta ao automático
+        c.pop("prompt_manual", None)
     db.executar("DELETE FROM cenas WHERE projeto_id = ?", (pid,))
     db.atualizar("projetos", pid, historia_json=h)
     pasta = _pasta_segura(p)

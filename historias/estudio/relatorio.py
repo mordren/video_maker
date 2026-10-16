@@ -60,7 +60,7 @@ def exportar() -> dict:
     projetos = db.todos("SELECT * FROM projetos ORDER BY id")
     with open(arq_log, "w", encoding="utf-8") as f, open(arq_resumo, "w", encoding="utf-8") as r:
         f.write(f"Histórico exportado em {datetime.now():%Y-%m-%d %H:%M} · {len(projetos)} vídeo(s)\n")
-        f.write(f"Modelos: texto {config.MODELO_TEXTO} · juiz {config.MODELO_JUIZ} · imagem {config.MODELO_IMAGEM}\n")
+        f.write(f"Modelos: texto {config.modelo_texto()} · juiz {config.MODELO_JUIZ} · imagem {config.MODELO_IMAGEM}\n")
         for p in projetos:
             res = resumo_projeto(p)
             r.write(json.dumps(res, ensure_ascii=False) + "\n")

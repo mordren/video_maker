@@ -79,6 +79,7 @@ import pipeline_cortes  # noqa: E402  (Fase 2, chamada por bloco só na produç�
 import ai_srt  # noqa: E402
 import fila  # noqa: E402  (fila de trabalho/corte no Redis — sobrevive a reinício)
 import video_longo  # noqa: E402  (produção do vídeo longo, com a moldura do canal)
+import thumbnail  # noqa: E402  (3 opções de thumb do vídeo longo: prints + visão no OpenRouter)
 import canais_publicacao  # noqa: E402  (perfil de cada canal do Publicador)
 import config_cortador  # noqa: E402  (aba Configurações: o que muda por cima dos YAML e constantes)
 import custos_cortador  # noqa: E402  (aba Custos)
@@ -626,9 +627,14 @@ def processar_trabalho(t: dict) -> None:
     for bloco in longos:
         if bloco["id"] in feitos or not _fonte(tid, bloco["id"]).exists():
             continue
-        # Proposta do vídeo longo: a prévia é o trecho bruto inteiro (com o que
-        # vai sair); os tempos ficam no da live, para a produção cortar dela.
+        # Proposta do vídeo longo: a prévia é um corte inicial de ~15 s com a
+        # melhor parte (escolhida pelo JEV), sem legenda; os tempos ficam no da
+        # live, para a produção cortar dela.
+        previa = _previa_longo(tid, bloco, video, jev)
         novos.append({"id": bloco["id"], "tipo": "longo", "status": "proposta", "canal": t["canal"],
+                      "previa_inicio": previa[0] if previa else None,
+                      "previa_fim": previa[1] if previa else None,
+                      "gancho_fim": previa[2] if previa else None,
                       "titulo_publicacao": bloco.get("titulo") or bloco.get("tema", "")[:100],
                       "gancho": bloco.get("titulo", ""), "titulos": bloco.get("titulos", []),
                       "motivo_titulo": bloco.get("motivo_titulo", ""), "tema": bloco.get("tema", ""),
@@ -642,6 +648,37 @@ def processar_trabalho(t: dict) -> None:
                 tt.setdefault("cortes", []).extend(novos)
         salvar_trabalhos(trabalhos)
     _registrar(tid, f"{len(novos)} proposta(s) prontas para escolher")
+
+
+def _previa_longo_arquivo(tid: str, cid: str) -> Path:
+    return _pasta(tid) / "cortes" / f"{Path(cid).name}_previa.mp4"
+
+
+def _previa_longo(tid: str, bloco: dict, live: Path, jev) -> tuple[float, float, float] | None:
+    """Corte inicial do vídeo longo: ~15 s com a melhor parte do trecho, que o
+    JEV escolhe entre janelas candidatas (sem a legenda). Sem JEV ou se ele
+    falhar, fica a primeira janela. Qualquer erro aqui só deixa a proposta sem
+    esse corte (a prévia cai no trecho bruto)."""
+    destino = _previa_longo_arquivo(tid, bloco["id"])
+    try:
+        segs = json.loads((_pasta(tid) / "fase1" / "transcricao.json").read_text(encoding="utf-8"))["segmentos"]
+        janelas = video_longo.janelas_previa(segs, bloco["inicio"], bloco["fim"], bloco.get("remover", []))
+        if not janelas:
+            return None
+        escolhida = janelas[0]
+        if jev is not None and len(janelas) > 1:
+            try:
+                escolhida = jev.melhor_previa(janelas, bloco.get("tema", ""), bloco.get("comentario", ""))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("   prévia do longo: JEV falhou (%s); fica a primeira janela", exc)
+        video_longo.cortar_previa(live, escolhida["inicio"], escolhida["fim"], destino)
+        _registrar(tid, f"   prévia de {bloco['id']}: {escolhida['inicio']:.0f}s–{escolhida['fim']:.0f}s da live "
+                        f"(melhor de {len(janelas)} janelas)")
+        return escolhida["inicio"], escolhida["fim"], escolhida["gancho_fim"]
+    except Exception as exc:  # noqa: BLE001
+        destino.unlink(missing_ok=True)
+        _registrar(tid, f"   prévia de {bloco['id']} falhou ({exc}) — fica o trecho bruto")
+        return None
 
 
 def _fonte(tid: str, cid: str) -> Path:
@@ -791,11 +828,51 @@ def _produzir_longo(tid: str, cid: str, c: dict, t: dict) -> dict:
     canal_corte = c.get("canal") or t.get("canal")
     perfil_nome = (c.get("perfil") or carregar_config().get("canal_perfil", {}).get(canal_corte) or t["perfil"])
     _registrar(tid, f"   visual: {perfil_nome} (canal {canal_corte or '—'}), moldura do vídeo longo")
+    gancho = None       # abertura em P&B: a melhor parte da prévia (tempo da live, como inicio/fim)
+    if live is not None and c.get("previa_inicio") is None:
+        # proposta de antes do corte inicial: acha a melhor parte agora
+        jev, _ = _jev_e_config(tid)
+        previa = _previa_longo(tid, {**c, "id": cid}, live, jev)
+        if previa:
+            c = _atualizar_corte(tid, cid, previa_inicio=previa[0], previa_fim=previa[1], gancho_fim=previa[2]) or c
+    if live is not None and c.get("previa_inicio") is not None and c.get("gancho_fim"):
+        gancho = (c["previa_inicio"], c["gancho_fim"])
     meta = video_longo.produzir(fonte, inicio, fim, remover, perfil_nome, _pasta(tid) / "final" / cid,
-                                c.get("titulo_publicacao") or c.get("gancho") or cid)
+                                c.get("titulo_publicacao") or c.get("gancho") or cid, gancho)
     _registrar(tid, f"   {meta['duracao'] / 60:.1f} min, {meta['remocoes']} remoção(ões), "
                     f"{meta['silencios_cortados']} silêncio(s) longo(s) cortado(s)")
+    try:
+        meta.update(_gerar_thumbs(tid, cid, c, perfil_nome))
+    except Exception as exc:  # noqa: BLE001 — sem thumb o vídeo sai igual (dá para gerar na revisão)
+        _registrar(tid, f"   thumbs falharam ({exc}) — dá para gerar de novo na revisão")
     return meta
+
+
+_THUMBS_AGORA: set[tuple[str, str]] = set()
+
+
+def _gerar_thumbs(tid: str, cid: str, c: dict, perfil_nome: str) -> dict:
+    """3 opções de thumbnail do vídeo longo (thumbnail.py), de prints da live
+    no trecho do vídeo, com a frase saindo da fala de quem aparece (LR-ASD).
+    Devolve os campos para o corte."""
+    entrada = _pasta(tid) / "entrada"
+    live = next((p for p in entrada.glob("*") if p.suffix.lower() in EXTENSOES), None) if entrada.exists() else None
+    if live is not None:
+        fonte, inicio, fim, desloc = live, c["inicio"], c["fim"], 0.0
+    else:   # sem a live: o recorte bruto do trecho, que começa em c["inicio"]
+        fonte = _fonte(tid, cid)
+        inicio, fim, desloc = 0.0, finalizar.duracao_de(fonte), c["inicio"]
+    remover = [(r["inicio"] - desloc, r["fim"] - desloc) for r in c.get("remover", [])]
+    try:
+        segs = json.loads((_pasta(tid) / "fase1" / "transcricao.json").read_text(encoding="utf-8"))["segmentos"]
+    except (OSError, KeyError, ValueError):
+        segs = []
+    contexto = {"titulo": c.get("titulo_publicacao") or "", "tema": c.get("tema") or "",
+                "comentario": c.get("comentario") or ""}
+    thumbs = thumbnail.gerar(fonte, inicio, fim, remover, segs, desloc, _pasta(tid) / "final" / cid,
+                             contexto, perfil_nome)
+    _registrar(tid, "   thumbs: " + " | ".join(x["frase"] for x in thumbs))
+    return {"thumbs": thumbs, "thumb_escolhida": 0, "thumbs_em": datetime.now().isoformat(timespec="seconds")}
 
 
 def _laco() -> None:
@@ -1070,6 +1147,8 @@ def _links_corte(tid: str, c: dict) -> dict:
         links["video"] = base + c["arquivo"]
     if c.get("capa") and c.get("status") == "revisar":
         links["capa"] = base + c["capa"]
+    if c.get("thumbs") and c.get("status") == "revisar":
+        links["thumbs"] = [base + x["arquivo"] for x in c["thumbs"]]
     return links
 
 
@@ -1097,7 +1176,7 @@ def ver_trabalho(tid: str):
         return jsonify({"erro": "Trabalho não existe."}), 404
     campos = ("id", "tipo", "status", "canal", "perfil", "gancho", "comentario", "titulo_publicacao", "duracao", "nota",
               "tipo_abertura", "formato_sugerido", "formato", "formato_pedido", "estilo_legenda", "mensagem",
-              "arquivo_publicador", "enviado_em", "titulos", "tema")
+              "arquivo_publicador", "enviado_em", "titulos", "tema", "thumbs", "thumb_escolhida")
     cortes = [{**{k: c.get(k) for k in campos if c.get(k) is not None}, "links": _links_corte(tid, c)}
               for c in t.get("cortes", [])]
     return jsonify({**_resumo_trabalho(t), "cortes": cortes,
@@ -1231,6 +1310,9 @@ def notas_dos_cortes():
 def previa(tid: str, cid: str):
     """O 16:9 da proposta (Fase 2), para assistir antes de mandar produzir."""
     fonte = _fonte(tid, cid)
+    corte = _previa_longo_arquivo(tid, cid)     # vídeo longo: o corte inicial de ~15 s
+    if corte.exists():
+        fonte = corte
     return send_from_directory(fonte.parent, fonte.name, conditional=True, max_age=0)
 
 
@@ -1249,8 +1331,44 @@ def editar_corte(tid: str, cid: str):
         campos["titulo_editado"] = True
     if "canal" in dados:
         campos["canal"] = str(dados["canal"]).strip()
+    if "thumb" in dados:
+        atual = _corte(tid, cid) or {}
+        try:
+            n = int(dados["thumb"])
+        except (TypeError, ValueError):
+            n = -1
+        if not 0 <= n < len(atual.get("thumbs") or []):
+            return jsonify({"erro": "Essa thumb não existe."}), 400
+        campos["thumb_escolhida"] = n
     c = _atualizar_corte(tid, cid, **campos)
     return jsonify({"ok": True}) if c else (jsonify({"erro": "Corte não existe."}), 404)
+
+
+@app.post("/api/cortes/<tid>/<cid>/thumbs")
+def gerar_thumbs(tid: str, cid: str):
+    """Gera outras 3 thumbs para o vídeo longo em revisão (~1 min, ~US$ 0,01)."""
+    t = next((t for t in carregar_trabalhos() if t["id"] == tid), None)
+    c = next((c for c in (t or {}).get("cortes", []) if c["id"] == cid), None)
+    if c is None:
+        return jsonify({"erro": "Corte não existe."}), 404
+    if c.get("tipo") != "longo" or c.get("status") != "revisar" or not c.get("arquivo"):
+        return jsonify({"erro": "Thumb só para vídeo longo pronto, em revisão."}), 409
+    with _TRAVA:
+        if (tid, cid) in _THUMBS_AGORA:
+            return jsonify({"erro": "As thumbs deste vídeo já estão sendo geradas — aguarde."}), 409
+        _THUMBS_AGORA.add((tid, cid))
+    try:
+        canal = c.get("canal") or t.get("canal")
+        perfil_nome = c.get("perfil") or carregar_config().get("canal_perfil", {}).get(canal) or t["perfil"]
+        campos = _gerar_thumbs(tid, cid, c, perfil_nome)
+    except Exception as exc:  # noqa: BLE001
+        _registrar(tid, f"⚠️ {cid}: thumbs falharam: {exc}")
+        return jsonify({"erro": f"Não consegui gerar as thumbs: {exc}"[:300]}), 502
+    finally:
+        with _TRAVA:
+            _THUMBS_AGORA.discard((tid, cid))
+    _atualizar_corte(tid, cid, **campos)
+    return jsonify({"ok": True, "thumbs": campos["thumbs"]})
 
 
 @app.post("/api/cortes/<tid>/<cid>/descartar")
@@ -1313,6 +1431,109 @@ def produzir(tid: str, cid: str):
     return jsonify({"ok": True})
 
 
+class _CorpoMultipart:
+    """Corpo multipart/form-data que lê o arquivo aos pedaços. O `files=` do
+    requests carrega o arquivo inteiro na memória (e o vídeo longo tem ~2 GB)."""
+
+    def __init__(self, campos: dict, campo_arquivo: str, nome: str, caminho: Path):
+        limite = uuid4().hex
+        self.content_type = f"multipart/form-data; boundary={limite}"
+        cabeca = "".join(f'--{limite}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
+                         for k, v in campos.items())
+        cabeca += (f'--{limite}\r\nContent-Disposition: form-data; name="{campo_arquivo}"; '
+                   f'filename="{nome}"\r\nContent-Type: video/mp4\r\n\r\n')
+        self._cabeca = cabeca.encode("utf-8")
+        self._rodape = f"\r\n--{limite}--\r\n".encode("ascii")
+        self._caminho = caminho
+        self._tamanho = len(self._cabeca) + caminho.stat().st_size + len(self._rodape)
+        self._pos = 0
+        self._arq = None
+
+    def __len__(self) -> int:
+        return self._tamanho
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> bytes:
+        pedaco = self.read(1 << 20)
+        if not pedaco:
+            self.close()
+            raise StopIteration
+        return pedaco
+
+    def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            n = self._tamanho
+        saida = b""
+        if self._pos < len(self._cabeca):
+            saida = self._cabeca[self._pos:self._pos + n]
+            self._pos += len(saida)
+            n -= len(saida)
+        if n > 0 and self._pos < self._tamanho - len(self._rodape):
+            if self._arq is None:
+                self._arq = self._caminho.open("rb")
+            dados = self._arq.read(min(n, self._tamanho - len(self._rodape) - self._pos))
+            self._pos += len(dados)
+            saida += dados
+            n -= len(dados)
+        if n > 0 and self._pos >= self._tamanho - len(self._rodape):
+            resto = self._rodape[self._pos - (self._tamanho - len(self._rodape)):][:n]
+            self._pos += len(resto)
+            saida += resto
+        return saida
+
+    def close(self) -> None:
+        if self._arq is not None:
+            self._arq.close()
+            self._arq = None
+
+
+_ENVIANDO_AGORA: set[tuple[str, str]] = set()     # cortes com upload em andamento para o Publicador
+
+
+def _ja_esta_na_fila(nome: str, canal: str) -> str | None:
+    """Nome do item do Publicador que já é este vídeo (mesmo nome e canal, ainda
+    aguardando e sem dono no Estúdio) ou None. O upload do vídeo longo (~2 GB) pode
+    demorar mais do que o Estúdio espera: o Publicador recebe e põe na fila, mas
+    o Estúdio nunca soube — e o corte ficava em Revisar com o arquivo já lá."""
+    import requests
+    try:
+        itens = requests.get(carregar_config()["publicador_url"] + "/api/estado", timeout=10).json().get("itens", [])
+    except Exception:  # noqa: BLE001
+        return None
+    com_dono = {c.get("arquivo_publicador") for t in carregar_trabalhos() for c in t.get("cortes", [])}
+    base, ext = os.path.splitext(nome)
+    parecido = re.compile(re.escape(base) + r"( \(\d+\))?" + re.escape(ext))
+    for i in itens:
+        if (i.get("canal") == canal and i.get("status") == "aguardando"
+                and i.get("arquivo") not in com_dono and parecido.fullmatch(i.get("arquivo") or "")):
+            return i["arquivo"]
+    return None
+
+
+def _enviar_thumb(tid: str, cid: str, c: dict, arquivo: str) -> None:
+    """Manda a thumb escolhida na revisão para o item do Publicador (que a sobe
+    no YouTube junto com o vídeo). Sem thumb ou com falha, o vídeo sai igual."""
+    import requests
+    thumbs = c.get("thumbs") or []
+    if not thumbs:
+        return
+    try:
+        escolhida = thumbs[int(c.get("thumb_escolhida") or 0)]
+        imagem = _pasta(tid) / "final" / cid / escolhida["arquivo"]
+        base = carregar_config()["publicador_url"]
+        itens = requests.get(base + "/api/estado", timeout=10).json().get("itens", [])
+        item = next(i for i in reversed(itens) if i.get("arquivo") == arquivo)
+        with open(imagem, "rb") as f:
+            r = requests.post(f"{base}/api/itens/{item['id']}/thumb",
+                              files={"thumb": (imagem.name, f, "image/jpeg")}, timeout=60)
+        r.raise_for_status()
+        _registrar(tid, f"   {cid}: thumb {escolhida['arquivo']} enviada ao Publicador")
+    except Exception as exc:  # noqa: BLE001 — o YouTube põe a miniatura automática
+        _registrar(tid, f"⚠️ {cid}: não consegui mandar a thumb ao Publicador ({exc}); o vídeo sai sem ela")
+
+
 @app.post("/api/cortes/<tid>/<cid>/enviar")
 def enviar(tid: str, cid: str):
     """Manda o corte para a fila do Publicador (que publica no YouTube/TikTok)."""
@@ -1327,22 +1548,45 @@ def enviar(tid: str, cid: str):
         return jsonify({"erro": "Escolha o canal antes de enviar."}), 400
     final = _pasta(tid) / "final" / cid / c["arquivo"]
     nome = _nome_arquivo(c.get("titulo_publicacao") or cid)
+    with _TRAVA:
+        if (tid, cid) in _ENVIANDO_AGORA:
+            return jsonify({"erro": "Este corte já está sendo enviado ao Publicador — aguarde."}), 409
+        _ENVIANDO_AGORA.add((tid, cid))
     try:
-        with final.open("rb") as f:
-            r = requests.post(carregar_config()["publicador_url"] + "/api/videos",
-                              data={"canal": c["canal"]}, files={"arquivos": (nome, f, "video/mp4")},
-                              timeout=600)
-        resposta = r.json()
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"erro": f"Publicador fora do ar? {exc}"}), 502
-    if r.status_code != 200 or not resposta.get("adicionados"):
-        return jsonify({"erro": resposta.get("erro") or f"Publicador respondeu {r.status_code}"}), 502
-    _atualizar_corte(tid, cid, status="na_fila", arquivo_publicador=resposta["adicionados"][0],
+        # Se o Publicador já recebeu (envio anterior que o Estúdio não viu terminar), só registra.
+        adicionado = _ja_esta_na_fila(nome, c["canal"])
+        if adicionado:
+            _registrar(tid, f"   {cid}: o Publicador já tinha recebido este vídeo — só atualizei o Cortador")
+        else:
+            try:
+                corpo = _CorpoMultipart({"canal": c["canal"]}, "arquivos", nome, final)
+                try:
+                    r = requests.post(carregar_config()["publicador_url"] + "/api/videos", data=corpo,
+                                      headers={"Content-Type": corpo.content_type}, timeout=(15, 3600))
+                finally:
+                    corpo.close()
+                resposta = r.json()
+            except Exception as exc:  # noqa: BLE001
+                # Timeout/queda depois do upload: o Publicador pode ter terminado de gravar mesmo assim.
+                adicionado = _ja_esta_na_fila(nome, c["canal"])
+                if not adicionado:
+                    return jsonify({"erro": f"Publicador fora do ar? {exc}"}), 502
+                _registrar(tid, f"   {cid}: a resposta do Publicador falhou ({exc}), mas o vídeo chegou na fila")
+            else:
+                if r.status_code != 200 or not resposta.get("adicionados"):
+                    return jsonify({"erro": resposta.get("erro") or f"Publicador respondeu {r.status_code}"}), 502
+                adicionado = resposta["adicionados"][0]
+    finally:
+        with _TRAVA:
+            _ENVIANDO_AGORA.discard((tid, cid))
+    _enviar_thumb(tid, cid, c, adicionado)
+    _atualizar_corte(tid, cid, status="na_fila", arquivo_publicador=adicionado,
                      enviado_em=datetime.now().isoformat(timespec="seconds"))
     _fonte(tid, cid).unlink(missing_ok=True)          # bruto: só servia para a Fase 2/refazer
+    _previa_longo_arquivo(tid, cid).unlink(missing_ok=True)
     _fase2_pronto(tid, cid).unlink(missing_ok=True)   # 16:9 pronto: idem
-    _registrar(tid, f"📤 {cid} foi para a fila do Publicador ({c['canal']}): {resposta['adicionados'][0]}")
-    return jsonify({"ok": True, "arquivo": resposta["adicionados"][0]})
+    _registrar(tid, f"📤 {cid} foi para a fila do Publicador ({c['canal']}): {adicionado}")
+    return jsonify({"ok": True, "arquivo": adicionado})
 
 
 @app.errorhandler(413)
