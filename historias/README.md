@@ -70,6 +70,12 @@ capítulos ("00:00 Nome") vão para `saida/`.
 
 A aba **Configurações** reúne os parâmetros globais: chaves, modelos, formatos (inclusive quantos quadros/imagens cabem numa história), imagens, montagem, Music, Publicador e FFmpeg. Chaves e variáveis de ambiente são gravadas no `.env` (a variável `ESTUDIO_ENV` troca o caminho dele; a primeira gravação de cada execução deixa um `.env.bak`); o resto fica em `dados/configuracoes.json`. A maioria vale na hora; o que precisar de reinício é marcado na tela.
 
+## CTA em vídeo por canal
+
+Cada canal pode ter um vídeo de CTA (.mp4, até 60 s) que entra como **última parte** do vídeo. Envie na tela do canal de histórias (aba Custos e publicação) ou, na página única, na tela do canal de publicação. O arquivo fica em `dados/cta/<canal no Publicador>.mp4` (fora do git); um novo envio substitui o anterior. Nas histórias, o CTA é anexado no fim de `etapa_video`, depois da montagem final (com as imagens já aprovadas). Para o Cortador: `python main.py cta-anexar video.mp4 --canal garras [-o saida.mp4]`, `POST /api/cta/{canal}/anexar` (devolve o vídeo com o CTA) ou `estudio.cta.anexar(video, canal)`. Canal sem CTA: nada muda. Testes: `.venv\Scripts\python -m unittest testes.test_cta`.
+
+O CTA **falado** (campo `cta` na tela do canal, padrão "Siga para mais histórias.") não é colado na fala: vai como instrução no prompt do roteirista (`historia.instrucao_final`, dentro de `sistema_escrita`), e o próprio modelo escreve o convite no fim da narração, na voz da história. Vazio = sem convite. Vale para histórias escritas depois da mudança; testes: `.venv\Scripts\python -m unittest testes.test_cta_roteiro`.
+
 ## API
 
 ```

@@ -11,7 +11,8 @@ canal (moldura.py). O que muda em relação à live:
 - o áudio é nivelado a -14 LUFS (e conferido pelo audio_qa, como nos shorts).
 
 No começo vai um gancho de ~5 s em preto e branco (a melhor parte do vídeo,
-como a abertura dos shorts), colado sem reencode, e no fim o CTA (cta/cta.mp4: voz + música, sem texto).
+como a abertura dos shorts), colado sem reencode, e no fim o CTA: o do canal (aba Canais; cta_cortador.py) ou,
+sem ele, o cta/cta.mp4 global (voz + música, sem texto).
 
 Tudo num passo só do ffmpeg: select/aselect com os pedaços que ficam, a
 moldura por cima e o h264 na placa (NVENC).
@@ -141,29 +142,59 @@ def _fps(arquivo: Path) -> str:
     return r.stdout.strip()
 
 
-def _com_cta(final: Path, png: Path, pasta: Path) -> None:
-    """Cola o CTA (estudio/cta/cta.mp4) no fim do vídeo, dentro da mesma moldura,
-    na taxa de quadros do vídeo, e sem reencodar os 15-20 min."""
+def _tem_audio(arquivo: Path) -> bool:
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type",
+                        "-of", "default=nw=1:nk=1", str(arquivo)], capture_output=True, text=True)
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _com_cta(final: Path, png: Path, pasta: Path, cta: Path = CTA) -> bool:
+    """Cola o CTA (o do canal, ou estudio/cta/cta.mp4) no fim do vídeo, dentro da mesma moldura,
+    na taxa de quadros do vídeo, e sem reencodar os 15-20 min. CTA sem áudio entra com silêncio.
+    Devolve se o CTA entrou."""
     clipe, junto = pasta / "cta.mp4", pasta / "final_cta.mp4"
     try:
+        com_audio = _tem_audio(cta)
         filtro = (f"[0:v]fps={_fps(final)}[_f];" + moldura.filtro("_f", "1:v", "v") + ";"
-                  "[0:a]aresample=48000,aformat=channel_layouts=stereo[a]")
-        _codificar(["ffmpeg", "-y", "-loglevel", "error", "-i", str(CTA), "-loop", "1", "-i", str(png),
-                    "-filter_complex", filtro, "-map", "[v]", "-map", "[a]", "-shortest"], clipe)
+                  f"[{0 if com_audio else 2}:a]aresample=48000,aformat=channel_layouts=stereo[a]")
+        # Sem faixa de áudio: o silêncio (anullsrc) e a moldura em loop não têm fim, então o `-shortest` sozinho não
+        # encerra; a saída é limitada à duração do CTA.
+        silencio = [] if com_audio else ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+        limite = [] if com_audio else ["-t", f"{_duracao(cta):.3f}"]
+        _codificar(["ffmpeg", "-y", "-loglevel", "error", "-i", str(cta), "-loop", "1", "-i", str(png), *silencio,
+                    "-filter_complex", filtro, "-map", "[v]", "-map", "[a]", "-shortest", *limite], clipe)
         renderiza.concatenar([final, clipe], junto)
         junto.replace(final)
+        return True
     except Exception as exc:  # noqa: BLE001 — sem o CTA o vídeo sai igual
         log.warning("   CTA falhou (%s); vídeo sem ele", exc)
         junto.unlink(missing_ok=True)
+        return False
     finally:
         clipe.unlink(missing_ok=True)
 
 
+def _cta_do_canal(canal: str | None) -> tuple[Path | None, str]:
+    """(arquivo, origem) do CTA do vídeo longo: o do canal no Publicador, se ele enviou um (aba Canais); senão o
+    cta/cta.mp4 global; senão nenhum. A origem ("canal" ou "global") vai para o log e para os metadados."""
+    try:
+        import cta_cortador
+        do_canal = cta_cortador.caminho_cta(canal)
+    except Exception as exc:  # noqa: BLE001 — sem achar o do canal, vale o global
+        log.warning("   CTA do canal indisponível (%s); usando o global", exc)
+        do_canal = None
+    if do_canal is not None:
+        return do_canal, "canal"
+    return (CTA, "global") if CTA.exists() else (None, "")
+
+
 def produzir(fonte: Path, inicio: float, fim: float, remover: list[dict], perfil_nome: str,
-             pasta: Path, titulo: str, gancho: tuple[float, float] | None = None) -> dict:
+             pasta: Path, titulo: str, gancho: tuple[float, float] | None = None,
+             canal: str | None = None) -> dict:
     """`fonte` é o vídeo da live inteira (ou o recorte bruto, com `inicio`=0);
     `inicio`/`fim` e as remoções estão no tempo dela. Grava <pasta>/final.mp4
-    e devolve os metadados para a tela de revisão."""
+    e devolve os metadados para a tela de revisão. `canal`: nome no Publicador,
+    para o CTA em vídeo do canal (reserva: o cta.mp4 global)."""
     pasta.mkdir(parents=True, exist_ok=True)
     duracao = fim - inicio
     rel = [(max(0.0, r["inicio"] - inicio), min(duracao, r["fim"] - inicio)) for r in remover]
@@ -207,8 +238,11 @@ def produzir(fonte: Path, inicio: float, fim: float, remover: list[dict], perfil
             (pasta / "abertura.mp4").unlink(missing_ok=True)
             (pasta / "final_gancho.mp4").unlink(missing_ok=True)
 
-    if CTA.exists():
-        _com_cta(final, png, pasta)
+    cta, origem_cta = _cta_do_canal(canal)
+    cta_usado = ""
+    if cta is not None:
+        log.info("   CTA %s: %s", "do canal " + str(canal) if origem_cta == "canal" else "global", cta.name)
+        cta_usado = origem_cta if _com_cta(final, png, pasta, cta) else ""
 
     dur_final = _duracao(final)
     capa = pasta / "capa.jpg"
@@ -226,4 +260,5 @@ def produzir(fonte: Path, inicio: float, fim: float, remover: list[dict], perfil
         "silencios_cortados": len(longos),
         "remocoes": len(rel),
         "audio": audio,
+        "cta": cta_usado,
     }

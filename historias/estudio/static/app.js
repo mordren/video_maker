@@ -635,6 +635,63 @@ async function telaCanais() {
 const normal = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const linkPublicador = url => String(url || '').replace(/\/\/(127\.0\.0\.1|localhost)(?=[:/]|$)/, '//' + location.hostname);
 
+/* ------------------------------------------------------------------ CTA em vídeo (um por canal do Publicador) */
+const fmtDur = s => s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')} min` : `${Number(s).toFixed(1).replace('.', ',')} s`;
+const fmtMB = b => b < 1024 * 1024 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1024 / 1024).toFixed(1).replace('.', ',') + ' MB';
+function enviarCta(canal, arquivo, onProgresso) {
+  return new Promise((ok, falha) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/cta/' + encodeURIComponent(canal));
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgresso(e.loaded / e.total); };
+    x.onerror = () => falha(new Error('Falha de rede no envio do CTA.'));
+    x.onload = () => {
+      let j = {}; try { j = JSON.parse(x.responseText); } catch {}
+      if (x.status < 300) ok(j); else falha(new Error(j.detail || 'HTTP ' + x.status));
+    };
+    const fd = new FormData(); fd.append('arquivo', arquivo); x.send(fd);
+  });
+}
+// Preenche `box` com o CTA do canal: status, envio (com progresso), prévia e remoção. `canal` = nome no Publicador.
+async function ctaMontar(box, canal) {
+  const desenhar = async () => {
+    let i;
+    try { i = await api('/api/cta/' + encodeURIComponent(canal)); }
+    catch (e) { box.innerHTML = `<h3 style="margin-top:0">CTA em vídeo</h3><p class="small" style="color:var(--err)">${esc(e.message)}</p>`; return; }
+    box.innerHTML = `<h3 style="margin-top:0">CTA em vídeo <span class="badge">${esc(canal)}</span> ${i.existe ? '<span class="badge ok">enviado</span>' : '<span class="badge">nenhum</span>'}</h3>
+      <p class="small">Vídeo curto (.mp4, até 60 s) que entra como <b>última parte</b> de todo vídeo deste canal: nos cortes, quando o Cortador monta, e nas histórias, depois que as imagens são aprovadas e o vídeo é montado. Ele é ajustado ao vídeo (tamanho, fps e áudio). Sem CTA enviado, nada muda.</p>
+      ${i.existe ? `<div class="small" style="margin:8px 0"><b>${esc(i.nome_original)}</b> · ${fmtDur(i.duracao_s)} · ${i.largura}×${i.altura}${i.fps ? ' · ' + esc(String(i.fps).replace(/^(\d+)\/1$/, '$1')) + ' fps' : ''} · ${i.audio ? 'com áudio' : 'sem áudio (entra silêncio)'} · ${fmtMB(i.tamanho)} · enviado em ${esc(i.enviado_em || '?')}</div>` : ''}
+      <div class="row" style="align-items:center"><input type="file" accept=".mp4,video/mp4" data-cta-arq>
+        <button class="fix main" data-cta-enviar>${i.existe ? 'Trocar o CTA' : 'Enviar CTA'}</button>
+        ${i.existe ? '<button class="fix" data-cta-remover>Remover</button>' : ''}</div>
+      <div class="barra" data-cta-barra hidden><div style="width:0"></div></div><div class="small" data-cta-msg></div>
+      ${i.existe ? `<video controls preload="metadata" src="${esc(i.arquivo_url)}" style="max-height:340px;margin-top:10px"></video>` : ''}`;
+    const msg = $('[data-cta-msg]', box), barra = $('[data-cta-barra]', box);
+    $('[data-cta-enviar]', box).onclick = async ev => {
+      const f = $('[data-cta-arq]', box).files[0];
+      if (!f) return toast('Escolha um arquivo .mp4 primeiro.', true);
+      if (!/\.mp4$/i.test(f.name)) return toast('O CTA precisa ser um arquivo .mp4.', true);
+      if (i.existe && !confirm(`Trocar o CTA de ${canal}? O atual será substituído.`)) return;
+      ev.target.disabled = true; barra.hidden = false;
+      try {
+        await enviarCta(canal, f, p => {
+          $('div', barra).style.width = Math.round(p * 100) + '%';
+          msg.textContent = p < 1 ? `Enviando... ${Math.round(p * 100)}%` : 'Conferindo o vídeo...';
+        });
+        toast('CTA de ' + canal + ' enviado.');
+        desenhar();
+      } catch (e) { barra.hidden = true; msg.textContent = ''; ev.target.disabled = false; toast(e.message, true); }
+    };
+    const rem = $('[data-cta-remover]', box);
+    if (rem) rem.onclick = async () => {
+      if (!confirm(`Remover o CTA de ${canal}? Os próximos vídeos saem sem ele.`)) return;
+      await acao(() => api('/api/cta/' + encodeURIComponent(canal), {method: 'DELETE'}), 'CTA removido.');
+      desenhar();
+    };
+  };
+  box.innerHTML = '<div class="small">Lendo o CTA...</div>';
+  return desenhar();
+}
+
 function blocoCanaisPublicacao(pub, historias) {
   if (!pub || pub.erro) return `<div class="panel bad">Canais de publicação: ${esc(pub ? pub.erro : 'sem resposta')}</div>`;
   const cards = pub.canais.map(c => {
@@ -700,7 +757,9 @@ async function telaCanalPub(nome) {
       : `<p class="small">${c.no_publicador ? 'Sem configuração de postagem lida.' : 'Este canal não está no Publicador.'}</p>`}
     <p class="small">Intervalo, privacidade, descrição e TikTok se mudam no <a href="${esc(pubUrl)}" target="_blank" rel="noopener">Publicador ↗</a>.</p>
     ${historias.length ? `<p class="small">Canais de história que postam aqui: ${historias.map(h => `<a href="#/canal/${h.id}">${esc(h.nome)}</a>`).join(', ')}</p>` : ''}
-  </div>`;
+  </div>
+  <div class="panel" id="ctaBox"></div>`;
+  ctaMontar($('#ctaBox'), nome);
   $('#pSalvar').onclick = async () => {
     const corpo = {nome_exibicao: $('#pNome').value, descricao: $('#pDesc').value, nicho: $('#pNicho').value,
       publico: $('#pPublico').value, tom: $('#pTom').value, fontes: $('#pFontes').value,
@@ -816,7 +875,7 @@ async function telaCanal(id) {
         <button class="fix" id="cOuvir">Ouvir</button></div>
       <div data-instr><label>Como falar (instrução para o Qwen)</label><input type="text" id="cInstr" value="${esc(cfg.voz.instrucoes || '')}" placeholder="ex.: voz grave e calma, ritmo lento, clima de suspense">
         <label>A mais nas cenas de tensão 4 e 5</label><input type="text" id="cInstrAlta" value="${esc(cfg.voz.instrucoes_tensao_alta || '')}" placeholder="ex.: mais tenso, quase sussurrando"></div>
-      <label>CTA no fim do vídeo (4 ou 5 palavras, dito pelo narrador depois da última frase; vazio = sem CTA)</label>
+      <label>CTA falado (4 ou 5 palavras): vai como instrução no prompt do roteirista, que escreve o convite no fim da narração, na voz da história; vale para as histórias escritas depois de salvar; vazio = sem CTA. O CTA em vídeo (.mp4) se envia na aba Custos e publicação.</label>
       <input type="text" id="cCta" value="${esc(cfg.cta || '')}" placeholder="ex.: Siga para mais histórias.">
       <div class="small" data-qwen style="margin-top:6px">O Qwen gera a narração cena por cena, então cada imagem entra exatamente quando a fala dela começa. Velocidade no formato -6% ou +5%. A prévia custa cerca de US$ 0,0015 no OpenRouter.</div>
       <audio id="cAudio" controls style="width:100%;margin-top:8px;display:none"></audio>
@@ -858,9 +917,12 @@ async function telaCanal(id) {
         <div><label>Teto do laço da história (US$)</label><input type="number" step="0.005" id="cTetoLaco" value="${cfg.teto_laco_usd ?? ''}" placeholder="${statusSis ? statusSis.teto_laco : '0.01'} (padrão)"></div>
         <div><label>Canal no Publicador</label><input type="text" id="cPubCanal" value="${esc(cfg.publicador_canal || '')}" placeholder="nome do canal lá"></div></div>
       <div class="small" style="margin-top:8px">O laço (ganchos, escrita, Jev e reescritas) para quando gasta o teto e fica com a melhor versão. O orçamento por vídeo inclui o laço, as imagens e a narração.</div>
-    </div></section>`;
+    </div>
+    ${id ? '<div class="panel" id="ctaBox"></div>' : '<div class="panel small">Salve o canal primeiro para enviar o CTA em vídeo.</div>'}</section>`;
     mostrarSecao();
     ligar();
+    // O CTA é do canal no Publicador salvo (ou do slug, se o campo estiver vazio); ele serve aos cortes e às histórias.
+    if (id && $('#ctaBox')) ctaMontar($('#ctaBox'), ((cfg.publicador_canal || '').trim() || c.slug || '').toLowerCase());
   };
   const mostrarSecao = () => {
     $$('#cTabs button').forEach(b => b.classList.toggle('on', b.dataset.sec === secao));
@@ -1367,6 +1429,15 @@ async function telaGerador() {
 let abaConfig = UNIFICADO ? 'c_acesso' : 'acesso';
 const BASE_HIST = '/api/configuracoes', BASE_CORT = '/api/estudio/configuracoes';
 
+// O que o usuário cola é muitas vezes a linha inteira da célula do Colab: fica só o primeiro link, sem barra nem pontuação no fim.
+// Devolve '' para campo vazio e null quando há texto mas nenhum link.
+function extrairLinkComfy(texto) {
+  texto = (texto || '').trim();
+  if (!texto) return '';
+  const m = texto.match(/https?:\/\/\S+/i);
+  return m ? m[0].replace(/[\s.,;:!?)\]}"'>]+$/, '').replace(/\/+$/, '') : null;
+}
+
 async function telaConfiguracoes() {
   // Página única: os grupos do Cortador (Flask) vêm antes dos das Histórias (este serviço); cada campo sabe
   // para onde salvar. As chaves do Cortador chegam com o prefixo "c:".
@@ -1444,11 +1515,22 @@ async function telaConfiguracoes() {
         ${fmts.map(f => `<td>${celula(campos[`FORMATOS.${f}.${l.campo}`])}</td>`).join('')}</tr>`).join('')}</table>`;
   };
   const idTeste = (g, t) => `${g.id}:${t.servico}`;
+  // Em Imagens, o link do ComfyUI ganha uma caixa própria no topo (salva e testa de uma vez); a linha comum de COMFY_URL some.
+  const temCaixaComfy = g => g.campos.some(c => c.chave === 'COMFY_URL');
+  const caixaComfy = g => `<div class="panel" style="background:transparent">
+      <label for="cfComfyUrl">Link do ComfyUI (o que a célula do Colab imprime)</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="cfComfyUrl" style="flex:1;min-width:280px" placeholder="https://xxxx.trycloudflare.com" spellcheck="false" value="${esc(emUso(campos.COMFY_URL))}">
+        <button type="button" id="cfComfySalvar" class="main">Salvar e testar</button>
+      </div>
+      <p class="small" style="margin-bottom:4px">Pode colar a linha inteira do Colab. Link respondendo: as imagens saem do ComfyUI; senão, pela API (Pollinations).</p>
+      <div id="cfComfyRes" class="small"></div></div>`;
   const corpoGrupo = g => `<section data-grupo="${g.id}" ${g.id === abaConfig ? '' : 'hidden'}>
     <div class="panel"><p class="small" style="margin-top:0">${g.lado ? `<b>${esc(g.lado)}</b> · ` : ''}${esc(g.descricao)}</p>
+    ${temCaixaComfy(g) ? caixaComfy(g) : ''}
     ${g.testes.length ? `<div class="row" style="align-items:center;margin-bottom:10px">${g.testes.map(t =>
       `<div class="fix"><button type="button" data-testar="${esc(idTeste(g, t))}">${esc(t.rotulo)}</button><span class="small cfg-res" data-res="${esc(idTeste(g, t))}">usa o que está salvo</span></div>`).join('')}</div>` : ''}
-    ${g.id === 'formatos' ? tabelaFormatos(g) : `<div class="cfg-grade">${g.campos.map(bloco).join('')}</div>`}</div></section>`;
+    ${g.id === 'formatos' ? tabelaFormatos(g) : `<div class="cfg-grade">${g.campos.filter(c => !(temCaixaComfy(g) && c.chave === 'COMFY_URL')).map(bloco).join('')}</div>`}</div></section>`;
   const abas = lado => grupos.filter(g => g.lado === lado).map(g => `<button data-g="${g.id}" class="${g.id === abaConfig ? 'on' : ''}">${esc(g.titulo)}</button>`).join('');
   const lados = [...new Set(grupos.map(g => g.lado))];
   const arquivos = [cort && !cort.erro ? `Cortador: chaves em <code>${esc(cort.env_arquivo)}</code>, o resto em <code>${esc(cort.json_arquivo)}</code> (só o que difere dos YAML do repositório)` : '',
@@ -1515,6 +1597,28 @@ async function telaConfiguracoes() {
     } catch (e) { res.className = 'small cfg-res err'; res.textContent = e.message; }
     finally { b.disabled = false; }
   });
+  const gComfy = grupos.find(temCaixaComfy);
+  if (gComfy) {
+    const res = $('#cfComfyRes'), entradaUrl = $('#cfComfyUrl');
+    const mostrar = (ok, rotulo, texto) => { res.innerHTML = `<span class="badge ${ok ? 'ok' : 'err'}">${esc(rotulo)}</span> ${esc(texto)}`; };
+    const testarComfy = async () => {
+      const r = await api(`${gComfy.base}/testar/comfy`, {method: 'POST'});
+      mostrar(r.ok, r.ok ? 'conectado' : 'sem conexão', r.mensagem);
+    };
+    if (entradaUrl.value.trim()) { res.textContent = 'Testando...'; testarComfy().catch(err => { res.textContent = err.message; }); }
+    $('#cfComfySalvar').onclick = async () => {
+      const url = extrairLinkComfy(entradaUrl.value);
+      if (url === null) return mostrar(false, 'sem link', 'Não achei um link (https://...) no que foi colado.');
+      const b = $('#cfComfySalvar'); b.disabled = true;
+      try {
+        await acao(() => api(gComfy.base, {method: 'PUT', body: {COMFY_URL: url}}), url ? 'Link salvo.' : 'Link removido.');
+        entradaUrl.value = url;
+        if (!url) return mostrar(false, 'sem link', 'As imagens vão pela API (Pollinations).');
+        res.textContent = 'Testando...';
+        await testarComfy();
+      } catch (err) { res.textContent = err.message; } finally { b.disabled = false; }
+    };
+  }
   $('#kSalvar').onclick = async () => {
     const mud = mudancas();
     if (!Object.keys(mud).length) return toast('Nada mudou.');
@@ -1555,7 +1659,7 @@ async function telaTesteComfy() {
         <input id="tcUrl" style="flex:1;min-width:280px" placeholder="https://xxxx.trycloudflare.com" value="${esc(e.url)}">
         <button id="tcSalvar" class="main">Salvar e testar</button>
       </div>
-      <p class="small">Workflow: <b>${esc(e.workflow)}</b> · ${e.megapixels} MP. Salvar grava COMFY_URL; o motor de imagem dos vídeos continua como está nas Configurações.</p>
+      <p class="small">Workflow: <b>${esc(e.workflow)}</b> · saída ${e.megapixels} MP · referências ${e.megapixels_ref} MP. Salvar grava COMFY_URL; o motor de imagem dos vídeos continua como está nas Configurações.</p>
       <div id="tcConexao" class="small"></div>
     </div>
     <div class="panel">
@@ -1563,10 +1667,13 @@ async function telaTesteComfy() {
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
         <div style="flex:1;min-width:240px"><label>História</label><select id="tcProj">${opcoesProj}</select></div>
         <div style="flex:1;min-width:240px"><label>Cena</label><select id="tcCena"></select></div>
-        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tcRefazer"> Refazer fichas e placa</label>
-        <button id="tcGerar" class="gold">Gerar teste</button>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="tcRefazer"> Refazer fichas e placas</label>
+        <button id="tcGerar" class="gold">Gerar esta cena</button>
+        <button id="tcTodas" class="main">Gerar a história inteira</button>
+        <button id="tcParar" hidden>Parar</button>
       </div>
-      <p class="small">Gera a ficha de cada pessoa da cena, a placa do lugar (se houver) e a cena usando essas imagens como referência. As fichas ficam guardadas: testar outra cena com as mesmas pessoas só gera a cena.</p>`
+      <p class="small">Gera a ficha de cada pessoa da cena, a placa do lugar (se houver) e a cena usando essas imagens como referência. As fichas ficam guardadas: testar outra cena com as mesmas pessoas só gera a cena.</p>
+      <p class="small"><b>História inteira:</b> do jeito do vídeo, com o workflow de uma imagem chamado uma vez por imagem: primeiro as bases (fichas e placas), depois cada cena com as bases como referência. Não mexe no projeto; tudo fica na pasta teste_comfy dele. Parar termina a imagem que está no Comfy e para.</p>`
       : '<p>Nenhuma história escrita ainda. Crie uma em Histórias e volte aqui.</p>'}
     </div>
     <div id="tcSaida"></div>`;
@@ -1577,7 +1684,9 @@ async function telaTesteComfy() {
   };
   if (e.url) conexao().catch(() => {});
   $('#tcSalvar').onclick = async () => {
-    const url = $('#tcUrl').value.trim().replace(/\/+$/, '');
+    const url = extrairLinkComfy($('#tcUrl').value);
+    if (url === null) { $('#tcConexao').textContent = 'Não achei um link (https://...) no que foi colado.'; return; }
+    $('#tcUrl').value = url;
     await acao(() => api('/api/configuracoes', {method: 'PUT', body: {COMFY_URL: url}}), url ? 'Link salvo.' : 'Link removido.');
     $('#tcConexao').textContent = 'Testando...';
     await conexao().catch(err => { $('#tcConexao').textContent = err.message; });
@@ -1591,17 +1700,31 @@ async function telaTesteComfy() {
   $('#tcProj').onchange = cenas; cenas();
 
   const desenhar = j => {
-    const passos = j.passos || [];
+    const passos = j.passos || [], log = j.log || [];
+    const agora = Date.now() / 1000;
+    const caixa = document.querySelector('#tcLog');
+    // Quem estava lendo o log mais acima não é puxado para o fim a cada atualização.
+    const noFim = !caixa || caixa.scrollTop + caixa.clientHeight >= caixa.scrollHeight - 30;
+    const abertos = [...document.querySelectorAll('#tcSaida details[open]')].map(d => d.dataset.id);
     $('#tcSaida').innerHTML = (j.estado === 'erro' ? `<div class="panel bad">${esc(j.erro)}</div>` : '') +
-      (j.estado === 'gerando' ? '<p class="small">Gerando no Comfy... cada imagem leva alguns minutos na T4.</p>' : '') +
-      `<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">` + passos.map(p => `
+      (j.estado === 'gerando' ? '<p class="small">Gerando no Comfy... cada imagem leva perto de um minuto na T4 (mais na primeira, que carrega o modelo).</p>' : '') +
+      `<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">` + passos.map((p, i) => `
         <div class="panel" style="width:300px;margin:0">
           <b>${esc(p.rotulo)}</b>
           ${p.arquivo ? `<img data-zoom src="${p.arquivo}" style="width:100%;border-radius:6px;margin-top:8px;cursor:zoom-in">`
             : p.status === 'erro' ? `<p class="bad">${esc(p.erro)}</p>` : '<div class="spin"></div>'}
-          <p class="small">${p.segundos != null ? p.segundos + ' s' : ''}</p>
-          <details><summary class="small">prompt</summary><p class="small">${esc(p.prompt)}</p></details>
-        </div>`).join('') + '</div>';
+          <p class="small">${p.status === 'gerando' ? `<b>${esc(p.progresso || '')}</b> · ${Math.round(agora - (p.inicio || agora))} s`
+            : p.segundos != null ? p.segundos + ' s' : ''}</p>
+          <details data-id="prompt${i}"${abertos.includes('prompt' + i) ? ' open' : ''}><summary class="small">prompt</summary><p class="small">${esc(p.prompt)}</p></details>
+        </div>`).join('') + '</div>' +
+      (log.length ? `<div class="panel" style="margin-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><b>Log</b>
+          <span class="small">${log.length} linha(s) · também no servidor: journalctl --user -u videomaker-historias -f</span></div>
+        <div id="tcLog" class="log" style="max-height:340px;margin-top:8px">${log.map(l =>
+          `<div class="${/ERRO|erro/.test(l.texto) ? 'erro' : ''}"><time>${esc(l.hora)}</time>${l.passo ? `<b>${esc(l.passo)}</b> · ` : ''}${esc(l.texto)}</div>`).join('')}</div>
+      </div>` : '');
+    const nova = document.querySelector('#tcLog');
+    if (nova && noFim) nova.scrollTop = nova.scrollHeight;
   };
   const acompanhar = () => {
     clearInterval(timer);
@@ -1610,18 +1733,28 @@ async function telaTesteComfy() {
       const j = await api('/api/teste-comfy/progresso').catch(() => null);
       if (!j) return;
       desenhar(j);
-      if (j.estado !== 'gerando') { clearInterval(timer); timer = null; $('#tcGerar').disabled = false; }
-    }, 3000);
+      if (j.estado !== 'gerando') { clearInterval(timer); timer = null; ocupado(false); }
+    }, 2000);
   };
-  $('#tcGerar').onclick = async () => {
-    $('#tcGerar').disabled = true;
+  const ocupado = sim => {
+    $('#tcGerar').disabled = $('#tcTodas').disabled = sim;
+    $('#tcParar').hidden = !sim; $('#tcParar').disabled = false;
+  };
+  const gerar = async todas => {
+    ocupado(true);
     try {
       const j = await acao(() => api('/api/teste-comfy/gerar', {method: 'POST', body: {
-        projeto_id: +$('#tcProj').value, cena: +$('#tcCena').value, refazer_fichas: $('#tcRefazer').checked}}));
+        projeto_id: +$('#tcProj').value, cena: +$('#tcCena').value, refazer_fichas: $('#tcRefazer').checked, todas}}));
       desenhar(j); acompanhar();
-    } catch { $('#tcGerar').disabled = false; }
+    } catch { ocupado(false); }
   };
-  if (e.job && e.job.estado) { desenhar(e.job); if (e.job.estado === 'gerando') { $('#tcGerar').disabled = true; acompanhar(); } }
+  $('#tcGerar').onclick = () => gerar(false);
+  $('#tcTodas').onclick = () => gerar(true);
+  $('#tcParar').onclick = async () => {
+    $('#tcParar').disabled = true;
+    await acao(() => api('/api/teste-comfy/parar', {method: 'POST'}), 'Para depois da imagem atual.').catch(() => {});
+  };
+  if (e.job && e.job.estado) { desenhar(e.job); if (e.job.estado === 'gerando') { ocupado(true); acompanhar(); } }
 }
 
 /* ------------------------------------------------------------------ início */

@@ -15,7 +15,7 @@ import random
 import subprocess
 from pathlib import Path
 
-from . import config, db, efeitos, historia, narracao
+from . import config, cta, db, efeitos, historia, narracao
 
 
 class ErroMontagem(Exception):
@@ -163,6 +163,38 @@ def montar(projeto: dict, canal: dict, h: dict, narr: dict) -> Path:
                                                                 "extra": c.get("extra")} for c in cenas]},
                                                     ensure_ascii=False, indent=1), encoding="utf-8")
     return saida
+
+
+def anexar_cta(projeto: dict, canal: dict, video: Path) -> dict | None:
+    """Acrescenta o CTA em vídeo do canal como ÚLTIMA parte do vídeo já montado (troca o arquivo no lugar).
+
+    Chamado uma vez, por pipeline.etapa_video, depois da passada final (as imagens já foram aprovadas). Canal sem CTA:
+    não faz nada. Falha: avisa no log do projeto e o vídeo segue sem CTA (nunca derruba o fluxo). Vídeo que já recebeu
+    o CTA não recebe de novo (ver cta.anexar). Devolve o resultado de cta.anexar, ou None se não houve tentativa."""
+    pid = projeto["id"]
+    chave = cta.chave_do_canal(canal)
+    if not chave or not cta.existe(chave):
+        return None
+    fmt = config.FORMATOS.get(canal["formato"], config.FORMATOS["short"])
+    try:
+        r = cta.anexar(video, chave, crf=fmt["crf"], maxrate=fmt["maxrate"])
+    except Exception as e:  # noqa: BLE001 - qualquer falha entrega o vídeo sem CTA
+        db.evento(pid, f"CTA em vídeo do canal \"{chave}\" NÃO foi anexado; o vídeo segue sem ele. Motivo: {e}", "aviso")
+        return {"anexado": False, "motivo": "erro", "erro": str(e)}
+    if r["anexado"]:
+        db.evento(pid, f"CTA em vídeo do canal \"{chave}\" anexado ao fim: {r['duracao_antes']:.1f} s + "
+                       f"{r['duracao_cta']:.1f} s = {r['duracao_depois']:.1f} s"
+                       f"{' (CTA sem áudio: entrou silêncio)' if r['cta_sem_audio'] else ''}.")
+        arq = video.with_name("montagem.json")
+        try:
+            dados = json.loads(arq.read_text(encoding="utf-8"))
+            dados["cta_video"] = {k: r[k] for k in ("canal", "duracao_antes", "duracao_cta", "duracao_depois")}
+            arq.write_text(json.dumps(dados, ensure_ascii=False, indent=1), encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+    elif r["motivo"] == "ja_anexado":
+        db.evento(pid, f"O vídeo já tinha o CTA do canal \"{chave}\"; não foi acrescentado de novo.", "aviso")
+    return r
 
 
 def testar_efeito(nome: str, imagem: Path, destino: Path, formato: str = "short", tensao: int = 3, dur: float = 5.0):

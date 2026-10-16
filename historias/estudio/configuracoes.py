@@ -111,7 +111,7 @@ def _v_workflow(c, v):
         caminho = _cfg().COMFY_PASTA / (v if v.endswith(".json") else f"{v}.json")
     if not caminho.is_file():
         raise ValueError(f"{_nome(c)}: não achei o workflow {caminho}. Use o nome de um arquivo de estudio/comfy "
-                         "(ex.: qwen_edit, kontext) ou o caminho completo de um JSON.")
+                         "(ex.: kontext, qwen_edit) ou o caminho completo de um JSON.")
 
 
 def _v_raiz(c, v):
@@ -120,7 +120,7 @@ def _v_raiz(c, v):
 
 
 def _sugestoes_workflow() -> list[str]:
-    return sorted(p.stem for p in _cfg().COMFY_PASTA.glob("*.json"))
+    return sorted(p.stem for p in _cfg().COMFY_PASTA.glob("*.json") if not p.stem.startswith("teste_"))
 
 
 def _opcoes_movimento() -> list[tuple[str, str]]:
@@ -223,9 +223,9 @@ def _montar() -> list[Grupo]:
                      _env("MODELO_TEXTO", "Modelo de texto (OpenRouter)", "texto", "deepseek/deepseek-v4.1-flash",
                           "Só vale quando o provedor do texto é o OpenRouter.", attr="MODELO_TEXTO",
                           validar=_v_modelo),
-                     _env("RACIOCINIO_TAREFAS", "Etapas com raciocínio (thinking)", "texto", "biblia,narrativa,reescrita",
+                     _env("RACIOCINIO_TAREFAS", "Etapas com raciocínio (thinking)", "texto", "narrativa,reescrita",
                           "Etapas do texto que pensam antes de responder, separadas por vírgula; nenhuma = desligado, "
-                          "todas = todas as etapas. Etapas: biblia, ganchos, narrativa, reescrita, decupagem, prompts_cena, humanizer, "
+                          "todas = todas as etapas. Etapas: ganchos, narrativa, reescrita, decupagem, prompts_cena, humanizer, "
                           "sugestao_canal. Mais lento e com mais tokens de saída.", attr="RACIOCINIO_TAREFAS",
                           aplicar=_aplicar_raciocinio),
                      _env("MODELO_JUIZ", "Modelo do juiz", "texto", "typesafe/jev-1.13",
@@ -275,20 +275,27 @@ def _montar() -> list[Grupo]:
                      _campos_formatos())
 
     imagens = Grupo("imagens", "Imagens",
-                    "Motor de imagem (Pollinations ou ComfyUI) e como ele é chamado. Motor, URL e workflow são relidos "
-                    "a cada imagem: trocar a URL do túnel do Colab não exige reiniciar.",
-                    [_env("MOTOR_IMAGEM", "Motor de imagem", "escolha", "pollinations",
-                          "Pollinations (pago por imagem) ou ComfyUI no Colab (sem custo por imagem).",
-                          opcoes=[("pollinations", "Pollinations"), ("comfy", "ComfyUI (Colab)")]),
+                    "Gerador de imagem (ComfyUI no Colab ou API Pollinations) e como ele é chamado. Gerador, link e "
+                    "workflow são relidos a cada imagem: trocar o link do túnel do Colab não exige reiniciar.",
+                    [_env("MOTOR_IMAGEM", "Gerador de imagem", "escolha", "comfy",
+                          "Com o link do ComfyUI respondendo, as imagens saem dele (sem custo por imagem); sem link ou "
+                          "com o Colab fora, vão pela API (Pollinations, paga por imagem).",
+                          opcoes=[("comfy", "ComfyUI se o link responder, senão API"),
+                                  ("pollinations", "Só API (Pollinations)")]),
                      _env("COMFY_URL", "Endereço do ComfyUI", "url", "",
-                          "A URL do túnel muda a cada sessão do Colab. Sem ela, tudo vai para o Pollinations.",
+                          "O link do túnel muda a cada sessão do Colab. Sem ele, tudo vai pela API (Pollinations).",
                           padrao_rotulo="(não definido)"),
-                     _env("COMFY_WORKFLOW", "Workflow do ComfyUI", "texto", "qwen_edit",
-                          "Nome de um arquivo de estudio/comfy (qwen_edit, kontext...) ou o caminho completo de um JSON.",
+                     _env("COMFY_WORKFLOW", "Workflow do ComfyUI", "texto", "kontext",
+                          "Nome de um arquivo de estudio/comfy: kontext (Flux Kontext, o padrão) ou qwen_edit; ou o "
+                          "caminho completo de um JSON.",
                           validar=_v_workflow, sugestoes=_sugestoes_workflow),
-                     _env("COMFY_MEGAPIXELS", "Megapixels no ComfyUI", "numero", 1.0,
-                          "Área da imagem gerada no Comfy (a ampliação vem depois); Qwen e Kontext rendem melhor perto de 1.",
+                     _env("COMFY_MEGAPIXELS", "Megapixels no ComfyUI", "numero", 0.6,
+                          "Área da imagem gerada no Comfy (a ampliação vem depois). Menos é mais rápido e leve; "
+                          "perto de 1 dá mais detalhe.",
                           attr="COMFY_MEGAPIXELS", minimo=0.25, maximo=4, passo=0.05, unidade="MP"),
+                     _env("COMFY_MEGAPIXELS_REF", "Megapixels de cada referência", "numero", 0.4,
+                          "Tamanho com que a ficha e a placa entram no Comfy. Com 3 referências, é o que mais pesa.",
+                          attr="COMFY_MEGAPIXELS_REF", minimo=0.1, maximo=2, passo=0.05, unidade="MP"),
                      _env("COMFY_TIMEOUT_S", "Tempo limite por imagem no Comfy", "inteiro", 900,
                           "Inclui a espera na fila do Comfy.", attr="COMFY_TIMEOUT_S", minimo=30, maximo=7200, passo=30,
                           unidade="s"),
@@ -870,10 +877,15 @@ def testar(servico: str) -> dict:
         url = cfg.comfy_url()
         if not url:
             return {"ok": False, "mensagem": "O endereço do ComfyUI não está definido."}
-        aviso = "" if cfg.motor_imagem() == "comfy" else " (o motor de imagem está em Pollinations)"
         if comfy.no_ar():
-            return {"ok": True, "mensagem": f"O ComfyUI respondeu em {url}{aviso}."}
-        return {"ok": False, "mensagem": f"O ComfyUI não respondeu em {url}: túnel caído ou Colab desligado."}
+            from . import clientes
+            clientes.marcar_comfy_no_ar()
+            if cfg.motor_imagem() != "comfy":
+                return {"ok": True, "mensagem": f"O ComfyUI respondeu em {url}, mas o gerador está em \"Só API "
+                                                "(Pollinations)\": as imagens vão pela API."}
+            return {"ok": True, "mensagem": f"O ComfyUI respondeu em {url}: as imagens vão para ele."}
+        return {"ok": False, "mensagem": f"O ComfyUI não respondeu em {url} (túnel caído ou Colab desligado): "
+                                         "as imagens vão pela API (Pollinations)."}
     if servico == "publicador":
         base = cfg.PUBLICADOR_URL.rstrip("/")
         try:

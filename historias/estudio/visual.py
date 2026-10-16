@@ -8,7 +8,9 @@ import hashlib
 import io
 import json
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -83,7 +85,7 @@ def url_referencia(item: dict) -> str:
 
 def ref_envio(item: dict):
     """O Comfy recebe o arquivo local da ficha/placa; a Pollinations, a URL pública."""
-    return config.BASE / item["arquivo"] if clientes.usa_comfy() or item.get("local") else url_referencia(item)
+    return config.BASE / item["arquivo"] if motor_prompt() or item.get("local") else url_referencia(item)
 
 
 def _parecido(a: str, b: str) -> bool:
@@ -112,6 +114,8 @@ def aplicar_estilo(canal: dict, miolo: list[str], destaque: str | None = None) -
     est = canal["config"].get("estilo") or {}
     troca = (destaque or "").strip() or SEM_DESTAQUE
     prefixo = _MARCADOR.sub(troca, _limpar(est.get("prefixo", "")))
+    if prompt_curto():  # as imagens de referência já carregam o estilo: só as três primeiras marcas dele
+        prefixo = ", ".join(prefixo.split(", ")[:3])
     sufixo = _MARCADOR.sub(troca, _limpar(est.get("sufixo", "")))
     partes = [prefixo, _orientacao(canal)] + [_limpar(m).rstrip(".") for m in miolo] + [sufixo]
     return ". ".join(p for p in partes if p)
@@ -163,7 +167,64 @@ def _pasta_bib(canal, tipo, chave) -> Path:
     return config.BIBLIOTECA / canal["slug"] / ("personagens" if tipo == "personagem" else "ambientes") / chave
 
 
+_thread = threading.local()
+
+
+def motor_prompt() -> str:
+    """Quem vai ler o prompt: "qwen" ou "kontext" (ComfyUI, pelo workflow) ou "" (Pollinations)."""
+    forcado = getattr(_thread, "motor", None)
+    if forcado is not None:
+        return forcado
+    return comfy.modelo() if clientes.usa_comfy() else ""
+
+
+@contextmanager
+def prompts_para(motor: str):
+    """Monta os prompts para esse motor nesta thread, seja qual for o motor dos vídeos (aba Teste Comfy, exportação
+    de workflow). Por thread: um teste rodando não muda os prompts de um vídeo sendo gerado ao mesmo tempo."""
+    anterior = getattr(_thread, "motor", None)
+    _thread.motor = motor
+    try:
+        yield
+    finally:
+        _thread.motor = anterior
+
+
+def prompt_curto() -> bool:
+    """Qwen-Image-Edit no Comfy: prompts enxutos, porque a imagem de referência já carrega os detalhes."""
+    return motor_prompt() == "qwen"
+
+
 def prompt_referencia(canal: dict, tipo: str, descricao: str) -> str:
+    if motor_prompt() == "kontext":
+        return estilo_kontext(_prompt_referencia(canal, tipo, descricao))
+    return _prompt_referencia(canal, tipo, descricao)
+
+
+# O Kontext lê "comic book panel" e "sensational horror" como uma capa de revista pulp: desenhou título inventado,
+# selo de preço, caixa de texto e um monstro na placa do lugar vazio. Por isso o objeto (painel, capa, página) vira
+# "ilustração no estilo de", e "sensational" (palavra de chamada de capa) sai. Os "no text", "no people" do estilo
+# ficam: sem eles, foi pior.
+_TROCAS_KONTEXT = [
+    (re.compile(r"\bcomic[- ]book (?:panel|page|cover)s?\b", re.I), "wordless comic-book-style illustration"),
+    (re.compile(r"\b(?:magazine|book) cover\b", re.I), "illustration"),
+    (re.compile(r"\bposter\b", re.I), "illustration"),
+    (re.compile(r"\bsensational\s+", re.I), ""),
+]
+
+
+def estilo_kontext(prompt: str) -> str:
+    for padrao, troca in _TROCAS_KONTEXT:
+        prompt = padrao.sub(troca, prompt)
+    return prompt
+
+
+def _prompt_referencia(canal: dict, tipo: str, descricao: str) -> str:
+    if prompt_curto():
+        if tipo == "personagem":
+            return aplicar_estilo(canal, [f"Portrait of one person: {descricao}",
+                                          "Standing, facing the camera, plain light grey background"])
+        return aplicar_estilo(canal, [f"Establishing shot of {descricao}, empty location"])
     if tipo == "personagem":
         # Um retrato só. A antiga folha (frente, lado, costas e três closes) mostrava seis cópias da pessoa, e o
         # gerador repetia gente na cena ou misturava os rostos quando havia duas referências.
@@ -239,6 +300,10 @@ def montar_prompt(h: dict, c: dict, canal: dict, refs: dict, envio=ref_envio) ->
     pessoa no lugar dela, clima e destaque. Sem escolha manual, as referências vêm do ambiente e das pessoas da cena.
     Com c["sem_referencias"], nenhuma imagem vai junto e o texto não cita referência.
     `envio` converte o item da biblioteca no que é enviado (a prévia troca por algo que não sobe arquivo)."""
+    if prompt_curto():
+        return montar_prompt_curto(h, c, canal, refs, envio)
+    if motor_prompt() == "kontext":
+        return montar_prompt_kontext(h, c, canal, refs, envio)
     fichas = {x["id"]: x for x in h.get("personagens", [])}
     ambientes = {x["id"]: x for x in h.get("ambientes", [])}
     if c.get("sem_referencias"):
@@ -270,8 +335,10 @@ def montar_prompt(h: dict, c: dict, canal: dict, refs: dict, envio=ref_envio) ->
     if a:
         n = numero(("ambiente", a["id"]))
         if n:
-            miolo.append(f"Setting: the same place as reference image {n} (same layout, objects and "
-                         f"materials, seen from this scene's angle): {a['descricao_fixa']}")
+            # A placa já mostra o lugar: repetir a descrição inteira empurra a fornalha, o teto etc. para dentro de
+            # cenas que são um close (uma porta, um gravador) e faz a imagem copiar o enquadramento da placa.
+            miolo.append(f"The place is the one in reference image {n} (same objects and materials), but the "
+                         f"framing and camera angle are the ones described for this scene")
         else:
             miolo.append(f"Setting: {a['descricao_fixa']}")
     pessoas = [p for p in historia.pessoas_cena(c) if p["id"] in fichas]
@@ -289,6 +356,88 @@ def montar_prompt(h: dict, c: dict, canal: dict, refs: dict, envio=ref_envio) ->
     return aplicar_estilo(canal, miolo, c.get("destaque")), urls
 
 
+def montar_prompt_curto(h: dict, c: dict, canal: dict, refs: dict, envio=ref_envio) -> tuple[str, list]:
+    """Versão enxuta para o Qwen: o que acontece, o lugar e quem está onde, cada um ligado à sua imagem pelo número.
+    A aparência (rosto, cabelo, roupa) e o lugar vêm da imagem, então a descrição fixa só entra para quem não tem
+    imagem. Mesma ordem de referências do montar_prompt: as escolhidas à mão, senão o lugar e depois as pessoas."""
+    fichas = {x["id"]: x for x in h.get("personagens", [])}
+    ambientes = {x["id"]: x for x in h.get("ambientes", [])}
+    manual = [k for k in chaves_referencia(c) if refs.get(k)]
+    chaves = list(manual)
+    amb = ambientes.get(next((i for t, i in manual if t == "ambiente"), None) or c.get("ambiente"))
+    pessoas = [p for p in historia.pessoas_cena(c) if p["id"] in fichas]
+    if not manual:
+        if amb and ("ambiente", amb["id"]) in refs:
+            chaves.append(("ambiente", amb["id"]))
+        chaves += [("personagem", p["id"]) for p in pessoas if ("personagem", p["id"]) in refs]
+    n = {k: i for i, k in enumerate(chaves, 1)}
+    cena = re.sub(r"^\s*vertical 9:16,?\s*|^\s*horizontal 16:9,?\s*", "", c["prompt_imagem"], flags=re.I)
+    miolo = [cena[:1].upper() + cena[1:]]
+    if amb:
+        i = n.get(("ambiente", amb["id"]))
+        miolo.append(f"The room is the one in picture {i}, seen from a new angle" if i else
+                     f"Setting: {amb['descricao_fixa']}")
+    if len(pessoas) > 1:
+        miolo.append(f"Exactly {len(pessoas)} people")
+    for p in pessoas:
+        f = fichas[p["id"]]
+        i = n.get(("personagem", p["id"]))
+        acao = ", ".join(x.strip().rstrip(".") for x in (p.get("onde"), p.get("faz")) if x and x.strip())
+        quem = f"{f.get('nome') or f['id']} (picture {i})" if i else f"{f.get('nome') or f['id']}, {f['descricao_fixa']}"
+        miolo.append(f"{quem}: {acao}" if acao else quem)
+    if any(k[0] == "personagem" for k in chaves):
+        miolo.append("Keep each person's face, hair and clothes from their picture")
+    return aplicar_estilo(canal, miolo, c.get("destaque")), [envio(refs[k]) for k in chaves]
+
+
+def montar_prompt_kontext(h: dict, c: dict, canal: dict, refs: dict, envio=ref_envio) -> tuple[str, list]:
+    """FLUX.1 Kontext: ele não numera as referências ("image 2" não quer dizer nada para ele), então cada imagem é
+    citada pelo que mostra: a pessoa pela descrição da ficha (a mesma do retrato), o lugar como "a foto do lugar
+    vazio". Pelo guia da BFL: dizer o que se preserva (rosto, cabelo, roupa), nomear quem é quem por descrição e
+    não por pronome, e descrever o enquadramento novo para ele não devolver a placa com a pessoa colada.
+    Ordem das referências igual à do montar_prompt_curto."""
+    fichas = {x["id"]: x for x in h.get("personagens", [])}
+    ambientes = {x["id"]: x for x in h.get("ambientes", [])}
+    manual = [k for k in chaves_referencia(c) if refs.get(k)]
+    chaves = list(manual)
+    amb = ambientes.get(next((i for t, i in manual if t == "ambiente"), None) or c.get("ambiente"))
+    pessoas = [p for p in historia.pessoas_cena(c) if p["id"] in fichas]
+    if not manual:
+        if amb and ("ambiente", amb["id"]) in refs:
+            chaves.append(("ambiente", amb["id"]))
+        chaves += [("personagem", p["id"]) for p in pessoas if ("personagem", p["id"]) in refs]
+    cena = re.sub(r"^\s*(vertical 9:16|horizontal 16:9)( composition)?[,.]?\s*", "", c["prompt_imagem"], flags=re.I)
+    miolo = [cena[:1].upper() + cena[1:]]
+    if amb:
+        miolo.append("The location is the place from the reference photo of the empty location, with the same "
+                     "architecture, objects, materials and colors, now seen from the camera angle and distance of "
+                     "this scene" if ("ambiente", amb["id"]) in chaves else f"Setting: {amb['descricao_fixa']}")
+    if len(pessoas) > 1:
+        miolo.append(f"Exactly {len(pessoas)} different people, each with their own face")
+    miolo += [historia.descrever_pessoa(fichas[p["id"]], p) for p in pessoas]
+    retratos = sum(1 for k in chaves if k[0] == "personagem")
+    if retratos:
+        quem = "Each person keeps" if retratos > 1 else "The person keeps"
+        miolo.append(f"{quem} the exact face, facial features, hairstyle, body and clothes from the matching reference "
+                     "portrait, in the new pose and position described here, placed inside this scene and lit by its "
+                     "light; the plain grey background of the portrait is replaced by this scene")
+    prompt = estilo_kontext(aplicar_estilo(canal, miolo, c.get("destaque")))
+    return prompt, [envio(refs[k]) for k in chaves]
+
+
+# A moderação da Pollinations recusa cenas inofensivas por causa do clima do estilo ("sensational horror",
+# "disturbing"...). Na segunda tentativa essas palavras viram versões mais brandas; o resto do prompt fica igual.
+_BRANDAS = [("sensational horror", "moody"), ("unsettling", "mysterious"), ("dread", "suspense"),
+            ("disturbing", "strange"), ("lurid", "vivid"), ("terrified", "worried"), ("terror", "tension"),
+            ("blood", "red paint"), ("corpse", "figure")]
+
+
+def suavizar(prompt: str) -> str:
+    for padrao, troca in _BRANDAS:
+        prompt = re.sub(padrao, troca, prompt, flags=re.I)
+    return prompt
+
+
 def gerar_cena(projeto: dict, canal: dict, h: dict, c: dict, refs: dict, versao: int = 0) -> Path:
     pid = projeto["id"]
     n = c["n"]
@@ -303,7 +452,14 @@ def gerar_cena(projeto: dict, canal: dict, h: dict, c: dict, refs: dict, versao:
     try:
         _verificar_orcamento(projeto, canal)
         w, hh = dims_cena(canal)
-        dados, _, _ = clientes.gerar_imagem(prompt, w, hh, seed, urls, projeto_id=pid, etapa="cenas", literal=bool(manual))
+        try:
+            dados, _, _ = clientes.gerar_imagem(prompt, w, hh, seed, urls, projeto_id=pid, etapa="cenas", literal=bool(manual))
+        except clientes.ErroModeracao as e:
+            db.evento(pid, f"Cena {n}: recusada pela moderação do provedor, tentando de novo com o texto mais brando. "
+                           f"Motivo: {str(e)[:400]}", "aviso")
+            prompt = suavizar(prompt)
+            db.executar("UPDATE cenas SET prompt_final = ? WHERE projeto_id = ? AND n = ?", (prompt, pid, n))
+            dados, _, _ = clientes.gerar_imagem(prompt, w, hh, seed, urls, projeto_id=pid, etapa="cenas", literal=bool(manual))
         destino = pasta(projeto) / "cenas" / f"{n:02d}.jpg"
         if destino.exists() and versao > 0:
             destino.replace(destino.with_name(f"{n:02d}_v{versao - 1}.jpg"))
@@ -323,11 +479,15 @@ def gerar_todas(projeto: dict, canal: dict, h: dict) -> dict:
     if aviso:
         db.evento(projeto["id"], aviso, "aviso")
     if config.motor_imagem() == "comfy" and not config.SIMULACAO:
-        if comfy.no_ar():
+        if not config.comfy_url():
+            db.evento(projeto["id"], "Sem link do ComfyUI; imagens pela API (Pollinations).")
+        elif comfy.no_ar():
+            clientes.marcar_comfy_no_ar()
             db.evento(projeto["id"], f"Imagens no ComfyUI ({config.comfy_url()}).")
         else:
-            db.evento(projeto["id"], "ComfyUI fora do ar (Colab desligado ou COMFY_URL velha no .env); "
-                                     "as imagens vão para a Pollinations.", "aviso")
+            clientes.marcar_comfy_fora()
+            db.evento(projeto["id"], "O link do ComfyUI não respondeu (Colab desligado ou link velho); "
+                                     "as imagens vão pela API (Pollinations).", "aviso")
     refs = preparar_referencias(projeto, canal, h)
     feitas = {r["n"] for r in db.todos("SELECT n FROM cenas WHERE projeto_id = ? AND status = 'ok'", (projeto["id"],))}
     pendentes = [c for c in h["cenas"] if c["n"] not in feitas and not c.get("mesma_imagem_de")]

@@ -18,7 +18,7 @@ h3{font-size:13px;margin:22px 0 8px;color:var(--dim);text-transform:uppercase;le
 label{display:block;font-size:12px;color:var(--dim);margin:10px 0 4px;text-transform:uppercase;letter-spacing:.5px}
 label.inline{display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0;font-size:13px;color:var(--txt);margin:8px 0}
 input,select,textarea,button{font:inherit;color:var(--txt)}
-input[type=text],input[type=number],input[type=color],select,textarea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:7px 9px}
+input:not([type]),input[type=text],input[type=url],input[type=password],input[type=number],input[type=color],select,textarea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:7px 9px}
 input[type=color]{padding:2px;height:34px}
 textarea{min-height:70px;resize:vertical}
 button{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer;white-space:nowrap}

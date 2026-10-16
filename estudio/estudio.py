@@ -59,6 +59,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from copy import deepcopy
@@ -84,6 +85,7 @@ import canais_publicacao  # noqa: E402  (perfil de cada canal do Publicador)
 import config_cortador  # noqa: E402  (aba Configurações: o que muda por cima dos YAML e constantes)
 import custos_cortador  # noqa: E402  (aba Custos)
 import historias_ponte  # noqa: E402  (as abas do Estúdio de Histórias na mesma página)
+import cta_cortador  # noqa: E402  (CTA em vídeo do canal: anexado só no envio do short; no longo, na produção)
 from utils import parse_csv_moments, yt_dlp_path  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("ESTUDIO_DATA") or r"C:\VideoMaker\estudio")
@@ -838,7 +840,7 @@ def _produzir_longo(tid: str, cid: str, c: dict, t: dict) -> dict:
     if live is not None and c.get("previa_inicio") is not None and c.get("gancho_fim"):
         gancho = (c["previa_inicio"], c["gancho_fim"])
     meta = video_longo.produzir(fonte, inicio, fim, remover, perfil_nome, _pasta(tid) / "final" / cid,
-                                c.get("titulo_publicacao") or c.get("gancho") or cid, gancho)
+                                c.get("titulo_publicacao") or c.get("gancho") or cid, gancho, canal=canal_corte)
     _registrar(tid, f"   {meta['duracao'] / 60:.1f} min, {meta['remocoes']} remoção(ões), "
                     f"{meta['silencios_cortados']} silêncio(s) longo(s) cortado(s)")
     try:
@@ -1554,19 +1556,39 @@ def enviar(tid: str, cid: str):
         _ENVIANDO_AGORA.add((tid, cid))
     try:
         # Se o Publicador já recebeu (envio anterior que o Estúdio não viu terminar), só registra.
+        cta_no_envio = False
         adicionado = _ja_esta_na_fila(nome, c["canal"])
         if adicionado:
             _registrar(tid, f"   {cid}: o Publicador já tinha recebido este vídeo — só atualizei o Cortador")
         else:
+            # CTA em vídeo do canal: entra só aqui, numa cópia temporária do final.mp4 (o revisado fica intacto,
+            # então reenviar nunca duplica). Sem CTA no canal, ou se a anexação falhar, vai o original. O vídeo
+            # longo já recebeu o CTA na produção.
+            envio, tmp_cta = final, None
+            if c.get("tipo") != "longo":
+                try:
+                    tmp_cta = Path(tempfile.mkdtemp(prefix=".envio_cta_", dir=final.parent))
+                    com_cta, aviso = cta_cortador.anexar_copia(final, c["canal"], tmp_cta)
+                except Exception as exc:  # noqa: BLE001 — falha do CTA nunca derruba o envio
+                    com_cta, aviso = None, f"erro inesperado: {exc}"
+                if com_cta is not None:
+                    envio = com_cta
+                    _registrar(tid, f"   {cid}: CTA do canal {c['canal']} anexado ao envio ({aviso})")
+                elif aviso:
+                    _registrar(tid, f"⚠️ {cid}: CTA do canal {c['canal']} não anexado ({aviso}); enviando sem ele")
             try:
-                corpo = _CorpoMultipart({"canal": c["canal"]}, "arquivos", nome, final)
+                corpo = _CorpoMultipart({"canal": c["canal"]}, "arquivos", nome, envio)
                 try:
                     r = requests.post(carregar_config()["publicador_url"] + "/api/videos", data=corpo,
                                       headers={"Content-Type": corpo.content_type}, timeout=(15, 3600))
                 finally:
                     corpo.close()
+                    if tmp_cta is not None:
+                        shutil.rmtree(tmp_cta, ignore_errors=True)
                 resposta = r.json()
             except Exception as exc:  # noqa: BLE001
+                if tmp_cta is not None:
+                    shutil.rmtree(tmp_cta, ignore_errors=True)
                 # Timeout/queda depois do upload: o Publicador pode ter terminado de gravar mesmo assim.
                 adicionado = _ja_esta_na_fila(nome, c["canal"])
                 if not adicionado:
@@ -1576,12 +1598,13 @@ def enviar(tid: str, cid: str):
                 if r.status_code != 200 or not resposta.get("adicionados"):
                     return jsonify({"erro": resposta.get("erro") or f"Publicador respondeu {r.status_code}"}), 502
                 adicionado = resposta["adicionados"][0]
+                cta_no_envio = envio is not final
     finally:
         with _TRAVA:
             _ENVIANDO_AGORA.discard((tid, cid))
     _enviar_thumb(tid, cid, c, adicionado)
     _atualizar_corte(tid, cid, status="na_fila", arquivo_publicador=adicionado,
-                     enviado_em=datetime.now().isoformat(timespec="seconds"))
+                     enviado_em=datetime.now().isoformat(timespec="seconds"), cta_no_envio=cta_no_envio)
     _fonte(tid, cid).unlink(missing_ok=True)          # bruto: só servia para a Fase 2/refazer
     _previa_longo_arquivo(tid, cid).unlink(missing_ok=True)
     _fase2_pronto(tid, cid).unlink(missing_ok=True)   # 16:9 pronto: idem

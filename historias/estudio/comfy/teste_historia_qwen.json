@@ -80,7 +80,8 @@
     0
    ],
    "upscale_method": "lanczos",
-   "megapixels": 1.0
+   "megapixels": 1.0,
+   "resolution_steps": 1
   }
  },
  "20": {
@@ -172,7 +173,8 @@
     0
    ],
    "upscale_method": "lanczos",
-   "megapixels": 1.0
+   "megapixels": 1.0,
+   "resolution_steps": 1
   }
  },
  "30": {

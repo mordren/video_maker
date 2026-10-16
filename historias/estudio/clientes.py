@@ -15,6 +15,10 @@ class ErroAPI(Exception):
     pass
 
 
+class ErroModeracao(ErroAPI):
+    """O provedor recusou o prompt, a referência ou a imagem pela política de conteúdo (HTTP 422)."""
+
+
 def _cabecalhos_openrouter():
     if not config.OPENROUTER_API_KEY:
         raise ErroAPI("OPENROUTER_API_KEY não configurada no arquivo .env")
@@ -250,14 +254,26 @@ _comfy_fora_ate = 0.0
 
 
 def usa_comfy() -> bool:
-    return config.motor_imagem() == "comfy" and time.time() >= _comfy_fora_ate
+    """ComfyUI só quando o gerador está em "comfy", há um link salvo e o Comfy não caiu há pouco."""
+    return config.motor_imagem() == "comfy" and bool(config.comfy_url()) and time.time() >= _comfy_fora_ate
+
+
+def marcar_comfy_fora():
+    """Manda as próximas imagens direto para a Pollinations por COMFY_PAUSA_S, sem esperar o túnel a cada cena."""
+    global _comfy_fora_ate
+    _comfy_fora_ate = time.time() + config.COMFY_PAUSA_S
+
+
+def marcar_comfy_no_ar():
+    """O link respondeu: desfaz a pausa de uma queda anterior."""
+    global _comfy_fora_ate
+    _comfy_fora_ate = 0.0
 
 
 def gerar_imagem(prompt: str, largura: int, altura: int, seed: int, referencias: list | None = None, *,
                  projeto_id=None, etapa="imagens", modelo: str | None = None, literal: bool = False):
     """Devolve (bytes, url_link, custo). O cabeçalho Link traz a URL pública da imagem, reaproveitável como referência.
     Referências: URL pública (Pollinations) ou Path local (Comfy); um Path que cair na Pollinations é enviado antes."""
-    global _comfy_fora_ate
     modelo = modelo or config.MODELO_IMAGEM
     referencias = referencias or []
     if config.SIMULACAO:
@@ -270,7 +286,7 @@ def gerar_imagem(prompt: str, largura: int, altura: int, seed: int, referencias:
         try:
             dados = comfy.gerar(prompt, largura, altura, seed, [Path(r) for r in referencias], literal)
         except comfy.ComfyFora as e:
-            _comfy_fora_ate = time.time() + config.COMFY_PAUSA_S
+            marcar_comfy_fora()
             registro.escrever(projeto_id, "API", f"comfy fora, usando Pollinations: {e}")
         except comfy.ErroComfy as e:
             raise ErroAPI(str(e)) from e
@@ -300,6 +316,8 @@ def gerar_imagem(prompt: str, largura: int, altura: int, seed: int, referencias:
             msg = r.text[:300]
             if r.status_code == 402:
                 msg += " (saldo de Pollen insuficiente)"
+            if r.status_code == 422 and re.search(r"moderation|content_safety|RAI", r.text, re.I):
+                raise ErroModeracao(f"Pollinations HTTP 422: {r.text[:900]}")
             raise ErroAPI(f"Pollinations HTTP {r.status_code}: {msg}")
         link = None
         m = re.search(r"<([^>]+)>", r.headers.get("link", ""))

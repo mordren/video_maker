@@ -46,8 +46,8 @@ SIMULACAO = os.getenv("ESTUDIO_SIMULACAO", "0") == "1"
 MODELO_TEXTO = os.getenv("MODELO_TEXTO", "deepseek/deepseek-v4.1-flash")
 MODELO_JUIZ = os.getenv("MODELO_JUIZ", "typesafe/jev-1.13")
 # Tarefas de texto que rodam com o raciocínio (thinking) do DeepSeek ligado, separadas por vírgula. Vazio = nenhuma;
-# "todas" liga em tudo. Tarefas: biblia, ganchos, narrativa, reescrita, decupagem, prompts_cena, humanizer, sugestao_canal.
-RACIOCINIO_TAREFAS = {t.strip() for t in os.getenv("RACIOCINIO_TAREFAS", "").lower().split(",") if t.strip()}
+# "todas" liga em tudo. Tarefas: ganchos, narrativa, reescrita, decupagem, prompts_cena, humanizer, sugestao_canal.
+RACIOCINIO_TAREFAS = {t.strip() for t in os.getenv("RACIOCINIO_TAREFAS", "narrativa,reescrita").lower().split(",") if t.strip()}
 # Provedor do texto: "openrouter" (usa MODELO_TEXTO) ou "deepseek" (API oficial: deepseek-chat, ou deepseek-reasoner nas
 # tarefas com raciocínio). Juiz (Jev) e narração seguem no OpenRouter; a imagem tem o motor próprio.
 PROVEDOR_TEXTO = os.getenv("PROVEDOR_TEXTO", "openrouter").strip().lower()
@@ -74,7 +74,8 @@ OPENROUTER_TTS_URL = "https://openrouter.ai/api/v1/audio/speech"
 # Motor, URL e workflow são relidos do .env a cada imagem: o túnel do Colab muda de endereço a cada sessão e
 # assim basta trocar a linha no .env, sem reiniciar o estúdio.
 COMFY_PASTA = CODIGO / "estudio" / "comfy"
-COMFY_MEGAPIXELS = float(os.getenv("COMFY_MEGAPIXELS", "1.0"))  # Qwen e Kontext rendem melhor perto de 1 MP
+COMFY_MEGAPIXELS = float(os.getenv("COMFY_MEGAPIXELS", "0.6"))  # área da imagem gerada; 1.0 rende mais, pesa o dobro
+COMFY_MEGAPIXELS_REF = float(os.getenv("COMFY_MEGAPIXELS_REF", "0.4"))  # cada referência (ficha/placa) enviada
 COMFY_TIMEOUT_S = int(os.getenv("COMFY_TIMEOUT_S", "900"))     # inclui a espera na fila do Comfy
 
 
@@ -83,12 +84,13 @@ def _env_vivo(nome: str, padrao: str = "") -> str:
 
 
 def motor_imagem() -> str:
-    return _env_vivo("MOTOR_IMAGEM", "pollinations").lower()
+    """"comfy" (padrão) = ComfyUI quando o link responder, senão a API (Pollinations); "pollinations" = só a API."""
+    return _env_vivo("MOTOR_IMAGEM", "comfy").lower()
 
 
 def comfy_workflow() -> Path:
-    """COMFY_WORKFLOW=qwen_edit ou kontext (arquivos de estudio/comfy) ou o caminho completo de outro JSON."""
-    nome = _env_vivo("COMFY_WORKFLOW", "qwen_edit")
+    """COMFY_WORKFLOW=kontext (padrão) ou qwen_edit (arquivos de estudio/comfy) ou o caminho completo de outro JSON."""
+    nome = _env_vivo("COMFY_WORKFLOW", "kontext")
     caminho = Path(nome)
     if not caminho.is_absolute():
         caminho = COMFY_PASTA / (nome if nome.endswith(".json") else f"{nome}.json")
