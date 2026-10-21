@@ -63,7 +63,7 @@ MAX_CUT_SECONDS = 152
 # Padrões da identidade visual. São só o ponto de partida: a aba Configuração
 # sobrescreve cada um e grava em config.json (chaves brand_*). O logo aponta para
 # o caminho antigo do canal quando ele existe, senão fica vazio.
-DEFAULT_WATERMARK = "@RENANSANTOSMBL"   # marca d'água no topo; "" desliga
+DEFAULT_WATERMARK = ""                  # marca d'água no topo; "" = sem marca
 DEFAULT_WM_COLOR = "#FFFF00"            # amarelo (equivale ao antigo "yellow")
 DEFAULT_BRAND_NAME = "Informativo Nacional"
 _LEGACY_LOGO = Path("G:/My Drive/Canais/Informativo Nacional/icone informativo.png")
@@ -2101,23 +2101,21 @@ class MainWindow(QMainWindow):
         outer.setSpacing(16)
 
         intro = QLabel(
-            "Configure a identidade que vai em todos os vídeos (Edição, CSV e "
-            "Live). Tudo é salvo automaticamente e usado nos próximos cortes.")
+            "Identidade que vai em todos os vídeos (Edição, CSV e Live). "
+            "Tudo é salvo automaticamente e vale a partir do próximo corte.")
         intro.setObjectName("muted")
         intro.setWordWrap(True)
         outer.addWidget(intro)
 
-        # ── Seleção e gerenciamento de perfis ──────────────────────
-        profile_box = QGroupBox("Perfis")
+        # ── 1. Perfil ──────────────────────────────────────────────
+        profile_box = QGroupBox("1 · Perfil (um conjunto de identidade por canal)")
         profile_form = QFormLayout(profile_box)
 
-        # Dropdown para selecionar perfil
         self.cfg_profile_combo = QComboBox()
         self.cfg_profile_combo.currentTextChanged.connect(self._cfg_load_profile)
         self._cfg_refresh_profile_list()
         profile_form.addRow("Perfil ativo", self.cfg_profile_combo)
 
-        # Campo para nome do novo perfil
         new_profile_row = QWidget()
         new_profile_layout = QHBoxLayout(new_profile_row)
         new_profile_layout.setContentsMargins(0, 0, 0, 0)
@@ -2125,16 +2123,17 @@ class MainWindow(QMainWindow):
         self.cfg_new_profile_name.setPlaceholderText("ex.: esportes, economia...")
         save_as_btn = QPushButton("Salvar como novo perfil")
         save_as_btn.clicked.connect(self._cfg_save_as_new_profile)
-        delete_btn = QPushButton("🗑 Deletar este perfil")
-        delete_btn.clicked.connect(self._cfg_delete_current_profile)
         new_profile_layout.addWidget(self.cfg_new_profile_name, 1)
         new_profile_layout.addWidget(save_as_btn)
-        new_profile_layout.addWidget(delete_btn)
         profile_form.addRow("Novo perfil", new_profile_row)
+
+        delete_btn = QPushButton("🗑 Deletar o perfil ativo")
+        delete_btn.clicked.connect(self._cfg_delete_current_profile)
+        profile_form.addRow("", delete_btn)
         outer.addWidget(profile_box)
 
-        # ── Logo e textos ──────────────────────────────────────────
-        id_box = QGroupBox("Logo e textos")
+        # ── 2. Canal: logo e nome ──────────────────────────────────
+        id_box = QGroupBox("2 · Canal (logo e nome na tarja)")
         id_form = QFormLayout(id_box)
 
         logo_row = QWidget()
@@ -2156,49 +2155,42 @@ class MainWindow(QMainWindow):
         self.cfg_name.setPlaceholderText("ex.: Informativo Nacional")
         self.cfg_name.editingFinished.connect(self._save_branding)
         id_form.addRow("Nome do canal", self.cfg_name)
-
-        self.cfg_watermark = QLineEdit(self.brand_watermark)
-        self.cfg_watermark.setPlaceholderText("ex.: @SEUCANAL (vazio = sem marca)")
-        self.cfg_watermark.editingFinished.connect(self._save_branding)
-        id_form.addRow("Marca d'água", self.cfg_watermark)
         outer.addWidget(id_box)
 
-        # ── Cores ──────────────────────────────────────────────────
-        cores_box = QGroupBox("Cores da tarja (lower-third) e marca d'água")
-        cores_form = QFormLayout(cores_box)
+        # ── 3. Marca d'água (texto + cor juntos) ───────────────────
+        wm_box = QGroupBox("3 · Marca d'água no topo do vídeo")
+        wm_form = QFormLayout(wm_box)
+        self.cfg_watermark = QLineEdit(self.brand_watermark)
+        self.cfg_watermark.setPlaceholderText("em branco = sem marca d'água")
+        self.cfg_watermark.editingFinished.connect(self._save_branding)
+        wm_form.addRow("Texto", self.cfg_watermark)
         self._cfg_color_btns: dict[str, QPushButton] = {}
-        # (chave interna, rótulo). "wm" é a cor da marca d'água; as demais são as
-        # cores da tarja definidas no cg_generator.
+        self._cfg_add_color_row(wm_form, "wm", "Cor")
+        outer.addWidget(wm_box)
+
+        # ── 4. Tarja (cores + prévia) ──────────────────────────────
+        cores_box = QGroupBox("4 · Tarja com a manchete (lower-third)")
+        cores_form = QFormLayout(cores_box)
         for key, rotulo in (
-            ("banner", "Fundo da tarja"),
+            ("banner", "Fundo"),
             ("green", "Acento / chapéu"),
             ("yellow", "Detalhe (amarelo)"),
             ("headline", "Texto da manchete"),
-            ("wm", "Marca d'água"),
         ):
-            btn = QPushButton()
-            btn.setMinimumHeight(28)
-            btn.clicked.connect(lambda _=False, k=key: self._cfg_pick_color(k))
-            self._cfg_color_btns[key] = btn
-            self._cfg_refresh_color_btn(key)
-            cores_form.addRow(rotulo, btn)
+            self._cfg_add_color_row(cores_form, key, rotulo)
         reset_btn = QPushButton("↩ Voltar às cores padrão (bandeira)")
         reset_btn.clicked.connect(self._cfg_reset_colors)
-        cores_form.addRow(reset_btn)
-        outer.addWidget(cores_box)
+        cores_form.addRow("", reset_btn)
 
-        # ── Pré-visualização ───────────────────────────────────────
-        prev_box = QGroupBox("Pré-visualização da tarja")
-        prev_layout = QVBoxLayout(prev_box)
         self.cfg_preview = QLabel("Clique em “Gerar prévia” para ver a tarja.")
         self.cfg_preview.setObjectName("muted")
         self.cfg_preview.setMinimumHeight(90)
         self.cfg_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        prev_layout.addWidget(self.cfg_preview)
+        cores_form.addRow(self.cfg_preview)
         prev_btn = QPushButton("🖼 Gerar prévia")
         prev_btn.clicked.connect(self._cfg_preview_lower_third)
-        prev_layout.addWidget(prev_btn)
-        outer.addWidget(prev_box)
+        cores_form.addRow("", prev_btn)
+        outer.addWidget(cores_box)
 
         outer.addStretch(1)
 
@@ -2207,6 +2199,15 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(tab)
         self.tabs.addTab(scroll, "⚙️ Configuração")
+
+    def _cfg_add_color_row(self, form: QFormLayout, key: str, rotulo: str) -> None:
+        """Botão de cor (abre o seletor) numa linha do formulário."""
+        btn = QPushButton()
+        btn.setMinimumHeight(28)
+        btn.clicked.connect(lambda _=False, k=key: self._cfg_pick_color(k))
+        self._cfg_color_btns[key] = btn
+        self._cfg_refresh_color_btn(key)
+        form.addRow(rotulo, btn)
 
     def _cfg_refresh_profile_list(self) -> None:
         """Recarrega a lista de perfis no combobox."""
