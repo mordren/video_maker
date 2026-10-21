@@ -37,3 +37,7 @@ fase1/models/lrasd_finetuning_TalkSet.model
 # mídia do usuário, não código. O CTA de cada canal fica em dados/cta (fora do git).
 testes_crop/
 estudio/cta/*.mp4
+
+# Demonstrações e saídas de teste da legenda (~700 MB de mp4/wav/jpg/ass):
+# mídia de trabalho, não código. Mesmo tratamento de testes_crop/ e fase1/workspace_*/.
+fase_legenda/
