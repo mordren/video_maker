@@ -450,6 +450,96 @@ def _dispensar_consentimento(page, log=None) -> None:
             continue
 
 
+def _dispensar_intersticial(page, log=None) -> str:
+    """Fecha os avisos que o Studio joga por cima da caixa de upload.
+
+    Medido num envio real para o canal novo "Dift Phonk" (17/10/2026): depois
+    de entregar o arquivo, o Studio abriu um modal "Tudo pronto — Você já tem
+    acesso ao recurso. Tente atualizar a página." que cobria o formulário todo.
+    O envio travou os 600s do timeout esperando o campo de título, que estava
+    escondido atrás dele, e falhou 3 vezes seguidas. Não é erro de sessão nem
+    de canal: é só um aviso a ser dispensado.
+
+    Dispensar esse aviso em particular zera a caixa de upload (o arquivo some
+    e volta a tela de "Selecionar arquivos"), por isso o retorno diz o que
+    fazer em seguida:
+
+      ""            — não havia nada para dispensar
+      "dispensado"  — fechou um aviso qualquer; o formulário segue de pé
+      "recarregar"  — era o aviso que manda atualizar a página; o formulário
+                      foi zera, então é preciso recarregar o Studio e entregar
+                      o arquivo de novo (senão o campo nunca aparece)
+    """
+    for texto in ("Ok, entendi", "Got it", "Entendi", "OK"):
+        try:
+            botao = page.get_by_role("button", name=re.compile(
+                rf"^\s*{re.escape(texto)}\s*$", re.IGNORECASE)).first
+            botao.wait_for(state="visible", timeout=2000)
+        except Exception:
+            continue
+        # Lê o aviso antes de fechar: é o texto dele que diz se o formulário
+        # aguenta o clique ou se ele é zera-do-tudo ("Tente atualizar a
+        # página").
+        aviso = ""
+        try:
+            aviso = page.locator("[role='dialog']").first.inner_text(timeout=2000)
+        except Exception:
+            pass
+        try:
+            botao.click(timeout=3000)
+        except Exception:
+            continue
+        _emit(log, f"Fechei um aviso do Studio (botão '{texto}').")
+        if "atualizar a p" in aviso.lower() or "refresh" in aviso.lower():
+            _emit(log, "Esse aviso zera a caixa de upload — vou recarregar o Studio e entregar o arquivo de novo.")
+            return "recarregar"
+        return "dispensado"
+    # Último recurso: qualquer diálogo modal que esteja na frente, pelo X.
+    try:
+        dialogo = page.locator("[role='dialog']").first
+        dialogo.wait_for(state="visible", timeout=2000)
+        aviso = dialogo.inner_text(timeout=2000)
+        dialogo.locator(
+            "tp-yt-paper-icon-button, #close-button, button[aria-label*='echar'], "
+            "ytcp-icon-button").last.click(timeout=3000)
+        _emit(log, "Fechei um diálogo que cobria o formulário de upload.")
+        if "atualizar a p" in aviso.lower() or "refresh" in aviso.lower():
+            return "recarregar"
+        return "dispensado"
+    except Exception:
+        pass
+    return ""
+
+
+def _esperar_campo_de_upload(page, seletor: str, log=None,
+                             timeout_ms: int | None = None) -> str:
+    """Espera um campo do formulário de upload aparecer, dispensando avisos.
+
+    Enquanto espera, se algum intersticial do Studio aparecer por cima (ver
+    `_dispensar_intersticial`), fecha na hora — assim o campo deixa de ficar
+    escondido atrás do aviso em vez de estourar o timeout.
+
+    Devolve "ok" quando o campo apareceu, "recarregar" quando um aviso que zera
+    a caixa foi dispensado (o campo só vem depois de recarregar o Studio) ou
+    "esgotado" quando o tempo acabou.
+    """
+    limite = timeout_ms if timeout_ms is not None else _ESPERA
+    inicio = time.monotonic()
+    dispensou = False
+    while (time.monotonic() - inicio) * 1000 < limite:
+        try:
+            page.locator(seletor).first.wait_for(state="visible", timeout=8000)
+            return "ok"
+        except Exception:
+            pass
+        if not dispensou and (time.monotonic() - inicio) > 10:
+            situacao = _dispensar_intersticial(page, log=log)
+            dispensou = True
+            if situacao == "recarregar":
+                return "recarregar"
+    return "esgotado"
+
+
 def _clicar_criar(page, log=None) -> None:
     """Clica no botão "Criar" do topo do Studio.
 
@@ -501,9 +591,16 @@ def _abrir_upload(page, video_path: Path, log=None) -> None:
     tem um botão "Selecionar arquivos" próprio — é esse botão que dispara o
     evento de file chooser (medido em 24/09/2026, depois que o clique direto
     passou a travar 60s esperando um evento que nunca vinha).
+
+    Se a caixa já estiver aberta (caso de um retry depois de um aviso do
+    Studio ter resetado o formulário), pula direto para o seletor — de novo,
+    o "Criar" do topo ficaria inalcançável atrás do diálogo.
     """
-    _clicar_criar(page, log=log)
-    _clicar_enviar_videos(page, log=log)
+    if not page.locator("#select-files-button").first.is_visible(timeout=4000):
+        _clicar_criar(page, log=log)
+        _clicar_enviar_videos(page, log=log)
+        page.locator("#select-files-button").first.wait_for(state="visible",
+                                                            timeout=_ESPERA)
     _emit(log, "Aguardando a caixa de seleção de arquivo abrir…")
     with page.expect_file_chooser(timeout=_ESPERA) as fc:
         page.locator("#select-files-button").first.click(timeout=_ESPERA)
@@ -1019,6 +1116,34 @@ def upload_video(
 
             etapa = "preenchendo título"
             _log("Preenchendo título e descrição…")
+            # O Studio às vezes joga um aviso por cima do formulário (ex.: o
+            # modal "Tudo pronto — Você já tem acesso ao recurso. Tente
+            # atualizar a página." do canal Dift Phonk). Esse aviso em
+            # particular zera a caixa quando é dispensado: aí é preciso
+            # recarregar o Studio e entregar o arquivo de novo, senão o campo
+            # de título nunca aparece e o envio estoura o timeout.
+            for tentativa in range(1, 4):
+                situacao = _esperar_campo_de_upload(
+                    page, "#title-textarea #textbox", log=_log, timeout_ms=45_000)
+                if situacao == "ok":
+                    break
+                if tentativa == 3:
+                    raise YoutubeBrowserUploadError(
+                        "A caixa de upload não abriu mesmo depois de dispensar "
+                        "o aviso do Studio e recarregar; confira a tela do canal.")
+                if situacao == "recarregar":
+                    _log("Recarregando o Studio para o aviso sumir de vez…")
+                    etapa = "abrindo o Studio"
+                    page.goto("https://studio.youtube.com/", wait_until="domcontentloaded",
+                              timeout=_ESPERA)
+                    page.wait_for_timeout(6000)
+                else:
+                    _log("O campo de título não apareceu; tentando entregar o arquivo de novo.")
+                etapa = "abrindo o formulário de upload"
+                _log("Selecionando o arquivo de vídeo…")
+                _abrir_upload(page, video_path, log=_log)
+                etapa = "preenchendo título"
+                _log("Preenchendo título e descrição…")
             _preencher_texto(page, "#title-textarea #textbox", titulo_final, log=_log, nome_campo="o título")
             etapa = "preenchendo descrição"
             if description:
