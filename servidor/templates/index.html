@@ -31,7 +31,16 @@
   button.principal { background: var(--destaque); border-color: var(--destaque); color: #fff; font-weight: 600; }
   button.parar { background: #7a2b2b; border-color: #7a2b2b; color: #fff; font-weight: 600; }
   button.mini { padding: 3px 7px; font-size: 13px; }
+  button.mini.ativa { border-color: var(--destaque); color: var(--destaque); }
   button:disabled { opacity: .45; cursor: default; }
+  /* Legenda de um vídeo só, aberta embaixo do título na fila. */
+  .caixa-legenda { margin-top: 6px; }
+  .caixa-legenda textarea { min-height: 62px; resize: vertical; font-size: 13px; }
+  .caixa-legenda .linha {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
+    margin-top: 4px;
+  }
+  .caixa-legenda .dica { font-size: 12px; color: var(--fraco); }
   input, select, textarea {
     background: #14161b; color: var(--texto); border: 1px solid var(--linha);
     border-radius: 7px; padding: 7px 9px; font: inherit; width: 100%;
@@ -82,6 +91,21 @@
     padding: 6px 9px; font-size: 13px; line-height: 1.4; white-space: pre-line;
   }
   a { color: var(--destaque); }
+  /* Fila: arrastar pela alça para reordenar. */
+  #corpo-fila tr.arrastando { opacity: .4; }
+  #corpo-fila tr.antes td { box-shadow: inset 0 2px 0 var(--destaque); }
+  #corpo-fila tr.depois td { box-shadow: inset 0 -2px 0 var(--destaque); }
+  .alca {
+    display: inline-block; padding: 4px 3px; color: var(--fraco); cursor: grab;
+    user-select: none; font-size: 15px; line-height: 1;
+  }
+  .alca:hover { color: var(--destaque); }
+  /* Soltar arquivos do Windows: a área acende enquanto o vídeo é arrastado. */
+  .zona-solta {
+    margin-top: 12px; padding: 14px; border: 1px dashed var(--linha); border-radius: 9px;
+    text-align: center; color: var(--fraco); font-size: 14px;
+  }
+  .zona-solta.ativa { border-color: var(--destaque); border-style: solid; color: var(--texto); background: #1a2333; }
   #aviso-conexao {
     background: #3a1f1f; border: 1px solid var(--erro); color: #ffd3d3;
     border-radius: 8px; padding: 10px 14px; margin-top: 10px; font-size: 14px;
@@ -141,6 +165,10 @@
         <button id="btn-subir" class="principal">⬆ Subir para o servidor</button>
       </div>
     </div>
+    <div id="zona-solta" class="zona-solta">
+      Arraste os vídeos até aqui — ou até qualquer canto da página — e eles entram
+      na fila do canal escolhido acima.
+    </div>
     <progress id="progresso" value="0" max="100" hidden></progress>
     <div class="recado" id="recado-upload"></div>
     <p class="fraco" style="margin:6px 0 0">Os arquivos ficam em <code id="pasta-videos">—</code> no HD do servidor.</p>
@@ -148,10 +176,19 @@
 
   <section>
     <h2>Fila (publica de cima para baixo)</h2>
+    <p class="fraco" style="margin:0 0 10px">
+      Arraste uma linha pela alça <span class="alca">⠿</span> (ou use ↑ ↓) para mudar a
+      ordem de publicação.
+    </p>
+    <p class="fraco" style="margin:0 0 10px">
+      O botão <b>✏️ Legenda</b>, embaixo do título, abre o texto daquele vídeo:
+      ele vai como descrição no YouTube e, no TikTok, no lugar das hashtags
+      padrão do canal. Sem legenda escrita, o vídeo sai com a padrão do canal.
+    </p>
     <table>
       <thead>
         <tr>
-          <th style="width:70px">Ordem</th>
+          <th style="width:120px">Ordem</th>
           <th>Título no YouTube</th>
           <th style="width:150px">Canal</th>
           <th style="width:120px">Situação</th>
@@ -209,6 +246,10 @@
       <label for="config-descricao">Descrição padrão deste canal</label>
       <textarea id="config-descricao" rows="4"
         placeholder="Texto usado na descrição de todos os vídeos deste canal"></textarea>
+      <p class="fraco" style="margin:6px 0 0">
+        Vale para os vídeos deste canal <b>sem legenda própria</b> — a legenda de um
+        vídeo só é escrita na fila, no botão <b>✏️ Legenda</b> embaixo do título dele.
+      </p>
     </div>
     <div class="grade" style="margin-top:14px">
       <div>
@@ -227,6 +268,10 @@
       <label for="tiktok-legenda">Legenda/hashtags padrão no TikTok</label>
       <textarea id="tiktok-legenda" rows="3"
         placeholder="Vai depois do título do vídeo, na legenda do post"></textarea>
+      <p class="fraco" style="margin:6px 0 0">
+        Também só para os vídeos sem legenda própria: a legenda escrita no vídeo
+        entra no lugar desta, depois do título.
+      </p>
     </div>
     <div class="acoes" style="margin-top:12px">
       <button id="btn-config" class="principal">Salvar configuração</button>
@@ -317,6 +362,13 @@ const SITUACOES = {
 };
 let estado = null;
 let assinatura = "";
+let arrastandoId = null;      // item da fila sendo arrastado para reordenar
+// Legenda por vídeo (o padrão continua sendo o do canal, em Configuração):
+// quais caixas estão abertas, o que já foi digitado e ainda não voltou do
+// servidor, e o timer do salvamento automático de cada uma.
+const legendasAbertas = new Set();
+const rascunhosLegenda = new Map();
+const esperasLegenda = new Map();
 
 const el = (id) => document.getElementById(id);
 const escapar = (texto) => String(texto == null ? "" : texto).replace(/[&<>"']/g,
@@ -427,19 +479,107 @@ function opcoesDeCanal(selecionado) {
   return partes.join("");
 }
 
+// Onde o cursor está dentro da tabela agora. Guardado antes de redesenhar para
+// devolvê-lo depois: a lista precisa se atualizar sozinha, mas perder o foco (ou
+// a posição do cursor) no meio de uma edição seria pior.
+function focoNaFila() {
+  const ativo = document.activeElement;
+  if (!ativo || !ativo.closest || !ativo.closest("#corpo-fila")) return null;
+  const d = ativo.dataset || {};
+  const marca = d.titulo ? "titulo" : d.canal ? "canal" : d.legendaTexto ? "legendaTexto"
+    : d.sobe ? "sobe" : d.desce ? "desce" : d.agora ? "agora"
+    : d.repetir ? "repetir" : d.remover ? "remover" : null;
+  if (!marca) return null;
+  return {marca: marca, valor: d[marca], valorAtual: ativo.value,
+          inicio: ativo.selectionStart, fim: ativo.selectionEnd};
+}
+
+function devolverFocoNaFila(info) {
+  if (!info) return;
+  // "legendaTexto" é o único com hífen no atributo (data-legenda-texto).
+  const atributo = info.marca === "legendaTexto" ? "legenda-texto" : info.marca;
+  const alvo = Array.prototype.slice
+    .call(document.querySelectorAll("#corpo-fila [data-" + atributo + "]"))
+    .find((e) => e.dataset[info.marca] === info.valor);
+  if (!alvo) return;              // o item saiu da fila (excluído): nada a devolver
+  alvo.focus();
+  if (info.inicio != null && alvo.setSelectionRange) {
+    try { alvo.setSelectionRange(info.inicio, info.fim); } catch (e) { /* select */ }
+  }
+}
+
+// A legenda que a linha mostra: o rascunho (o que está sendo digitado) tem
+// prioridade sobre a que veio do servidor, senão a atualização automática
+// apagaria o texto no meio da digitação.
+function legendaDoItem(item) {
+  if (rascunhosLegenda.has(item.id)) return rascunhosLegenda.get(item.id);
+  return item.legenda || "";
+}
+
+// Botão "✏️ Legenda" e, quando aberto, a caixa de texto — embaixo do título
+// do vídeo. Vale só para este vídeo: no YouTube vai como descrição e, no
+// TikTok, no lugar das hashtags padrão do canal. Vazia, o vídeo sai com a
+// configuração do canal, como sempre saiu.
+function campoLegenda(item) {
+  if (item.status === "enviado") return "";        // já saiu: o que foi enviado não muda
+  const texto = legendaDoItem(item);
+  const propria = !!texto.trim();
+  const aberta = legendasAbertas.has(item.id);
+  const botao = '<button class="mini' + (aberta ? " ativa" : "") + '" data-legenda="' + item.id + '"'
+    + ' title="' + (propria ? "Legenda deste vídeo (clique para editar)"
+                            : "Escrever a legenda/descrição deste vídeo") + '">'
+    + "✏️ Legenda" + (propria ? " ✓" : "") + "</button>";
+  if (!aberta) return botao;
+  return botao
+    + '<div class="caixa-legenda">'
+    + '<textarea data-legenda-texto="' + item.id + '" rows="3" maxlength="4900"'
+    + ' placeholder="Descrição deste vídeo — vazia, usa a padrão do canal">'
+    + escapar(texto) + "</textarea>"
+    + '<div class="linha"><span class="dica">Descrição no YouTube; no TikTok entra no lugar das hashtags. Salva sozinha.</span>'
+    + '<button class="mini" data-legenda-padrao="' + item.id + '">↺ padrão do canal</button></div></div>';
+}
+
+async function salvarLegenda(id, texto) {
+  const item = (estado.itens || []).find((i) => i.id === id);
+  if (!item) return false;
+  if ((item.legenda || "") === texto) { rascunhosLegenda.delete(id); return true; }
+  try {
+    await pedir("/api/itens/" + id, {legenda: texto});
+    item.legenda = texto;
+    rascunhosLegenda.delete(id);
+    recado("recado-fila", texto.trim()
+      ? "Legenda salva para este vídeo."
+      : "Legenda própria apagada — este vídeo usa a padrão do canal.", "ok");
+    return true;
+  } catch (erro) {
+    // Mantém o rascunho: o texto digitado não pode sumir por causa da rede.
+    recado("recado-fila", erro.message, "erro");
+    return false;
+  }
+}
+
 function desenharFila() {
-  const nova = estado.itens.map((i) => i.id + i.status + i.canal + (i.tentativas || 0)).join("|")
-    + estado.canais.length;
-  // Redesenhar por cima de um campo em edição apagaria o que está sendo digitado.
-  const digitando = document.activeElement && document.activeElement.closest("#corpo-fila");
-  if (nova === assinatura || digitando) return;
+  const corpo = el("corpo-fila");
+  // Qualquer mudança visível conta — título, situação, mensagem, link. Antes só
+  // id, status, canal e tentativas entravam na conta, e uma mensagem de erro
+  // nova (ou um link de vídeo publicado) não aparecia na tela.
+  // As legendas abertas entram também: abrir/fechar a caixa redesenha a linha.
+  const ids = new Set(estado.itens.map((i) => i.id));
+  for (const id of legendasAbertas) if (!ids.has(id)) legendasAbertas.delete(id);
+  const nova = JSON.stringify(estado.itens) + "|" + estado.canais.length
+    + "|" + Array.from(legendasAbertas).sort().join(",");
+  // Redesenhar no meio de um arrasto destruiria a linha que está na mão.
+  if (nova === assinatura || arrastandoId) return;
+  const foco = focoNaFila();
   assinatura = nova;
 
-  const corpo = el("corpo-fila");
   if (!estado.itens.length) {
     corpo.innerHTML = '<tr><td colspan="5" class="fraco">A fila está vazia — suba os vídeos acima.</td></tr>';
     return;
   }
+  // O título digitado ainda não foi salvo; manter o que está no campo é o que
+  // impede a atualização automática de apagar a digitação no meio.
+  const digitando = foco && foco.marca === "titulo" ? foco : null;
   corpo.innerHTML = estado.itens.map((item, indice) => {
     // Esperando nova tentativa automática: não é "parado na fila", e a
     // diferença importa quando se olha a lista para saber se falta agir.
@@ -458,10 +598,15 @@ function desenharFila() {
       ? '<button class="mini" data-repetir="' + item.id + '">↻ Tentar de novo</button>'
       : (item.status === "aguardando"
           ? '<button class="mini" data-agora="' + item.id + '">Enviar já</button>' : "");
-    return '<tr>'
-      + '<td><button class="mini" data-sobe="' + item.id + '"' + (indice === 0 ? " disabled" : "") + '>↑</button> '
+    const titulo = digitando && digitando.valor === item.id ? digitando.valorAtual : item.titulo;
+    return '<tr data-id="' + escapar(item.id) + '">'
+      + '<td><span class="alca" draggable="true" title="Arraste para mudar a ordem de publicação">⠿</span> '
+      + '<button class="mini" data-sobe="' + item.id + '"' + (indice === 0 ? " disabled" : "") + '>↑</button> '
       + '<button class="mini" data-desce="' + item.id + '"' + (indice === estado.itens.length - 1 ? " disabled" : "") + '>↓</button></td>'
-      + '<td><input data-titulo="' + item.id + '" value="' + escapar(item.titulo) + '">'
+      + '<td><input data-titulo="' + item.id + '" value="' + escapar(titulo) + '">'
+      // O botão da legenda vem logo abaixo do título, como pedido; o nome do
+      // arquivo (e a duração) fecham o bloco.
+      + campoLegenda(item)
       + '<div class="fraco" style="font-size:12px;margin-top:3px">' + escapar(item.arquivo)
         + (item.duracao_min == null ? "" : " · " + String(item.duracao_min).replace(".", ",") + " min") + "</div></td>"
       + '<td><select data-canal="' + item.id + '">' + opcoesDeCanal(item.canal) + "</select></td>"
@@ -470,6 +615,7 @@ function desenharFila() {
       + '<td>' + acoes + ' <button class="mini" data-remover="' + item.id + '">✕</button></td>'
       + "</tr>";
   }).join("");
+  devolverFocoNaFila(foco);
 }
 
 // Cada canal tem sua própria privacidade, intervalo, sorteio e descrição —
@@ -571,6 +717,37 @@ el("corpo-fila").addEventListener("click", async (evento) => {
   const botao = evento.target.closest("button");
   if (!botao) return;
   const dados = botao.dataset;
+  // Abrir/fechar a caixa de legenda só mexe na tela — nada vai ao servidor.
+  if (dados.legenda) {
+    const id = dados.legenda;
+    if (legendasAbertas.has(id)) legendasAbertas.delete(id);
+    else legendasAbertas.add(id);
+    assinatura = "";
+    desenharFila();
+    if (legendasAbertas.has(id)) {
+      const caixa = document.querySelector('#corpo-fila [data-legenda-texto="' + id + '"]');
+      if (caixa) {
+        caixa.focus();
+        caixa.setSelectionRange(caixa.value.length, caixa.value.length);
+      }
+    }
+    return;
+  }
+  // Voltar para a legenda padrão do canal: apaga a legenda deste vídeo.
+  if (dados.legendaPadrao) {
+    const id = dados.legendaPadrao;
+    clearTimeout(esperasLegenda.get(id));            // não deixa o salvamento automático
+    esperasLegenda.delete(id);                       // regravar depois desta limpeza
+    const caixa = document.querySelector('#corpo-fila [data-legenda-texto="' + id + '"]');
+    if (caixa) caixa.value = "";
+    rascunhosLegenda.set(id, "");
+    // Se o salvamento falhar, tira o rascunho: a linha volta a mostrar a
+    // legenda que continua salva no servidor (o erro aparece no recado).
+    if (!(await salvarLegenda(id, ""))) rascunhosLegenda.delete(id);
+    assinatura = "";
+    desenharFila();
+    return;
+  }
   try {
     if (dados.sobe) await pedir("/api/itens/" + dados.sobe + "/mover", {direcao: -1});
     else if (dados.desce) await pedir("/api/itens/" + dados.desce + "/mover", {direcao: 1});
@@ -586,14 +763,104 @@ el("corpo-fila").addEventListener("click", async (evento) => {
   } catch (erro) { recado("recado-fila", erro.message, "erro"); }
 });
 
+// Salva sozinho ~1 s depois de parar de digitar: quem troca de aba, ou clica
+// em "Enviar já" logo em seguida, não perde o texto. O "change" abaixo salva
+// na hora ao sair do campo (e cobre o caso de o timer não ter disparado).
+el("corpo-fila").addEventListener("input", (evento) => {
+  const caixa = evento.target;
+  const id = caixa.dataset && caixa.dataset.legendaTexto;
+  if (!id) return;
+  rascunhosLegenda.set(id, caixa.value);
+  clearTimeout(esperasLegenda.get(id));
+  esperasLegenda.set(id, setTimeout(() => {
+    esperasLegenda.delete(id);
+    // Lê o rascunho na hora de salvar, e não o campo capturado aqui: se a
+    // linha foi redesenhada no meio, o texto mais novo está no mapa.
+    const texto = rascunhosLegenda.has(id) ? rascunhosLegenda.get(id) : caixa.value;
+    salvarLegenda(id, texto);
+  }, 1200));
+});
+
 el("corpo-fila").addEventListener("change", async (evento) => {
   const campo = evento.target;
+  if (campo.dataset.legendaTexto) {                 // textarea da legenda
+    const id = campo.dataset.legendaTexto;
+    clearTimeout(esperasLegenda.get(id));
+    esperasLegenda.delete(id);
+    await salvarLegenda(id, campo.value);
+    return;
+  }
   const id = campo.dataset.titulo || campo.dataset.canal;
   if (!id) return;
   const corpo = campo.dataset.titulo ? {titulo: campo.value} : {canal: campo.value};
   try {
     await pedir("/api/itens/" + id, corpo);
     recado("recado-fila", "Salvo.", "ok");
+    assinatura = "";
+    await atualizar();      // a troca de canal muda os horários lá em cima
+  } catch (erro) { recado("recado-fila", erro.message, "erro"); }
+});
+
+/* ── arrastar as linhas para mudar a ordem de publicação ──────── */
+function limparMarcasDoArrasto() {
+  for (const linha of el("corpo-fila").querySelectorAll("tr")) {
+    linha.classList.remove("arrastando", "antes", "depois");
+  }
+}
+
+el("corpo-fila").addEventListener("dragstart", (evento) => {
+  const linha = evento.target.closest && evento.target.closest("tr[data-id]");
+  // Arrastar texto de dentro de um campo, ou um botão, não é reordenar a fila.
+  if (!linha || (evento.target.closest && evento.target.closest("input,select,button,a,textarea"))) {
+    evento.preventDefault();
+    return;
+  }
+  arrastandoId = linha.dataset.id;
+  linha.classList.add("arrastando");
+  evento.dataTransfer.effectAllowed = "move";
+  evento.dataTransfer.setData("text/plain", arrastandoId);
+  // A imagem que segue o cursor é a linha inteira, não só a alça.
+  try { evento.dataTransfer.setDragImage(linha, 24, 18); } catch (e) { /* opcional */ }
+});
+
+el("corpo-fila").addEventListener("dragend", () => {
+  arrastandoId = null;
+  limparMarcasDoArrasto();
+});
+
+el("corpo-fila").addEventListener("dragover", (evento) => {
+  if (!arrastandoId) return;                       // pode ser um arquivo vindo do Windows
+  const linha = evento.target.closest && evento.target.closest("tr[data-id]");
+  if (!linha || linha.dataset.id === arrastandoId) return;
+  evento.preventDefault();                         // sem isto, o "drop" nunca dispara
+  evento.dataTransfer.dropEffect = "move";
+  const caixa = linha.getBoundingClientRect();
+  const depois = evento.clientY > caixa.top + caixa.height / 2;
+  limparMarcasDoArrasto();
+  linha.classList.add(depois ? "depois" : "antes");
+});
+
+el("corpo-fila").addEventListener("drop", async (evento) => {
+  if (!arrastandoId) return;
+  const linha = evento.target.closest && evento.target.closest("tr[data-id]");
+  if (!linha) return;
+  evento.preventDefault();
+  const id = arrastandoId;
+  arrastandoId = null;
+  const depois = linha.classList.contains("depois");
+  limparMarcasDoArrasto();
+  const alvo = estado.itens.findIndex((i) => i.id === linha.dataset.id);
+  const origem = estado.itens.findIndex((i) => i.id === id);
+  if (alvo < 0 || origem < 0) return;
+  // Índice no arranjo final: o item sai da lista antes de entrar de novo.
+  let destino = alvo + (depois ? 1 : 0);
+  if (origem < destino) destino -= 1;
+  if (destino === origem) return;
+  try {
+    await pedir("/api/itens/" + id + "/mover", {posicao: destino});
+    recado("recado-fila", "");
+    assinatura = "";
+    await atualizar();
   } catch (erro) { recado("recado-fila", erro.message, "erro"); }
 });
 
@@ -675,17 +942,21 @@ el("btn-limpar").onclick = async () => {
 };
 
 /* ── upload dos vídeos (XHR para ter barra de progresso) ───────── */
-el("btn-subir").onclick = () => {
-  const campo = el("arquivos");
-  if (!campo.files.length) { recado("recado-upload", "Escolha os arquivos primeiro.", "erro"); return; }
+function enviarArquivos(lista) {
+  const arquivos = Array.prototype.slice.call(lista || []).filter((a) => a && a.name);
+  if (!arquivos.length) { recado("recado-upload", "Nenhum arquivo escolhido.", "erro"); return; }
+  if (el("btn-subir").disabled) {                   // já tem um envio em curso
+    recado("recado-upload", "Espere o envio atual terminar antes de mandar outros.", "erro");
+    return;
+  }
   const formulario = new FormData();
   formulario.append("canal", el("canal-novo").value);
-  for (const arquivo of campo.files) formulario.append("arquivos", arquivo);
+  for (const arquivo of arquivos) formulario.append("arquivos", arquivo);
 
   const barra = el("progresso");
   barra.hidden = false; barra.value = 0;
   el("btn-subir").disabled = true;
-  recado("recado-upload", "Enviando para o servidor…");
+  recado("recado-upload", "Enviando " + arquivos.length + " arquivo(s) para o servidor…");
 
   const pedido = new XMLHttpRequest();
   pedido.open("POST", "/api/videos");
@@ -700,7 +971,7 @@ el("btn-subir").onclick = () => {
       recado("recado-upload", dados.erro || "Falhou (" + pedido.status + ")", "erro");
     } else {
       recado("recado-upload", (dados.adicionados || []).length + " vídeo(s) no servidor.", "ok");
-      campo.value = "";
+      el("arquivos").value = "";
     }
     assinatura = "";
     await atualizar();
@@ -710,7 +981,36 @@ el("btn-subir").onclick = () => {
     recado("recado-upload", "A conexão com o servidor caiu no meio do envio.", "erro");
   };
   pedido.send(formulario);
+}
+
+el("btn-subir").onclick = () => {
+  const campo = el("arquivos");
+  if (!campo.files.length) { recado("recado-upload", "Escolha os arquivos primeiro.", "erro"); return; }
+  enviarArquivos(campo.files);
 };
+
+/* ── soltar arquivos do Windows na página ─────────────────────── */
+const ZONA_SOLTA = el("zona-solta");
+const _temArquivos = (evento) =>
+  !!evento.dataTransfer && Array.prototype.slice.call(evento.dataTransfer.types || []).indexOf("Files") >= 0;
+
+// O navegador, sem isto, abre o vídeo numa aba nova e perde-se o que se estava
+// fazendo — então o padrão é sempre bloqueado, e só a página decide o destino.
+window.addEventListener("dragover", (evento) => {
+  if (!_temArquivos(evento)) return;              // arrasto de linha da fila
+  evento.preventDefault();
+  evento.dataTransfer.dropEffect = "copy";
+  ZONA_SOLTA.classList.add("ativa");
+});
+window.addEventListener("dragleave", (evento) => {
+  if (!evento.relatedTarget) ZONA_SOLTA.classList.remove("ativa");   // saiu da janela
+});
+window.addEventListener("drop", (evento) => {
+  if (!_temArquivos(evento)) return;              // arrasto de linha da fila
+  evento.preventDefault();
+  ZONA_SOLTA.classList.remove("ativa");
+  enviarArquivos(evento.dataTransfer.files);
+});
 
 /* ── configuração e credenciais ────────────────────────────────── */
 // Marca como "sujo" qualquer edição, menos a troca do próprio seletor de

@@ -566,10 +566,18 @@ def _atualizar_item(item_id: str, **campos) -> None:
         salvar_fila(fila)
 
 
-def _legenda_tiktok(titulo: str, cfg_canal: dict) -> str:
-    """Título do vídeo + a legenda/hashtags padrão do canal, cada um numa linha."""
-    legenda = (cfg_canal.get("tiktok_legenda") or "").strip()
-    return f"{titulo}\n\n{legenda}" if legenda else titulo
+def _legenda_tiktok(titulo: str, cfg_canal: dict, legenda_do_item: str = "") -> str:
+    """Título do vídeo + a legenda/hashtags, cada um numa linha.
+
+    A legenda do próprio vídeo (escrita na fila, ou mandada pela API) vale mais
+    que a padrão do canal: é o ajuste pontual de um vídeo específico. O limite
+    do TikTok é de 2200 caracteres, e o texto vai inteiro para a legenda do
+    post — daí o corte, que só acontece em legenda muito longa.
+    """
+    legenda = ((legenda_do_item or "").strip()
+               or (cfg_canal.get("tiktok_legenda") or "").strip())
+    texto = f"{titulo}\n\n{legenda}" if legenda else titulo
+    return texto[:2200]
 
 
 def _duracao_mp4(caminho: Path) -> float | None:
@@ -694,7 +702,7 @@ def _talvez_publicar_no_tiktok(
             f"\"{titulo}\" (e os próximos vídeos deste canal) não vão pro "
             f"TikTok até isso ser corrigido.\n\n{URL_PUBLICADOR}")
         return
-    legenda = _legenda_tiktok(titulo, cfg_canal)
+    legenda = _legenda_tiktok(titulo, cfg_canal, item.get("legenda") or "")
     _atualizar_item(item_id, tiktok_status="enviando", tiktok_mensagem="")
     registrar(f"📤 Enviando “{titulo}” também para o TikTok (conta {conta})…")
     try:
@@ -734,7 +742,11 @@ def _enviar_item(item_id: str) -> None:
         titulo = (item.get("titulo") or caminho.stem)[:100]
         canal = item.get("canal") or ""
         cfg_canal = _config_do_canal(config, canal)
-        descricao = cfg_canal.get("descricao", "")
+        # Legenda escrita para este vídeo na fila (ou mandada pela API) manda
+        # mais que a descrição padrão do canal: o padrão serve para a maioria,
+        # e isto é o ajuste de um vídeo só. Sem ela, vale o padrão do canal.
+        legenda = (item.get("legenda") or "").strip()
+        descricao = legenda or cfg_canal.get("descricao", "")
 
         if not caminho.exists():
             registrar(f"⚠️ {item['arquivo']} não está mais no HD do servidor.")
@@ -752,6 +764,8 @@ def _enviar_item(item_id: str) -> None:
         privacidade = cfg_canal.get("privacidade", "public")
 
         registrar(f"📤 Enviando “{titulo}” no canal {canal}…")
+        if legenda:
+            registrar(f"   {titulo}: legenda própria deste vídeo, no lugar da padrão do canal.")
 
         def progresso(mensagem: str) -> None:
             registrar(f"   {titulo}: {mensagem}")
@@ -929,14 +943,20 @@ def subir_videos():
     """Recebe os arquivos (do navegador ou de uma chamada de API), grava no
     HD e põe no fim da lista.
 
-    'titulo' é opcional e só vale quando esta chamada manda **um** arquivo só
-    — com vários, não haveria como saber qual título é de qual, então nesse
-    caso cada um sai com o nome do próprio arquivo (editável depois pela tela
-    ou com POST /api/itens/<id> {"titulo": "..."}, usando o id devolvido aqui
-    em 'itens').
+    'titulo' e 'legenda' são opcionais e só valem quando esta chamada manda
+    **um** arquivo só — com vários, não haveria como saber qual título (ou
+    legenda) é de qual, então nesse caso cada um sai com o nome do próprio
+    arquivo e com a legenda padrão do canal (editáveis depois pela tela ou com
+    POST /api/itens/<id> {"titulo": "...", "legenda": "..."}, usando o id
+    devolvido aqui em 'itens').
+
+    A 'legenda' é a descrição que vai no YouTube e, no TikTok, o texto que
+    entra no lugar da legenda/hashtags padrão do canal. Vazia, o vídeo usa o
+    padrão do canal — é o caso de toda a fila antiga e do envio pela tela.
     """
     canal = (request.form.get("canal") or canal_padrao()).strip()
     titulo_pedido = (request.form.get("titulo") or "").strip()[:100]
+    legenda_pedida = (request.form.get("legenda") or "").strip()[:4900]
     arquivos = [a for a in request.files.getlist("arquivos") if a and a.filename]
     if not arquivos:
         return jsonify({"erro": "Nenhum arquivo escolhido."}), 400
@@ -955,6 +975,7 @@ def subir_videos():
         adicionados.append(nome)
 
     titulo_unico = titulo_pedido if (titulo_pedido and len(adicionados) == 1) else ""
+    legenda_unica = legenda_pedida if (legenda_pedida and len(adicionados) == 1) else ""
     itens_novos = []
     with _TRAVA:
         fila = carregar_fila()
@@ -963,6 +984,7 @@ def subir_videos():
                 "id": _novo_id(),
                 "arquivo": nome,
                 "titulo": titulo_unico or Path(nome).stem,
+                "legenda": legenda_unica,
                 "canal": canal,
                 "status": "aguardando",
                 "mensagem": "",
@@ -973,7 +995,8 @@ def subir_videos():
                 "tiktok_mensagem": "",
             }
             fila["itens"].append(item)
-            itens_novos.append({"id": item["id"], "arquivo": nome, "titulo": item["titulo"]})
+            itens_novos.append({"id": item["id"], "arquivo": nome,
+                                "titulo": item["titulo"], "legenda": item["legenda"]})
         salvar_fila(fila)
     for nome in adicionados:
         registrar(f"➕ {nome} entrou na fila (canal {canal or 'nenhum'}).")
@@ -1002,7 +1025,14 @@ def subir_thumb(item_id: str):
 
 @app.post("/api/itens/<item_id>")
 def editar_item(item_id: str):
-    """Troca título ou canal de um item da lista."""
+    """Troca título, legenda ou canal de um item da lista.
+
+    "legenda" é a descrição daquele vídeo no YouTube (e, no TikTok, o texto no
+    lugar das hashtags padrão). Mandar "" apaga a legenda própria: o vídeo
+    volta a usar a padrão do canal. É o campo opcional da entrada por API —
+    POST /api/videos aceita "legenda" junto do arquivo, e este endpoint a
+    corrige depois, com o id devolvido lá.
+    """
     dados = request.get_json(silent=True) or {}
     with _TRAVA:
         fila = carregar_fila()
@@ -1011,6 +1041,8 @@ def editar_item(item_id: str):
             return jsonify({"erro": "Item não está mais na fila."}), 404
         if "titulo" in dados:
             item["titulo"] = str(dados["titulo"]).strip()[:100]
+        if "legenda" in dados:
+            item["legenda"] = str(dados["legenda"] or "").strip()[:4900]
         if "canal" in dados:
             item["canal"] = str(dados["canal"]).strip()
         salvar_fila(fila)
@@ -1019,14 +1051,36 @@ def editar_item(item_id: str):
 
 @app.post("/api/itens/<item_id>/mover")
 def mover_item(item_id: str):
-    """Sobe ou desce um item — a ordem da lista é a ordem de publicação."""
-    direcao = int((request.get_json(silent=True) or {}).get("direcao", 0))
+    """Muda a posição de um item — a ordem da lista é a ordem de publicação.
+
+    Com "posicao" (índice de destino, começando em 0, já contando a saída do
+    próprio item), ele vai direto para lá: é o que a tela usa ao arrastar uma
+    linha. Sem ela, "direcao" (-1 ou 1) anda um passo, para os botões ↑ e ↓.
+    """
+    dados = request.get_json(silent=True) or {}
     with _TRAVA:
         fila = carregar_fila()
         itens = fila["itens"]
         posicao = next((i for i, item in enumerate(itens) if item["id"] == item_id), None)
         if posicao is None:
             return jsonify({"erro": "Item não está mais na fila."}), 404
+
+        if "posicao" in dados:
+            try:
+                destino = int(dados["posicao"])
+            except (TypeError, ValueError):
+                return jsonify({"erro": "Posição inválida."}), 400
+            destino = max(0, min(destino, len(itens) - 1))
+            if destino != posicao:
+                item = itens.pop(posicao)
+                itens.insert(destino, item)
+                salvar_fila(fila)
+            return jsonify({"ok": True, "posicao": destino})
+
+        try:
+            direcao = int(dados.get("direcao", 0))
+        except (TypeError, ValueError):
+            direcao = 0
         destino = posicao + (1 if direcao > 0 else -1)
         if 0 <= destino < len(itens):
             itens[posicao], itens[destino] = itens[destino], itens[posicao]
@@ -1135,8 +1189,9 @@ def tela_da_falha_do_youtube():
 def testar_tiktok():
     """Manda só para o TikTok, sem tocar no YouTube — pra testar sem gastar a
     cota da API. Reaproveita um vídeo que já está no servidor (o primeiro da
-    fila do canal) com a conta e a legenda configuradas para ele; roda na
-    hora e devolve o resultado, sem mexer na fila nem no estado do item.
+    fila do canal) com a conta, a legenda própria dele se houver — senão a
+    padrão configurada para o canal; roda na hora e devolve o resultado, sem
+    mexer na fila nem no estado do item.
     """
     canal = str((request.get_json(silent=True) or {}).get("canal") or "").strip()
     if not canal:
@@ -1154,7 +1209,7 @@ def testar_tiktok():
     if not caminho.exists():
         return jsonify({"erro": f"{item['arquivo']} não está mais no HD do servidor."}), 400
     titulo = (item.get("titulo") or caminho.stem)[:100]
-    legenda = _legenda_tiktok(titulo, cfg_canal)
+    legenda = _legenda_tiktok(titulo, cfg_canal, item.get("legenda") or "")
     registrar(f"🧪 Teste avulso do TikTok: “{titulo}” (conta {conta})…")
 
     resultado: dict = {}

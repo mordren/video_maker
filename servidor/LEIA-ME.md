@@ -28,6 +28,10 @@ O que ele faz:
   *daquele canal* e só então manda o próximo. Opcionalmente sorteia também
   **qual** vídeo daquele canal sai.
 - Título de cada vídeo: o nome do arquivo (editável na lista).
+- **Legenda de cada vídeo** (opcional): o botão **✏️ Legenda**, embaixo do
+  título na lista, abre uma caixa de texto com a descrição daquele vídeo — no
+  YouTube ela vai como descrição e, no TikTok, no lugar das hashtags padrão do
+  canal. Sem legenda escrita, o vídeo sai com a padrão do canal, como antes.
 - Os arquivos são **copiados para o HD do servidor** pelo navegador, e ficam lá
   até você mandar apagar.
 
@@ -155,7 +159,7 @@ só o histórico da página registra os erros — nada quebra.
 
 1. **Adicionar vídeos**: escolha os arquivos, escolha o canal e clique em
    *Subir para o servidor*. Eles entram no fim da lista.
-2. Ajuste título, canal e ordem na tabela.
+2. Ajuste título, legenda (opcional, veja abaixo), canal e ordem na tabela.
 3. Em **Configuração dos envios**, escolha o **canal** no seletor do topo e
    ajuste a privacidade, a faixa de espera em minutos, quantos minutos até o
    vídeo ficar público, o sorteio da ordem, a descrição padrão e, se quiser,
@@ -209,6 +213,26 @@ Detalhes que importam no dia a dia:
 - O botão **🧪 Testar TikTok** manda um vídeo que já está no servidor só para o
   TikTok, sem passar pelo YouTube — serve para testar a conta do TikTok sem
   esperar (nem arriscar) um envio de verdade ao YouTube.
+
+### Legenda de um vídeo só
+
+Cada vídeo pode ter a sua própria legenda, sem mexer no padrão do canal: na
+lista, o botão **✏️ Legenda** (embaixo do título) abre uma caixa de texto. O
+que estiver nela vale só para aquele vídeo — vai como descrição no YouTube e,
+no TikTok, no lugar da legenda/hashtags padrão. Ela é salva sozinha enquanto
+você digita (e ao sair do campo); o **↺ padrão do canal** apaga a legenda
+própria e o vídeo volta a usar a configuração do canal.
+
+Pela API, o campo é opcional e vale apenas quando o pedido manda **um** arquivo:
+
+```bash
+curl -F "canal=br" -F "titulo=Meu vídeo" -F "legenda=#politica #brasil" \
+     -F "arquivos=@video.mp4" http://192.168.31.130:8080/api/videos
+```
+
+A resposta traz o `id` do item em `itens`. Dá para corrigir depois com
+`POST /api/itens/<id>` `{"legenda": "..."}` — e `{"legenda": ""}` devolve o
+vídeo à legenda padrão do canal. O mesmo vale para o título: `{"titulo": "..."}`.
 
 ## Onde fica cada coisa no servidor
 
