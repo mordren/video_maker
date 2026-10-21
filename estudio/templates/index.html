@@ -284,7 +284,7 @@ function dicaCanal() {
   $("dica-canal").innerHTML = `${escapar(p.nome_exibicao || nome)}: ${partes.join(" · ")} · <a href="#/canal-pub/${encodeURIComponent(nome)}">perfil</a>`;
 }
 
-$("canal").onchange = () => { $("perfil").value = perfilDoCanal($("canal").value, $("perfil").value); dicaCanal(); };
+$("canal").onchange = () => { try { localStorage.setItem("ultimoCanal", $("canal").value); } catch (e) {} $("perfil").value = perfilDoCanal($("canal").value, $("perfil").value); dicaCanal(); };
 
 $("video").onchange = () => { $("campo-legenda").hidden = !$("video").files[0]; };
 
@@ -344,15 +344,17 @@ function desenharCortes() {
   $("sem-cortes").hidden = lista.length > 0;
   // Só redesenha quando a lista muda: senão o vídeo tocando e o título sendo
   // digitado seriam apagados a cada atualização.
-  const assinatura = lista.map(([t, c]) => t.id + c.id + c.status + (c.versao || 0) + (c.thumbs_em || "")).join("|") + "#" + estado.canais.join(",");
+  const assinatura = lista.map(([t, c]) => t.id + c.id + (c.canal || t.canal || "") + c.status + (c.versao || 0) + (c.thumbs_em || "")).join("|") + "#" + estado.canais.join(",");
   if (assinatura === assinaturaCortes) return;
   assinaturaCortes = assinatura;
   $("cortes").innerHTML = lista.map(([t, c]) => {
     const base = `/midia/${encodeURIComponent(t.id)}/${encodeURIComponent(c.id)}/`;
     // O canal gravado no corte aparece mesmo que o Publicador ainda não o
     // tenha conectado (sem cookies) — senão o seletor mostraria "(escolha)".
-    const nomes = c.canal && !estado.canais.includes(c.canal) ? [...estado.canais, c.canal] : estado.canais;
-    const canais = nomes.map(n => `<option ${n === c.canal ? "selected" : ""}>${escapar(n)}</option>`).join("");
+    // Corte sem canal próprio usa o do trabalho (o escolhido ao colar o link).
+    const canalCorte = c.canal || t.canal || "";
+    const nomes = canalCorte && !estado.canais.includes(canalCorte) ? [...estado.canais, canalCorte] : estado.canais;
+    const canais = nomes.map(n => `<option ${n === canalCorte ? "selected" : ""}>${escapar(n)}</option>`).join("");
     const extras = [c.duracao ? `${Math.round(c.duracao)}s` : "", c.trilha ? `trilha ${escapar(c.trilha.replace(/\.\w+$/, ""))}` : "",
                     c.silenciados ? `${c.silenciados} censura(s)` : "", c.falantes > 1 ? `${c.falantes} vozes` : ""].filter(Boolean).join(" · ");
     const v = c.versao ? `?v=${c.versao}` : "";
@@ -652,7 +654,9 @@ async function atualizar() {
     $("aviso-ram").hidden = !estado.pouca_ram;
     $("aviso-ram").textContent = estado.pouca_ram ? "⚠️ " + estado.pouca_ram : "";
     $("link-publicador").href = estado.publicador_link || `${location.protocol}//${location.hostname}:${estado.publicador_porta}/`;
-    preencherSelect($("canal"), estado.canais, "", estado.canais.length ? "" : "(Publicador sem canais)");
+    // Já vem com o último canal usado (ou o único que existe), para o corte chegar na revisão com canal.
+    let ultimo = ""; try { ultimo = localStorage.getItem("ultimoCanal") || ""; } catch (e) {}
+    preencherSelect($("canal"), estado.canais, ultimo || (estado.canais.length === 1 ? estado.canais[0] : ""), estado.canais.length ? "" : "(Publicador sem canais)");
     preencherSelect($("perfil"), estado.perfis, estado.perfil_padrao || estado.perfis[0]);
     dicaCanal();
     desenharTrabalhos(); desenharPropostas(); desenharCortes();
