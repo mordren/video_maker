@@ -1344,6 +1344,20 @@ async function telaGerador() {
       } finally { s.disabled = false; }
       return;
     }
+    const pub = ev.target.closest('[data-publicar]');
+    if (pub) {
+      const canal = ($('#gCanalPub') || {}).value;
+      if (!canal) return toast('Escolha o canal do Publicador ao lado do título da lista.', true);
+      const nome = pub.dataset.publicar;
+      const titulo = prompt(`Título no YouTube (canal ${canal}):`, nome.replace(/\.mp4$/i, ''));
+      if (titulo === null) return;
+      pub.disabled = true;
+      try {
+        const r = await acao(() => api('/api/gerador/publicar', {method: 'POST', body: {nome, titulo, canal}}));
+        toast(`Na fila do Publicador (${r.canal}): ${r.titulo}`);
+      } catch { /* o aviso já apareceu */ } finally { pub.disabled = false; }
+      return;
+    }
     const v = ev.target.closest('[data-ver]');
     if (v) {
       const d = document.createElement('div'); d.className = 'lightbox';
@@ -1354,11 +1368,25 @@ async function telaGerador() {
 
   /* renderização: progresso, cancelar e resultado */
   const renderSaidas = s => {
-    $('#gSaidas').innerHTML = `<div class="row" style="align-items:center"><h3 style="margin:0">Vídeos na pasta de saída</h3><button class="fix small" data-abrir="saida">Abrir pasta</button></div>` +
+    $('#gSaidas').innerHTML = `<div class="row" style="align-items:center"><h3 style="margin:0">Vídeos na pasta de saída</h3>
+      <label class="fix small" style="margin:0">Publicar no canal <select id="gCanalPub" style="width:auto"><option>carregando...</option></select></label>
+      <button class="fix small" data-abrir="saida">Abrir pasta</button></div>` +
       (s.length ? `<table style="margin-top:8px"><tr><th>Arquivo</th><th>Tamanho</th><th>Data</th><th></th></tr>${s.map(x => `<tr><td>${esc(x.nome)}</td>
         <td>${tamanhoArq(x.tamanho)}</td><td class="small">${esc(x.data.replace('T', ' '))}</td>
-        <td><button class="small" data-ver="${esc(x.url)}">Assistir</button> <a href="${esc(x.url)}" download>baixar</a>${x.capitulos ? ` · <a href="${esc(x.capitulos)}" target="_blank">capítulos</a>` : ''}</td></tr>`).join('')}</table>`
+        <td><button class="small" data-ver="${esc(x.url)}">Assistir</button> <button class="small" data-publicar="${esc(x.nome)}" title="Manda para a fila do Publicador, no canal escolhido">Publicar</button> <a href="${esc(x.url)}" download>baixar</a>${x.capitulos ? ` · <a href="${esc(x.capitulos)}" target="_blank">capítulos</a>` : ''}</td></tr>`).join('')}</table>`
       : '<p class="small">Nenhum vídeo ainda.</p>');
+    carregarCanaisPublicador();
+  };
+  // Canais que o Publicador conhece; o escolhido fica lembrado e, sem escolha, vale o "music".
+  const carregarCanaisPublicador = async () => {
+    const sel = $('#gCanalPub'); if (!sel) return;
+    try {
+      const r = await api('/api/gerador/publicador/canais');
+      let lembrado = ''; try { lembrado = localStorage.getItem('canalPubMusic') || ''; } catch {}
+      const atual = r.canais.includes(lembrado) ? lembrado : (r.canais.includes('music') ? 'music' : '');
+      sel.innerHTML = `<option value="">(escolha)</option>` + r.canais.map(c => `<option ${c === atual ? 'selected' : ''}>${esc(c)}</option>`).join('');
+      sel.onchange = () => { try { localStorage.setItem('canalPubMusic', sel.value); } catch {} };
+    } catch (err) { sel.innerHTML = `<option value="">Publicador fora do ar</option>`; sel.title = err.message; }
   };
   const renderProgresso = (t, acabou = false) => {  // acabou: terminou agora (a prévia toca sozinha)
     const el = $('#gProg'); if (!el) return;
@@ -1427,6 +1455,15 @@ async function telaGerador() {
 
 /* ------------------------------------------------------------------ configurações globais */
 let abaConfig = UNIFICADO ? 'c_acesso' : 'acesso';
+// Configurações em dois níveis: a área (aba grande) e, dentro dela, os grupos (abas pequenas).
+const AREAS_CONFIG = [
+  ['acessos', 'Chaves e acesso', ['c_acesso', 'acesso']],
+  ['cortador', 'Cortador', ['c_selecao', 'c_nota', 'c_corte', 'c_abertura', 'c_legenda', 'c_fotos', 'c_audio', 'c_longo', 'c_crop']],
+  ['historias', 'Histórias', ['modelos', 'historia', 'formatos', 'imagens', 'montagem']],
+  ['music', 'Music', ['music']],
+  ['publicacao', 'Publicação', ['c_estudio', 'publicador']],
+  ['sistema', 'Sistema e custos', ['c_precos', 'sistema']],
+];
 const BASE_HIST = '/api/configuracoes', BASE_CORT = '/api/estudio/configuracoes';
 
 // O que o usuário cola é muitas vezes a linha inteira da célula do Colab: fica só o primeiro link, sem barra nem pontuação no fim.
@@ -1526,13 +1563,19 @@ async function telaConfiguracoes() {
       <p class="small" style="margin-bottom:4px">Pode colar a linha inteira do Colab. Link respondendo: as imagens saem do ComfyUI; senão, pela API (Pollinations).</p>
       <div id="cfComfyRes" class="small"></div></div>`;
   const corpoGrupo = g => `<section data-grupo="${g.id}" ${g.id === abaConfig ? '' : 'hidden'}>
-    <div class="panel"><p class="small" style="margin-top:0">${g.lado ? `<b>${esc(g.lado)}</b> · ` : ''}${esc(g.descricao)}</p>
+    <div class="panel"><p class="small" style="margin-top:0">${esc(g.descricao)}</p>
     ${temCaixaComfy(g) ? caixaComfy(g) : ''}
     ${g.testes.length ? `<div class="row" style="align-items:center;margin-bottom:10px">${g.testes.map(t =>
       `<div class="fix"><button type="button" data-testar="${esc(idTeste(g, t))}">${esc(t.rotulo)}</button><span class="small cfg-res" data-res="${esc(idTeste(g, t))}">usa o que está salvo</span></div>`).join('')}</div>` : ''}
     ${g.id === 'formatos' ? tabelaFormatos(g) : `<div class="cfg-grade">${g.campos.filter(c => !(temCaixaComfy(g) && c.chave === 'COMFY_URL')).map(bloco).join('')}</div>`}</div></section>`;
-  const abas = lado => grupos.filter(g => g.lado === lado).map(g => `<button data-g="${g.id}" class="${g.id === abaConfig ? 'on' : ''}">${esc(g.titulo)}</button>`).join('');
-  const lados = [...new Set(grupos.map(g => g.lado))];
+  // Áreas que existem de fato (o Cortador pode estar fora do ar); grupos sem área conhecida vão para "Outros".
+  const conhecidos = new Set(AREAS_CONFIG.flatMap(a => a[2]));
+  const areas = AREAS_CONFIG.map(([id, titulo, ids]) => ({id, titulo, grupos: ids.map(i => grupos.find(g => g.id === i)).filter(Boolean)}));
+  const sobra = grupos.filter(g => !conhecidos.has(g.id));
+  if (sobra.length) areas.push({id: 'outros', titulo: 'Outros', grupos: sobra});
+  const areasVivas = areas.filter(a => a.grupos.length);
+  const areaDe = id => areasVivas.find(a => a.grupos.some(g => g.id === id)) || areasVivas[0];
+  const botoesSub = a => a.grupos.length > 1 ? a.grupos.map(g => `<button data-g="${g.id}" class="${g.id === abaConfig ? 'on' : ''}">${esc(g.titulo)}</button>`).join('') : '';
   const arquivos = [cort && !cort.erro ? `Cortador: chaves em <code>${esc(cort.env_arquivo)}</code>, o resto em <code>${esc(cort.json_arquivo)}</code> (só o que difere dos YAML do repositório)` : '',
     hist && !hist.erro ? `${UNIFICADO ? 'Histórias: ' : ''}chaves em <code>${esc(hist.env_arquivo)}</code>, o resto em <code>${esc(hist.json_arquivo)}</code>` : ''].filter(Boolean);
 
@@ -1542,7 +1585,8 @@ async function telaConfiguracoes() {
   <p class="small">${arquivos.join('. ')}. Nenhuma chave volta inteira pela API: para trocar uma, digite a nova; em branco, a atual é mantida. O que é por canal fica em Canais; as pastas e efeitos de cada render, em Music.</p>
   ${[...(hist && hist.erro ? [`Histórias: ${hist.erro}`] : []), ...(cort && cort.erro ? [`Cortador: ${cort.erro}`] : []),
      ...((cort && cort.avisos) || []), ...((hist && hist.avisos) || [])].map(a => `<div class="panel alert small">${esc(a)}</div>`).join('')}
-  ${lados.map(l => `<div class="tabs" data-lado="${esc(l)}" style="flex-wrap:wrap;align-items:center">${l ? `<span class="small fix" style="padding:0 8px 0 0;font-weight:600">${esc(l)}</span>` : ''}${abas(l)}</div>`).join('')}
+  <div class="tabs cfg-areas" style="flex-wrap:wrap">${areasVivas.map(a => `<button data-area="${a.id}" class="${a === areaDe(abaConfig) ? 'on' : ''}">${esc(a.titulo)}</button>`).join('')}</div>
+  ${areasVivas.map(a => `<div class="tabs cfg-sub" data-sub="${a.id}" style="flex-wrap:wrap" ${a === areaDe(abaConfig) ? '' : 'hidden'}>${botoesSub(a)}</div>`).join('')}
   ${grupos.map(corpoGrupo).join('')}`;
 
   const els = Object.fromEntries($$('[data-cfg]').map(e => [e.dataset.cfg, e]));
@@ -1564,11 +1608,20 @@ async function telaConfiguracoes() {
   Object.values(els).forEach(e => { e.oninput = atualizar; e.onchange = atualizar; });
   atualizar();
 
-  $$('.tabs[data-lado] button').forEach(b => b.onclick = () => {
-    abaConfig = b.dataset.g;
-    $$('.tabs[data-lado] button').forEach(x => x.classList.toggle('on', x === b));
-    $$('[data-grupo]').forEach(s => s.hidden = s.dataset.grupo !== abaConfig);
+  const mostrarGrupo = id => {
+    abaConfig = id;
+    const a = areaDe(id);
+    $$('.cfg-areas button').forEach(x => x.classList.toggle('on', x.dataset.area === a.id));
+    $$('.cfg-sub').forEach(x => x.hidden = x.dataset.sub !== a.id);
+    $$('.cfg-sub button').forEach(x => x.classList.toggle('on', x.dataset.g === id));
+    $$('[data-grupo]').forEach(s => s.hidden = s.dataset.grupo !== id);
+  };
+  $$('.cfg-sub button').forEach(b => b.onclick = () => mostrarGrupo(b.dataset.g));
+  $$('.cfg-areas button').forEach(b => b.onclick = () => {
+    const a = areasVivas.find(x => x.id === b.dataset.area);
+    mostrarGrupo(a.grupos.some(g => g.id === abaConfig) ? abaConfig : a.grupos[0].id);
   });
+  mostrarGrupo(abaConfig);
   $$('[data-restaurar]').forEach(b => b.onclick = () => {
     const k = b.dataset.restaurar, e = els[k];
     if (e.type === 'checkbox') e.checked = !!campos[k].padrao; else e.value = campos[k].padrao ?? '';

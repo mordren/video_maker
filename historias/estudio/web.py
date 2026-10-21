@@ -725,6 +725,36 @@ def gerador_miniatura(nome: str):
     return FileResponse(_gerador(gerador.miniatura, nome), headers={"Cache-Control": "max-age=3600"})
 
 
+class PublicarMusicIn(BaseModel):
+    nome: str
+    titulo: str = ""
+    canal: str
+    legenda: str = ""          # opcional: vale só para este vídeo no Publicador
+
+
+@app.get("/api/gerador/publicador/canais", dependencies=[api])
+def gerador_canais_publicador():
+    try:
+        return {"canais": publicador.canais_disponiveis()}
+    except publicador.ErroPublicador as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/gerador/publicar", dependencies=[api])
+def gerador_publicar(dados: PublicarMusicIn):
+    """Envia um vídeo da pasta de saída do Music para a fila do Publicador (canal escolhido na tela).
+
+    `legenda` é opcional; sem ela o vídeo usa a legenda padrão do canal.
+    """
+    video = gerador.pasta("saida") / Path(dados.nome).name
+    if video.suffix.lower() != ".mp4" or not video.is_file():
+        raise HTTPException(404, "Vídeo não encontrado na pasta de saída")
+    try:
+        return publicador.enviar_arquivo(video, dados.titulo, dados.canal, dados.legenda)
+    except publicador.ErroPublicador as e:
+        raise HTTPException(502, str(e))
+
+
 @app.post("/api/gerador/abrir/{pasta}", dependencies=[api])
 def gerador_abrir(pasta: str):
     _gerador(gerador.abrir_pasta, pasta)
